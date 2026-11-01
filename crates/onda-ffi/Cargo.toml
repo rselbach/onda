@@ -1,0 +1,38 @@
+[package]
+name = "onda-ffi"
+description = "UniFFI surface and macOS composition root the native shell links against."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+# staticlib links into the macOS shell; cdylib feeds uniffi-bindgen
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[dependencies]
+onda-adapters = { path = "../onda-adapters" }
+onda-app = { path = "../onda-app" }
+onda-asr = { path = "../onda-asr" }
+onda-asr-coreml = { path = "../onda-asr-coreml" }
+onda-audio = { path = "../onda-audio" }
+onda-cleanup = { path = "../onda-cleanup" }
+onda-domain = { path = "../onda-domain" }
+onda-history = { path = "../onda-history" }
+onda-models = { path = "../onda-models" }
+onda-settings = { path = "../onda-settings" }
+tokio = { version = "1.54.1", features = ["rt-multi-thread"] }
+tracing = "0.1.44"
+tracing-oslog = "0.3.0"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["registry"] }
+uniffi = "0.32.2"
+uuid = { version = "1.29.0", default-features = false, features = ["std"] }
+
+# uniffi's generated scaffolding is unsafe by nature, so this crate cannot
+# inherit the workspace's unsafe_code = "deny"
+[lints.rust]
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

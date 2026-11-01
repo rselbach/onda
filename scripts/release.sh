@@ -1,356 +1,236 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
-# Jabber Release Script
-# Builds, signs, notarizes, and packages Jabber.app into a DMG.
+# Builds a release Onda.app with scripts/bundle-app.sh, packages it as a
+# compressed, signed DMG with an /Applications symlink, then notarizes,
+# staples, and verifies it (prd/10 REL-3). Writes build/Onda-<version>.dmg.
 #
-# Prerequisites:
-#   - Xcode Command Line Tools
-#   - Developer ID Application certificate in keychain
-#   - App-specific password for notarization stored in keychain:
-#       xcrun notarytool store-credentials "jabber-notary" \
-#         --apple-id "your@email.com" \
-#         --team-id "YOUR_TEAM_ID" \
-#         --password "app-specific-password"
-#     Or APPLE_ID, APPLE_TEAM_ID, and APPLE_APP_PASSWORD in the environment.
+# Version and build number come from --version/--build, else VERSION/BUILD in
+# the environment, else shell/macos/Info.plist. Notarization authenticates
+# with APPLE_ID, APPLE_TEAM_ID, and APPLE_APP_PASSWORD when all are set, else
+# with the notarytool keychain profile NOTARY_PROFILE (default "onda-notary"):
 #
-# Usage:
-#   ./scripts/release.sh [--skip-notarize]
+#   xcrun notarytool store-credentials onda-notary \
+#     --apple-id <apple-id> --team-id <team-id> --password <app-password>
+#
+# Usage: scripts/release.sh [--skip-notarize] [--version X.Y.Z] [--build N]
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "${SCRIPT_DIR}")"
-APP_NAME="Jabber"
-
-# Configurable via environment
-SIGNING_IDENTITY="${SIGNING_IDENTITY:-Developer ID Application}"
-NOTARY_PROFILE="${NOTARY_PROFILE:-jabber-notary}"
-BUILD_DIR="${PROJECT_ROOT}/.build/release-bundle"
-DMG_DIR="${PROJECT_ROOT}/.build/dmg"
-
-SKIP_NOTARIZE=false
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly ROOT
+readonly BUILD_DIR="${ROOT}/build"
+readonly APP="${BUILD_DIR}/Onda.app"
+readonly SOURCE_PLIST="${ROOT}/shell/macos/Info.plist"
+readonly VOLUME_NAME="Onda"
+STAGING=""
+MOUNT_POINT=""
 
 usage() {
-  echo "Usage: $0 [--skip-notarize]"
-  echo ""
-  echo "Options:"
-  echo "  --skip-notarize  Skip notarization (for local testing)"
+  echo "usage: $0 [--skip-notarize] [--version X.Y.Z] [--build N]" >&2
+  exit 2
+}
+
+die() {
+  echo "error: $*" >&2
   exit 1
 }
 
-main() {
-  parse_args "$@"
-
-  validate_environment
-  
-  echo "==> Building ${APP_NAME} for release..."
-  build_app
-  
-  echo "==> Creating app bundle..."
-  create_bundle
-  
-  echo "==> Signing app bundle..."
-  sign_app
-  
-  if [[ "${SKIP_NOTARIZE}" == "false" ]]; then
-    echo "==> Creating DMG for notarization..."
-    create_dmg
-    
-    echo "==> Notarizing DMG..."
-    notarize_dmg
-    
-    echo "==> Stapling notarization ticket..."
-    staple_dmg
-  else
-    echo "==> Skipping notarization (--skip-notarize)"
-    echo "==> Creating DMG..."
-    create_dmg
+cleanup() {
+  if [[ -n "${MOUNT_POINT}" ]]; then
+    hdiutil detach -quiet "${MOUNT_POINT}" || true
   fi
-  
-  echo ""
-  echo "==> Release complete!"
-  echo "    DMG: ${DMG_DIR}/${APP_NAME}.dmg"
-}
-
-require_env() {
-  local name="$1"
-  local value="${!name-}"
-  if [[ -z "${value}" ]]; then
-    echo "Error: ${name} is required." >&2
-    exit 1
+  if [[ -n "${STAGING}" ]]; then
+    rm -rf "${STAGING}"
   fi
 }
 
-has_apple_id_notary_credentials() {
-  [[ -n "${APPLE_ID-}" ]] && \
-    [[ -n "${APPLE_TEAM_ID-}" ]] && \
-    [[ -n "${APPLE_APP_PASSWORD-}" ]]
+plist_value() {
+  local key="$1"
+  /usr/libexec/PlistBuddy -c "Print :${key}" "${SOURCE_PLIST}"
 }
 
-validate_notary_credentials() {
-  if [[ -n "${APPLE_ID-}${APPLE_TEAM_ID-}${APPLE_APP_PASSWORD-}" ]]; then
-    require_env APPLE_ID
-    require_env APPLE_TEAM_ID
-    require_env APPLE_APP_PASSWORD
+require_tools() {
+  local tools=(cargo swift xcodebuild codesign hdiutil spctl xcrun)
+  local tool
+  for tool in "${tools[@]}"; do
+    if ! command -v "${tool}" >/dev/null; then
+      die "required command '${tool}' not found"
+    fi
+  done
+}
+
+uses_apple_id() {
+  [[ -n "${APPLE_ID:-}" && -n "${APPLE_TEAM_ID:-}" \
+    && -n "${APPLE_APP_PASSWORD:-}" ]]
+}
+
+check_notary_credentials() {
+  local partial="${APPLE_ID:-}${APPLE_TEAM_ID:-}${APPLE_APP_PASSWORD:-}"
+  if [[ -n "${partial}" ]] && ! uses_apple_id; then
+    die "set all of APPLE_ID, APPLE_TEAM_ID, and APPLE_APP_PASSWORD"
+  fi
+}
+
+# the app's signing authority, or "-" for an ad hoc signature
+app_identity() {
+  local info
+  info="$(codesign --display --verbose=2 "${APP}" 2>&1)"
+  local authority
+  authority="$(sed -n 's/^Authority=//p' <<<"${info}" | head -n 1)"
+  if [[ -z "${authority}" ]]; then
+    echo "-"
     return
   fi
-
-  require_env NOTARY_PROFILE
-}
-
-validate_environment() {
-  local required_commands=(
-    swift
-    xcodebuild
-    codesign
-    hdiutil
-    install_name_tool
-    security
-    xcrun
-  )
-
-  for cmd in "${required_commands[@]}"; do
-    if ! command -v "${cmd}" >/dev/null 2>&1; then
-      echo "Error: required command '${cmd}' not found." >&2
-      exit 1
-    fi
-  done
-
-  require_env SIGNING_IDENTITY
-
-  if [[ "${SKIP_NOTARIZE}" == "false" ]]; then
-    if ! xcrun --find notarytool >/dev/null 2>&1; then
-      echo "Error: xcrun cannot find 'notarytool'." >&2
-      exit 1
-    fi
-
-    if ! xcrun --find stapler >/dev/null 2>&1; then
-      echo "Error: xcrun cannot find 'stapler'." >&2
-      exit 1
-    fi
-
-    validate_notary_credentials
-  fi
-}
-
-parse_args() {
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --skip-notarize)
-        SKIP_NOTARIZE=true
-        shift
-        ;;
-      -h|--help)
-        usage
-        ;;
-      *)
-        echo "Unknown option: $1" >&2
-        usage
-        ;;
-    esac
-  done
-}
-
-build_app() {
-  cd "${PROJECT_ROOT}"
-  swift build -c release
-}
-
-create_bundle() {
-  local app_bundle="${BUILD_DIR}/${APP_NAME}.app"
-  local contents="${app_bundle}/Contents"
-  local macos="${contents}/MacOS"
-  local resources="${contents}/Resources"
-  local frameworks="${contents}/Frameworks"
-  
-  rm -rf "${BUILD_DIR}"
-  mkdir -p "${macos}" "${resources}" "${frameworks}"
-  
-  # Copy executable
-  cp "${PROJECT_ROOT}/.build/release/Jabber" "${macos}/${APP_NAME}"
-
-  # Copy Info.plist
-  cp "${PROJECT_ROOT}/Info.plist" "${contents}/Info.plist"
-  
-  copy_sparkle_framework "${frameworks}"
-  copy_mediaremote_adapter "${frameworks}" "${resources}"
-  
-  # Add rpath for Frameworks directory
-  install_name_tool -add_rpath @executable_path/../Frameworks "${macos}/${APP_NAME}"
-  
-  # Copy resources from the build (SwiftPM bundles assets here) flat into
-  # Contents/Resources, where the app looks them up. Newer SwiftPM builds a
-  # structured bundle with them under Contents/Resources; older ones put them
-  # at the top level.
-  local bundle_resources="${PROJECT_ROOT}/.build/release/Jabber_Jabber.bundle"
-  if [[ -d "${bundle_resources}/Contents/Resources" ]]; then
-    bundle_resources="${bundle_resources}/Contents/Resources"
-  fi
-  if [[ ! -d "${bundle_resources}" ]]; then
-    echo "Error: SwiftPM resource bundle not found at ${bundle_resources}" >&2
-    exit 1
-  fi
-  cp -R "${bundle_resources}/"* "${resources}/"
-  
-  # Copy Assets.xcassets icons directly (actool compile)
-  compile_assets "${resources}"
-  
-  echo "    Bundle created at: ${app_bundle}"
-}
-
-copy_sparkle_framework() {
-  local frameworks_dir="$1"
-  local sparkle_path="${PROJECT_ROOT}/.build/release/Sparkle.framework"
-
-  if [[ ! -d "${sparkle_path}" ]]; then
-    sparkle_path="${PROJECT_ROOT}/.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
-  fi
-
-  if [[ ! -d "${sparkle_path}" ]]; then
-    echo "Error: Sparkle.framework not found for release build." >&2
-    echo "Run 'swift build -c release' and try again." >&2
-    exit 1
-  fi
-
-  cp -R "${sparkle_path}" "${frameworks_dir}/"
-  echo "    Copied Sparkle.framework from ${sparkle_path}"
-}
-
-copy_mediaremote_adapter() {
-  local frameworks_dir="$1"
-  local resources_dir="$2"
-  local adapter_library="${PROJECT_ROOT}/.build/release/libMediaRemoteAdapter.dylib"
-  local adapter_resources
-  adapter_resources="${PROJECT_ROOT}/.build/release"
-  adapter_resources+="/MediaRemoteAdapter_MediaRemoteAdapter.bundle"
-
-  if [[ ! -f "${adapter_library}" ]]; then
-    echo "Error: libMediaRemoteAdapter.dylib not found for release build." >&2
-    echo "Run 'swift build -c release' and try again." >&2
-    exit 1
-  fi
-
-  if [[ ! -d "${adapter_resources}" ]]; then
-    echo "Error: MediaRemoteAdapter resources not found for release build." >&2
-    echo "Run 'swift build -c release' and try again." >&2
-    exit 1
-  fi
-
-  cp "${adapter_library}" "${frameworks_dir}/"
-
-  cp -R "${adapter_resources}" "${resources_dir}/"
-  echo "    Copied MediaRemoteAdapter dynamic library and resources"
-}
-
-compile_assets() {
-  local resources_dir="$1"
-  local assets_path="${PROJECT_ROOT}/Sources/Jabber/Assets.xcassets"
-  
-  if [[ -d "${assets_path}" ]]; then
-    if ! xcrun actool "${assets_path}" \
-      --compile "${resources_dir}" \
-      --platform macosx \
-      --minimum-deployment-target 26.0 \
-      --app-icon AppIcon \
-      --output-partial-info-plist "${BUILD_DIR}/AssetInfo.plist"; then
-      echo "Error: failed to compile assets at ${assets_path}" >&2
-      return 1
-    fi
-  fi
-}
-
-sign_app() {
-  local app_bundle="${BUILD_DIR}/${APP_NAME}.app"
-  local entitlements="${PROJECT_ROOT}/Jabber.entitlements"
-  
-  # Sign Sparkle.framework first
-  codesign --force --options runtime --deep \
-    --sign "${SIGNING_IDENTITY}" \
-    "${app_bundle}/Contents/Frameworks/Sparkle.framework"
-
-  # Sign MediaRemoteAdapter before signing the executable/app bundle.
-  codesign --force --options runtime \
-    --sign "${SIGNING_IDENTITY}" \
-    "${app_bundle}/Contents/Frameworks/libMediaRemoteAdapter.dylib"
-
-  # Sign the main executable
-  codesign --force --options runtime \
-    --entitlements "${entitlements}" \
-    --sign "${SIGNING_IDENTITY}" \
-    "${app_bundle}/Contents/MacOS/${APP_NAME}"
-  
-  # Sign the app bundle
-  codesign --force --options runtime \
-    --entitlements "${entitlements}" \
-    --sign "${SIGNING_IDENTITY}" \
-    "${app_bundle}"
-  
-  # Verify signature
-  codesign --verify --deep --strict --verbose=2 "${app_bundle}"
-  echo "    Signature verified"
+  echo "${authority}"
 }
 
 create_dmg() {
-  local app_bundle="${BUILD_DIR}/${APP_NAME}.app"
-  local dmg_path="${DMG_DIR}/${APP_NAME}.dmg"
-  local dmg_temp="${DMG_DIR}/${APP_NAME}-temp.dmg"
-  
-  rm -rf "${DMG_DIR}"
-  mkdir -p "${DMG_DIR}"
-  
-  # Create a temporary DMG
-  local staging="${DMG_DIR}/staging"
-  mkdir -p "${staging}"
-  cp -R "${app_bundle}" "${staging}/"
-  
-  # Create Applications symlink
-  ln -s /Applications "${staging}/Applications"
-  
-  # Create DMG
-  hdiutil create -volname "${APP_NAME}" \
-    -srcfolder "${staging}" \
-    -ov -format UDRW \
-    "${dmg_temp}"
-  
-  # Convert to compressed read-only DMG
-  hdiutil convert "${dmg_temp}" \
-    -format UDZO \
-    -imagekey zlib-level=9 \
-    -o "${dmg_path}"
-  
-  rm -f "${dmg_temp}"
-  rm -rf "${staging}"
-  
-  # Sign the DMG
-  codesign --force --sign "${SIGNING_IDENTITY}" "${dmg_path}"
-  
-  echo "    DMG created at: ${dmg_path}"
-}
-
-notarize_dmg() {
-  local dmg_path="${DMG_DIR}/${APP_NAME}.dmg"
-  
-  echo "    Submitting to Apple for notarization..."
-  if has_apple_id_notary_credentials; then
-    xcrun notarytool submit "${dmg_path}" \
-      --apple-id "${APPLE_ID}" \
-      --team-id "${APPLE_TEAM_ID}" \
-      --password "${APPLE_APP_PASSWORD}" \
-      --wait
-  else
-    xcrun notarytool submit "${dmg_path}" \
-      --keychain-profile "${NOTARY_PROFILE}" \
-      --wait
+  local dmg="$1"
+  local identity="$2"
+  local root="${STAGING}/dmg"
+  mkdir -p "${root}"
+  ditto "${APP}" "${root}/Onda.app"
+  ln -s /Applications "${root}/Applications"
+  rm -f "${dmg}"
+  # lzma-compressed read-only image; supported on every macOS Onda runs on
+  hdiutil create -quiet -volname "${VOLUME_NAME}" -srcfolder "${root}" \
+    -fs APFS -format ULMO "${dmg}"
+  if [[ "${identity}" == "-" ]]; then
+    echo "app is signed ad hoc; leaving the DMG unsigned" >&2
+    return
   fi
-  
-  echo "    Notarization complete"
+  codesign --force --timestamp --sign "${identity}" "${dmg}"
+  codesign --verify --strict --verbose=2 "${dmg}"
 }
 
-staple_dmg() {
-  local dmg_path="${DMG_DIR}/${APP_NAME}.dmg"
-  
-  xcrun stapler staple "${dmg_path}"
-  echo "    Stapled notarization ticket to DMG"
+notarize() {
+  local dmg="$1"
+  local auth=(--keychain-profile "${NOTARY_PROFILE:-onda-notary}")
+  if uses_apple_id; then
+    auth=(--apple-id "${APPLE_ID}" --team-id "${APPLE_TEAM_ID}"
+      --password "${APPLE_APP_PASSWORD}")
+  fi
+
+  # the submission's status decides, not notarytool's exit code
+  local result="${STAGING}/notary.json"
+  if ! xcrun notarytool submit "${dmg}" "${auth[@]}" --wait \
+    --output-format json >"${result}"; then
+    echo "notarytool submit failed" >&2
+  fi
+  local status=""
+  status="$(plutil -extract status raw -o - "${result}")" || true
+  if [[ "${status}" != "Accepted" ]]; then
+    local id=""
+    id="$(plutil -extract id raw -o - "${result}")" || true
+    if [[ -z "${id}" ]]; then
+      cat "${result}" >&2
+      die "notarization did not complete"
+    fi
+    echo "notarization ${status} (submission ${id}); log:" >&2
+    xcrun notarytool log "${id}" "${auth[@]}" >&2 || true
+    exit 1
+  fi
+  xcrun stapler staple "${dmg}"
+}
+
+# mounts the DMG read-only and checks what a user would get from it;
+# Gatekeeper rejections are fatal only for a notarized build
+verify_dmg() {
+  local dmg="$1"
+  local notarized="$2"
+  hdiutil verify -quiet "${dmg}"
+  if [[ "${notarized}" == "true" ]]; then
+    xcrun stapler validate "${dmg}"
+    spctl --assess --type open --context context:primary-signature \
+      --verbose=2 "${dmg}"
+  fi
+
+  MOUNT_POINT="${STAGING}/mount"
+  mkdir -p "${MOUNT_POINT}"
+  hdiutil attach -quiet -readonly -nobrowse -noautoopen \
+    -mountpoint "${MOUNT_POINT}" "${dmg}"
+  if [[ ! -d "${MOUNT_POINT}/Onda.app" ]]; then
+    die "DMG has no Onda.app"
+  fi
+  local link
+  link="$(readlink "${MOUNT_POINT}/Applications")" || true
+  if [[ "${link}" != "/Applications" ]]; then
+    die "DMG has no /Applications symlink"
+  fi
+  codesign --verify --deep --strict --verbose=2 "${MOUNT_POINT}/Onda.app"
+  if [[ "${notarized}" == "true" ]]; then
+    spctl --assess --type execute --verbose=2 "${MOUNT_POINT}/Onda.app"
+  elif ! spctl --assess --type execute --verbose=2 \
+    "${MOUNT_POINT}/Onda.app"; then
+    echo "Gatekeeper rejects the app (expected without notarization)" >&2
+  fi
+  hdiutil detach -quiet "${MOUNT_POINT}"
+  MOUNT_POINT=""
+}
+
+main() {
+  local notarize_dmg="true"
+  local version="${VERSION:-}"
+  local build="${BUILD:-}"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --skip-notarize) notarize_dmg="false" ;;
+      --version)
+        [[ $# -ge 2 ]] || usage
+        version="$2"
+        shift
+        ;;
+      --build)
+        [[ $# -ge 2 ]] || usage
+        build="$2"
+        shift
+        ;;
+      *) usage ;;
+    esac
+    shift
+  done
+
+  if [[ -z "${version}" ]]; then
+    version="$(plist_value CFBundleShortVersionString)"
+  fi
+  if [[ -z "${build}" ]]; then
+    build="$(plist_value CFBundleVersion)"
+  fi
+  if [[ ! "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+    die "version '${version}' is not X.Y.Z"
+  fi
+  # Sparkle compares CFBundleVersion to order updates
+  if [[ ! "${build}" =~ ^[0-9]+$ ]]; then
+    die "build '${build}' is not a number"
+  fi
+
+  require_tools
+  if [[ "${notarize_dmg}" == "true" ]]; then
+    check_notary_credentials
+  fi
+
+  STAGING="$(mktemp -d)"
+  trap cleanup EXIT
+
+  VERSION="${version}" BUILD="${build}" \
+    "${ROOT}/scripts/bundle-app.sh" release
+
+  local identity
+  identity="$(app_identity)"
+  if [[ "${notarize_dmg}" == "true" \
+    && "${identity}" != "Developer ID Application"* ]]; then
+    die "notarization needs a Developer ID signature; app has '${identity}'"
+  fi
+
+  local dmg="${BUILD_DIR}/Onda-${version}.dmg"
+  create_dmg "${dmg}" "${identity}"
+  if [[ "${notarize_dmg}" == "true" ]]; then
+    notarize "${dmg}"
+  else
+    echo "skipping notarization" >&2
+  fi
+  verify_dmg "${dmg}" "${notarize_dmg}"
+  echo "built ${dmg} (${version} build ${build})"
 }
 
 main "$@"

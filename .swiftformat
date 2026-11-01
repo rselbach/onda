@@ -1,4 +1,5 @@
---swift-version 5.0
+--swift-version 6.2
+--exclude shell/macos/.build,shell/macos/Generated,shell/macos/Sources/OndaCore/Generated,target
 
 --disable sortImports
 --disable trailingCommas

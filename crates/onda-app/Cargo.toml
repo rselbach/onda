@@ -1,0 +1,24 @@
+[package]
+name = "onda-app"
+description = "Onda orchestration: session engine and view models pushed to the shell."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+jiff = "0.2.38"
+onda-asr = { path = "../onda-asr" }
+onda-domain = { path = "../onda-domain" }
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tracing = "0.1"
+uuid = { version = "1.29.0", features = ["v4"] }
+
+[dev-dependencies]
+serde_json = "1.0.154"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt"] }
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "sync", "test-util", "time"] }
+
+[lints]
+workspace = true

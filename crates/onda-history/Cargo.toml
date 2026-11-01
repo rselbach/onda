@@ -1,0 +1,21 @@
+[package]
+name = "onda-history"
+description = "Transcript history store: entry folders under <data>/History/."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+jiff = "0.2.38"
+onda-domain = { path = "../onda-domain" }
+tempfile = "3.27.0"
+tracing = "0.1.44"
+uuid = { version = "1.29.0", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+serde_json = "1.0.154"
+
+[lints]
+workspace = true

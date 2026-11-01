@@ -1,0 +1,18 @@
+[package]
+name = "onda-audio"
+description = "Core-owned audio capture: device selection, 16 kHz resampling, warm standby, pre-roll, and input recovery."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+cpal = "0.18.2"
+onda-domain = { path = "../onda-domain" }
+rtrb = "0.4.1"
+rubato = "5.0.1"
+tracing = "0.1"
+
+[lints]
+workspace = true

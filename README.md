@@ -1,110 +1,107 @@
-# Jabber
+# Onda
 
-A macOS menu bar app for local speech-to-text transcription using on-device ASR models.
+Onda is a macOS menu bar app for dictation: hold or toggle a hotkey, speak,
+and the transcript is typed into the frontmost app. Speech recognition runs on
+the device (Parakeet on CoreML, or Apple's System Speech); optional transcript
+cleanup goes through OpenRouter. It is a Rust rewrite of Jabber: the core is a
+Rust workspace, and a thin Swift shell supplies the native UI and system
+integration.
 
-All audio is processed entirely on-device — nothing leaves your Mac. (Optional transcript refinement via OpenRouter or OpenCode Zen sends the transcript text to a cloud provider you choose; this is off by default.)
-
-> **⚠️ Personal Project Notice**
->
-> This code was written for my own use. It is **not supported** in any way.
-> No issues, no PRs, no questions answered, no guarantees it works.
-> You're welcome to use it, fork it, modify it, sell it, burn it, whatever.
-> Just don't expect anything from me. Good luck.
+The product requirements (`PRD.md`, `prd/`) are kept outside version control
+and are not part of this repository.
 
 ## Requirements
 
-- macOS 26.0+ (Tahoe)
-- Apple Silicon required
+- macOS 27 or later on Apple Silicon (arm64 only)
+- Rust stable 1.99 or later (`rustup`), with `rustfmt` and `clippy`
+- Xcode 27
+- [SwiftFormat](https://github.com/nicklockwood/SwiftFormat) for the Swift
+  format check
 
-## Installation
+## Layout
 
-Download the latest DMG from [Releases](../../releases), open it, and drag Jabber to Applications.
+- `crates/`: the Rust workspace.
+  - `onda-domain`: pure rules. `onda-app`: orchestration and the session
+    engine.
+  - `onda-audio`, `onda-asr`, `onda-asr-coreml`, `onda-models`,
+    `onda-cleanup`, `onda-history`, `onda-settings`, `onda-adapters`: capture,
+    speech engines, model management, cleanup, history, settings, and the
+    core-side ports.
+  - `onda-ffi`: the macOS composition root and the UniFFI bindings the shell
+    calls. `uniffi-bindgen` runs the binding generator.
+  - `onda-cli`: a developer CLI that drives the core from a terminal.
+- `shell/macos/`: the Swift package for the app (AppKit/SwiftUI, Sparkle),
+  its `Info.plist`, and its entitlements.
+- `scripts/`: `build-ffi.sh` (core and Swift bindings), `bundle-app.sh` (the
+  signed app bundle), `release.sh` (DMG, notarization), and
+  `gen-model-manifest.py`.
+- `assets/`: app icon and cue sounds.
 
-## Building from Source
+## Build and run
 
-```bash
-swift build
+```sh
+scripts/bundle-app.sh            # debug build of build/Onda.app
+scripts/bundle-app.sh release    # release build
+open build/Onda.app
 ```
 
-For a release build with signing:
+`bundle-app.sh` signs with the keychain's "Developer ID Application" identity
+when there is one, so macOS privacy grants survive rebuilds; otherwise it
+signs ad hoc. Set `SIGNING_IDENTITY` to override it (`-` for ad hoc).
 
-```bash
-./scripts/release.sh --skip-notarize  # local testing
-./scripts/release.sh                   # full signed + notarized DMG
+To run against a scratch data folder instead of
+`~/Library/Application Support/Onda`, set `ONDA_DATA_DIR`. Such runs also skip
+background update checks:
+
+```sh
+ONDA_DATA_DIR="$(mktemp -d)" build/Onda.app/Contents/MacOS/Onda
 ```
 
-## Usage
+The CLI exercises the core without the app (devices, recording, models,
+transcription, dictation, settings). `--data-dir` selects the data folder:
 
-1. Launch Jabber — it lives in your menu bar
-2. Click the icon or use the global hotkey to start dictation
-3. Speak, and text appears wherever your cursor is
+```sh
+cargo run -p onda-cli -- --help
+cargo run -p onda-cli -- --data-dir /tmp/onda models list
+```
 
-Model options are available in Jabber's main window (menu bar → **Open Jabber**, or **Cmd-,** while Jabber is active):
+## Test
 
-- **Parakeet TDT v2** (~443MB) — fast, accurate English transcription on the Neural Engine
-- **Parakeet Ultra** (~617MB) — Moondream's retrained Parakeet v3 for 25 European languages, more accurate at the same speed
-- **Parakeet Japanese** (~606MB) — Parakeet 0.6B tuned for Japanese
-- **Parakeet Unified** (~590MB) — NVIDIA Parakeet Unified, English transcribed live as you speak
-- **Apple Speech** — built-in macOS 26 speech recognition, recommended for languages the Parakeet models don't cover
+These are the checks CI runs on every pull request and on `main`:
 
-During onboarding, you'll pick a language and Jabber recommends the best model for it.
+```sh
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+swiftformat --lint .
+scripts/build-ffi.sh debug && swift build --package-path shell/macos --arch arm64
+SIGNING_IDENTITY=- scripts/bundle-app.sh release
+```
 
-## Permissions
+The Parakeet tests that load a real model are ignored by default; see
+`crates/onda-asr-coreml/tests/real_model.rs` for how to run them.
 
-Jabber requires two macOS permissions to provide the full experience:
+## Release
 
-- **Microphone**: required to capture speech.
-- **Accessibility**: required for type-into-active-app mode.
+Push a `v*` tag (for example `v1.2.0`). The release workflow builds the app
+with that version and the run number as the build number, signs it with
+Developer ID, notarizes and staples the DMG, creates the GitHub release with
+generated notes, and publishes a signed Sparkle appcast to
+`https://rselbach.github.io/onda/appcast.xml`. The secrets it needs are listed
+at the top of `.github/workflows/release.yml`.
 
-On first launch or first use, macOS may ask for microphone permission and may open a system permission prompt for accessibility when you type into the active app.
+To build a DMG locally:
 
-If permission prompts do not appear:
+```sh
+scripts/release.sh --skip-notarize   # build/Onda-<version>.dmg, not notarized
+scripts/release.sh --version 1.2.0 --build 7
+```
 
-- Open **System Settings > Privacy & Security**
-- Enable Jabber for **Microphone**
-- Enable Jabber for **Accessibility**
+Notarizing locally uses the notarytool keychain profile `onda-notary`
+(override with `NOTARY_PROFILE`), or `APPLE_ID`, `APPLE_TEAM_ID`, and
+`APPLE_APP_PASSWORD`. Create the profile once with:
 
-## Auto-Updates
-
-Jabber uses [Sparkle](https://sparkle-project.org/) for auto-updates. On first launch (after the second run), it will check for updates automatically.
-
-### Setting up EdDSA keys (maintainers)
-
-1. Download Sparkle from [releases](https://github.com/sparkle-project/Sparkle/releases)
-2. Run `./bin/generate_keys` to create a keypair (stored in Keychain)
-3. Export the private key: `./bin/generate_keys -x sparkle_private_key`
-4. Add the private key as `SPARKLE_EDDSA_PRIVATE_KEY` secret in GitHub
-5. Add your public key to `SUPublicEDKey` in Info.plist
-
-### Appcast
-
-The workflow generates `appcast.xml` as an artifact. Host it at:
-`https://rselbach.github.io/jabber/appcast.xml`
-
-## License
-
-MIT — see [LICENSE](LICENSE).
-
-## Acknowledgements
-
-Jabber uses the following open-source models and libraries:
-
-### Models
-
-| Model | Creator | License | Link |
-|-------|---------|---------|------|
-| Parakeet TDT 0.6B v2 | NVIDIA | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) | [huggingface.co/nvidia/parakeet-tdt-0.6b-v2](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2) |
-| Parakeet Ultra | Moondream, from NVIDIA's Parakeet TDT 0.6B v3 | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) | [huggingface.co/moondream/parakeet-ultra](https://huggingface.co/moondream/parakeet-ultra) |
-| Parakeet TDT-CTC 0.6B Japanese | NVIDIA | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) | [huggingface.co/nvidia/parakeet-tdt_ctc-0.6b-ja](https://huggingface.co/nvidia/parakeet-tdt_ctc-0.6b-ja) |
-| Parakeet Unified 0.6B | NVIDIA | [NVIDIA Open Model License](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/) | [huggingface.co/nvidia/parakeet-unified-en-0.6b](https://huggingface.co/nvidia/parakeet-unified-en-0.6b) |
-| Apple Speech | Apple | [Apple SLA](https://www.apple.com/legal/sla/) | Built-in macOS 26 Speech framework |
-
-The Parakeet CoreML conversions are maintained by [FluidInference](https://huggingface.co/FluidInference).
-
-### Libraries
-
-| Library | License | Link |
-|---------|---------|------|
-| [FluidAudio](https://github.com/FluidInference/FluidAudio) | Apache 2.0 | Parakeet ASR for Apple platforms |
-| [Sparkle](https://sparkle-project.org/) | MIT | Software update framework |
-| [mediaremote-adapter](https://github.com/ejbills/mediaremote-adapter) | BSD 3-Clause ([upstream](https://github.com/ungive/mediaremote-adapter)) | Media remote control |
+```sh
+xcrun notarytool store-credentials onda-notary \
+  --apple-id <apple-id> --team-id <team-id> --password <app-specific-password>
+```

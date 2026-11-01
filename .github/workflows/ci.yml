@@ -1,5 +1,7 @@
 name: CI
 
+# prd/10 REL-5. No secrets: the release build is signed ad hoc.
+
 on:
   pull_request:
   push:
@@ -9,30 +11,54 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-and-test:
-    runs-on: macos-26
+    runs-on: macos-27
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Show Xcode version
-        run: xcodebuild -version
-
-      - name: Ensure Metal Toolchain
+      - name: Install Rust
         run: |
-          if ! xcrun metal -v >/dev/null 2>&1; then
-            xcodebuild -downloadComponent MetalToolchain
-          fi
+          rustup toolchain install stable --profile minimal \
+            --component rustfmt,clippy
+          rustup default stable
+
+      - name: Show toolchains
+        run: |
+          [[ "$(uname -m)" == "arm64" ]]
+          xcodebuild -version
+          rustc --version
+          cargo --version
+
+      - name: Rust format
+        run: cargo fmt --all --check
+
+      - name: Rust lint
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Rust tests
+        run: cargo test --workspace
 
       - name: Install SwiftFormat
         run: brew install swiftformat
 
-      - name: Lint
+      - name: Swift format
         run: swiftformat --lint .
 
-      - name: Test
-        run: swift test
+      - name: Swift build (debug)
+        run: |
+          scripts/build-ffi.sh debug
+          swift build --package-path shell/macos --arch arm64
 
-      - name: Build release
-        run: swift build -c release
+      - name: Swift tests
+        run: swift test --package-path shell/macos --arch arm64
+
+      - name: Release build
+        env:
+          SIGNING_IDENTITY: '-'
+        run: scripts/bundle-app.sh release

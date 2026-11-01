@@ -1,0 +1,654 @@
+#!/usr/bin/env bash
+#
+# Launches, drives, and tears down one isolated Onda.app verification run.
+# Isolation is a scratch data directory (ONDA_DATA_DIR), not a unique bundle
+# id: Onda's Microphone and Accessibility grants belong to the real
+# com.rselbach.onda bundle id and its Developer ID signature. Run
+# `verify-onda help` for the command list.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
+readonly PROJECT_ROOT
+readonly RUNS_ROOT="/tmp/onda-verify-runs"
+readonly EVIDENCE_ROOT="/tmp/onda-verify-evidence"
+readonly TOOLS_ROOT="/tmp/onda-verify-tools"
+readonly DRIVER_SOURCE="${SCRIPT_DIR}/onda-driver.swift"
+readonly BUILT_APP="${PROJECT_ROOT}/build/Onda.app"
+readonly CLI="${PROJECT_ROOT}/target/debug/onda-cli"
+readonly DEV_MODELS="${PROJECT_ROOT}/target/dev-models"
+readonly DEFAULT_MODEL="parakeet-tdt-v2"
+readonly READY_LABEL="Onda, ready to dictate"
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: verify-onda COMMAND RUN_ID [ARGS]
+
+  launch RUN_ID [--fresh] [--reuse] [--model ID]... [--setting KEY=JSON]...
+  doctor RUN_ID
+  wait-ready RUN_ID [--timeout SECONDS]
+  evidence-dir RUN_ID
+  record RUN_ID FEATURE ACTION RESULT
+  hotkey RUN_ID hold SECONDS
+  hotkey RUN_ID tap
+  hotkey RUN_ID lone KEY SECONDS     (option, right-option, fn, control, ...)
+  hotkey RUN_ID escape [--with-modifiers]
+  say RUN_ID TEXT [--voice VOICE] [--after SECONDS] [--device ID]
+  textedit RUN_ID new|focus|read|close
+  menu RUN_ID list|open|close
+  menu RUN_ID press TITLE
+  click RUN_ID X Y
+  windows RUN_ID
+  screenshot RUN_ID NAME [--window main|onboarding|overlay|menu|screen]
+  log RUN_ID [--since 5m]
+  history RUN_ID
+  cleanup RUN_ID
+EOF
+}
+
+die() {
+  printf 'verify-onda: %s\n' "$*" >&2
+  exit 1
+}
+
+check_run_id() {
+  if [[ ! "$1" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,39}$ ]]; then
+    die "RUN_ID must start with a letter or digit and contain at most 40" \
+      "letters, digits, or hyphens"
+  fi
+}
+
+run_root() {
+  printf '%s/%s\n' "${RUNS_ROOT}" "$1"
+}
+
+evidence_dir() {
+  printf '%s/%s\n' "${EVIDENCE_ROOT}" "$1"
+}
+
+write_state() {
+  printf '%s\n' "$3" >"$1/$2"
+}
+
+read_state() {
+  local path="$1/$2"
+  local value
+  [[ -f "${path}" ]] || die "missing run state: ${path}"
+  IFS= read -r value <"${path}"
+  printf '%s\n' "${value}"
+}
+
+sha256_of() {
+  local sum
+  sum="$(shasum -a 256 "$1")"
+  printf '%s\n' "${sum%% *}"
+}
+
+# compiled once per source revision and shared by every run
+driver() {
+  local sum
+  local binary
+  sum="$(sha256_of "${DRIVER_SOURCE}")"
+  binary="${TOOLS_ROOT}/onda-driver-${sum:0:12}"
+  if [[ ! -x "${binary}" ]]; then
+    mkdir -p "${TOOLS_ROOT}"
+    swiftc -O -o "${binary}.tmp.$$" "${DRIVER_SOURCE}" >&2 \
+      || die "could not compile ${DRIVER_SOURCE}"
+    mv "${binary}.tmp.$$" "${binary}"
+  fi
+  "${binary}" "$@"
+}
+
+running_pids() {
+  pgrep -x Onda || true
+}
+
+assert_no_running_onda() {
+  local pids
+  pids="$(running_pids)"
+  if [[ -n "${pids}" ]]; then
+    ps -o pid=,command= -p "${pids//$'\n'/,}" >&2 || true
+    die "an Onda instance is already running (another agent's run or the" \
+      "user's app); wait for it to exit and retry. Never stop it."
+  fi
+}
+
+# whether PID runs EXECUTABLE (a resolved path, as ps reports it)
+is_run_process() {
+  local command
+  command="$(ps -p "$1" -o command=)" || return 1
+  [[ "${command}" == "$2" || "${command}" == "$2 "* ]]
+}
+
+# the recorded PID, after proving it is still this run's executable
+live_pid() {
+  local root
+  local pid
+  local executable
+  root="$(run_root "$1")"
+  pid="$(read_state "${root}" pid)"
+  executable="$(read_state "${root}" executable)"
+  kill -0 "${pid}" 2>/dev/null || die "recorded PID ${pid} is not running"
+  is_run_process "${pid}" "${executable}" \
+    || die "PID ${pid} is not this run's Onda: $(ps -p "${pid}" -o command=)"
+  printf '%s\n' "${pid}"
+}
+
+build_app() {
+  local log="$1"
+  printf 'building Onda.app and onda-cli (log: %s)\n' "${log}" >&2
+  # bundle-app.sh waits on the SwiftPM lock when another build is running
+  if ! "${PROJECT_ROOT}/scripts/bundle-app.sh" debug >"${log}" 2>&1; then
+    tail -n 30 "${log}" >&2
+    die "scripts/bundle-app.sh failed"
+  fi
+  if ! (cd "${PROJECT_ROOT}" && cargo build -q -p onda-cli) >>"${log}" 2>&1; then
+    tail -n 30 "${log}" >&2
+    die "cargo build -p onda-cli failed"
+  fi
+}
+
+clone_model() {
+  local data="$1"
+  local model="$2"
+  if [[ "${model}" == "system-speech" ]]; then
+    return
+  fi
+  [[ -d "${DEV_MODELS}/${model}" ]] \
+    || die "no dev model ${DEV_MODELS}/${model}; have: $(ls "${DEV_MODELS}")"
+  mkdir -p "${data}/Models"
+  cp -c -R "${DEV_MODELS}/${model}" "${data}/Models/"
+}
+
+# whether the shared Keychain holds an OpenRouter key (existence only; the
+# secret is never read)
+has_stored_api_key() {
+  security find-generic-password -s com.rselbach.onda -a openRouterApiKey \
+    >/dev/null 2>&1
+}
+
+launch() {
+  local run_id="$1"
+  shift
+  local fresh=false
+  local reuse=false
+  local models=()
+  local settings=()
+  while (($# > 0)); do
+    case "$1" in
+      --fresh) fresh=true ;;
+      --reuse) reuse=true ;;
+      --model)
+        [[ $# -ge 2 ]] || die "--model needs an ID"
+        models+=("$2")
+        shift
+        ;;
+      --setting)
+        [[ $# -ge 2 && "$2" == *=* ]] || die "--setting needs KEY=JSON"
+        settings+=("$2")
+        shift
+        ;;
+      *) die "unknown launch option: $1" ;;
+    esac
+    shift
+  done
+
+  if [[ " ${settings[*]} " == *" postProcessingEnabled=true "* ]] &&
+    has_stored_api_key; then
+    die "a real OpenRouter key is stored for com.rselbach.onda; enabling" \
+      "post-processing would send requests with it"
+  fi
+  local root
+  local evidence
+  root="$(run_root "${run_id}")"
+  evidence="$(evidence_dir "${run_id}")"
+  assert_no_running_onda
+  [[ ! -e "${root}" ]] || die "run already exists: ${root}"
+  [[ ! -e "${evidence}" ]] \
+    || die "evidence already exists; choose a new RUN_ID: ${evidence}"
+  mkdir -p "${root}" "${evidence}"
+  # ps reports /private/tmp, not /tmp
+  root="$(cd "${root}" && pwd -P)"
+
+  if [[ "${reuse}" == false ]]; then
+    build_app "${evidence}/build.log"
+  fi
+  [[ -d "${BUILT_APP}" && -x "${CLI}" ]] \
+    || die "missing ${BUILT_APP} or ${CLI}; launch without --reuse"
+
+  # a private copy, so another agent's rebuild cannot swap the binary under
+  # this run; the Developer ID signature, and with it TCC, travels along
+  local app="${root}/Onda.app"
+  local executable="${app}/Contents/MacOS/Onda"
+  local data="${root}/data"
+  ditto "${BUILT_APP}" "${app}"
+  codesign --verify --deep --strict "${app}" \
+    || die "the copied app does not verify; was build/Onda.app mid-rebuild?"
+  mkdir -p "${data}"
+
+  if [[ "${fresh}" == false ]]; then
+    "${CLI}" --data-dir "${data}" onboarding complete
+    if ((${#models[@]} == 0)); then
+      models=("${DEFAULT_MODEL}")
+    fi
+  fi
+  local model
+  for model in "${models[@]}"; do
+    clone_model "${data}" "${model}"
+  done
+  if ((${#models[@]} > 0)) && [[ " ${settings[*]} " != *" selectedModel="* ]]; then
+    "${CLI}" --data-dir "${data}" settings set selectedModel "\"${models[0]}\""
+  fi
+  local setting
+  for setting in "${settings[@]}"; do
+    "${CLI}" --data-dir "${data}" settings set "${setting%%=*}" \
+      "${setting#*=}"
+  done
+
+  write_state "${root}" app-path "${app}"
+  write_state "${root}" executable "${executable}"
+  write_state "${root}" data-dir "${data}"
+  write_state "${root}" executable-sha256 "$(sha256_of "${executable}")"
+  write_state "${root}" launched-at "$(date '+%Y-%m-%d %H:%M:%S')"
+
+  assert_no_running_onda
+  open -n --env "ONDA_DATA_DIR=${data}" "${app}"
+  local pid=""
+  local candidate
+  local attempt
+  for ((attempt = 0; attempt < 100 && ${#pid} == 0; attempt++)); do
+    sleep 0.1
+    for candidate in $(running_pids); do
+      if is_run_process "${candidate}" "${executable}"; then
+        pid="${candidate}"
+      fi
+    done
+  done
+  [[ -n "${pid}" ]] || die "Onda did not start; run: cleanup ${run_id}"
+  write_state "${root}" pid "${pid}"
+  if [[ "$(running_pids)" != "${pid}" ]]; then
+    die "another Onda started alongside this run; run: cleanup ${run_id}"
+  fi
+
+  printf 'run_id=%s\npid=%s\nexecutable=%s\ndata_dir=%s\nevidence_dir=%s\n' \
+    "${run_id}" "${pid}" "${executable}" "${data}" "${evidence}"
+}
+
+doctor() {
+  local run_id="$1"
+  local root
+  local pid
+  local executable
+  local current
+  local recorded
+  local others
+  root="$(run_root "${run_id}")"
+  pid="$(live_pid "${run_id}")"
+  executable="$(read_state "${root}" executable)"
+  recorded="$(read_state "${root}" executable-sha256)"
+  current="$(sha256_of "${executable}")"
+  [[ "${current}" == "${recorded}" ]] \
+    || die "the executable changed after launch"
+  others="$(running_pids | grep -vx "${pid}" || true)"
+  [[ -z "${others}" ]] || die "other Onda processes are running: ${others}"
+  codesign --verify --deep --strict "$(read_state "${root}" app-path)" \
+    || die "the run's app no longer verifies"
+
+  printf 'healthy pid=%s sha256=%s\n' "${pid}" "${current:0:12}"
+  if has_stored_api_key; then
+    printf 'warning: an OpenRouter key is stored; keep post-processing off\n'
+  fi
+  printf 'data_dir=%s\n' "$(read_state "${root}" data-dir)"
+  printf 'tray=%s\n' "$(tray_label "${pid}")"
+  if [[ -x "${BUILT_APP}/Contents/MacOS/Onda" &&
+        "$(sha256_of "${BUILT_APP}/Contents/MacOS/Onda")" != "${current}" ]]; then
+    printf 'note: build/Onda.app changed since launch; this run is stale\n'
+  fi
+}
+
+# the status item's accessibility label; empty-handed right after launch
+tray_label() {
+  driver tray "$1" 2>/dev/null || printf '(no status item yet)\n'
+}
+
+wait_ready() {
+  local run_id="$1"
+  local timeout=90
+  local pid
+  local label=""
+  local attempt
+  if [[ "${2-}" == "--timeout" ]]; then
+    timeout="${3:?--timeout needs SECONDS}"
+  fi
+  pid="$(live_pid "${run_id}")"
+  for ((attempt = 0; attempt < timeout; attempt++)); do
+    label="$(tray_label "${pid}")"
+    if [[ "${label}" == "${READY_LABEL}" ]]; then
+      printf '%s\n' "${label}"
+      return
+    fi
+    sleep 1
+  done
+  die "not ready after ${timeout}s; tray says: ${label}"
+}
+
+record() {
+  local evidence
+  local action="$3"
+  local result="$4"
+  evidence="$(evidence_dir "$1")"
+  [[ -d "${evidence}" ]] || die "missing evidence directory: ${evidence}"
+  action="${action//[$'\t\n']/ }"
+  result="${result//[$'\t\n']/ }"
+  printf '%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$2" \
+    "${action}" "${result}" >>"${evidence}/actions.tsv"
+}
+
+hotkey() {
+  local run_id="$1"
+  local gesture="${2-}"
+  live_pid "${run_id}" >/dev/null
+  case "${gesture}" in
+    hold) driver combo "${3:?hold needs SECONDS}" ;;
+    tap) driver combo 0.08 ;;
+    lone) driver lone "${3:?lone needs KEY}" "${4:?lone needs SECONDS}" ;;
+    escape)
+      if [[ "${3-}" == "--with-modifiers" ]]; then
+        driver escape --option
+      else
+        driver escape
+      fi
+      ;;
+    *) die "hotkey needs hold SECONDS, tap, lone KEY SECONDS, or escape" ;;
+  esac
+}
+
+speak() {
+  local run_id="$1"
+  local text="${2:?say needs TEXT}"
+  shift 2
+  local after=0
+  local flags=()
+  while (($# > 0)); do
+    case "$1" in
+      --voice) flags+=(-v "${2:?--voice needs a name}") ;;
+      --device) flags+=(-a "${2:?--device needs an id}") ;;
+      --after) after="${2:?--after needs SECONDS}" ;;
+      *) die "unknown say option: $1" ;;
+    esac
+    shift 2
+  done
+  sleep "${after}"
+  printf '%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${text}" \
+    >>"$(evidence_dir "${run_id}")/spoken.tsv"
+  say "${flags[@]}" -- "${text}"
+}
+
+# click the middle of the run's TextEdit document, so keyboard focus is
+# there even if a launcher or another app took it
+focus_textedit() {
+  local doc="$1"
+  local bounds
+  local left top right bottom
+  bounds="$(osascript -e "tell application \"TextEdit\"
+    activate
+    get bounds of (first window whose name is \"${doc}\")
+  end tell")" || die "TextEdit has no window named ${doc}"
+  IFS=', ' read -r left top right bottom <<<"${bounds}"
+  sleep 0.3
+  driver click $(((left + right) / 2)) $(((top + bottom) / 2))
+}
+
+textedit() {
+  local run_id="$1"
+  local action="${2-}"
+  local root
+  local doc
+  local text
+  root="$(run_root "${run_id}")"
+  [[ -d "${root}" ]] || die "run does not exist: ${root}"
+  case "${action}" in
+    new)
+      [[ ! -f "${root}/textedit-doc" ]] \
+        || die "this run already has a TextEdit document; close it first"
+      doc="$(osascript -e 'tell application "TextEdit"
+        set doc to make new document
+        activate
+        return name of doc
+      end tell')" || die "could not create a TextEdit document"
+      write_state "${root}" textedit-doc "${doc}"
+      sleep 1
+      focus_textedit "${doc}"
+      printf '%s\n' "${doc}"
+      ;;
+    focus) focus_textedit "$(read_state "${root}" textedit-doc)" ;;
+    read)
+      doc="$(read_state "${root}" textedit-doc)"
+      text="$(osascript -e "tell application \"TextEdit\" to get text of document \"${doc}\"")" \
+        || die "could not read TextEdit document ${doc}"
+      printf '%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${doc}" \
+        "${text//[$'\t\n']/ }" >>"$(evidence_dir "${run_id}")/textedit.tsv"
+      printf '%s\n' "${text}"
+      ;;
+    close)
+      doc="$(read_state "${root}" textedit-doc)"
+      osascript -e "tell application \"TextEdit\" to close document \"${doc}\" saving no" \
+        || die "could not close TextEdit document ${doc}"
+      rm -f "${root}/textedit-doc"
+      ;;
+    *) die "textedit needs new, focus, read, or close" ;;
+  esac
+}
+
+menu() {
+  local run_id="$1"
+  local pid
+  pid="$(live_pid "${run_id}")"
+  shift
+  case "${1-}" in
+    list | open | close) driver menu "${pid}" "$1" ;;
+    press) driver menu "${pid}" press "${2:?menu press needs TITLE}" ;;
+    *) die "menu needs list, open, close, or press TITLE" ;;
+  esac
+}
+
+# window id for a kind, from the driver's tab-separated window list:
+# id, layer, x, y, width, height, alpha, name
+find_window() {
+  local pid="$1"
+  local kind="$2"
+  local id layer width height alpha name
+  while IFS=$'\t' read -r id layer _ _ width height alpha name; do
+    case "${kind}" in
+      main)
+        if ((layer == 0 && width >= 500)) && [[ "${name}" != "Set Up Onda" ]]; then
+          printf '%s\n' "${id}"
+          return
+        fi
+        ;;
+      onboarding)
+        if ((layer == 0)) && [[ "${name}" == "Set Up Onda" ]]; then
+          printf '%s\n' "${id}"
+          return
+        fi
+        ;;
+      overlay)
+        # recording 400x104 or download 400x72, floating level
+        if ((layer == 3 && height <= 120)) && [[ "${alpha}" != "0.00" ]]; then
+          printf '%s\n' "${id}"
+          return
+        fi
+        ;;
+      menu)
+        if ((layer == 101)); then
+          printf '%s\n' "${id}"
+          return
+        fi
+        ;;
+    esac
+  done < <(driver windows "${pid}")
+  return 1
+}
+
+screenshot() {
+  local run_id="$1"
+  local name="${2:?screenshot needs NAME}"
+  local kind="main"
+  local out
+  local pid
+  local id=""
+  local attempt
+  if [[ "${3-}" == "--window" ]]; then
+    kind="${4:?--window needs a kind}"
+  fi
+  [[ "${name}" =~ ^[A-Za-z0-9._-]+$ ]] || die "NAME must be a plain file name"
+  out="$(evidence_dir "${run_id}")/${name}.png"
+  [[ ! -e "${out}" ]] || die "evidence already exists: ${out}"
+  pid="$(live_pid "${run_id}")"
+  case "${kind}" in
+    screen)
+      screencapture -x "${out}"
+      printf '%s\n' "${out}"
+      return
+      ;;
+    main | onboarding | overlay | menu) ;;
+    *) die "unknown window kind: ${kind}" ;;
+  esac
+  for ((attempt = 0; attempt < 30; attempt++)); do
+    id="$(find_window "${pid}" "${kind}" || true)"
+    [[ -n "${id}" ]] && break
+    sleep 0.1
+  done
+  if [[ -z "${id}" ]]; then
+    driver windows "${pid}" >&2
+    die "no on-screen ${kind} window for PID ${pid}"
+  fi
+  screencapture -x -o -l "${id}" "${out}"
+  printf '%s\n' "${out}"
+}
+
+show_log() {
+  local run_id="$1"
+  local since="5m"
+  local root
+  local pid
+  local out
+  if [[ "${2-}" == "--since" ]]; then
+    since="${3:?--since needs a duration such as 5m}"
+  fi
+  root="$(run_root "${run_id}")"
+  pid="$(read_state "${root}" pid)"
+  out="$(evidence_dir "${run_id}")/log-$(date +%H%M%S).txt"
+  # `log` is a zsh builtin; always call the binary
+  /usr/bin/log show --style compact --info --last "${since}" \
+    --predicate "subsystem == \"com.rselbach.onda\" AND processID == ${pid}" \
+    | tee "${out}"
+}
+
+json_field() {
+  plutil -extract "$2" raw -o - "$1" 2>/dev/null || printf '-'
+}
+
+history() {
+  local run_id="$1"
+  local data
+  local out
+  local metadata
+  data="$(read_state "$(run_root "${run_id}")" data-dir)"
+  out="$(evidence_dir "${run_id}")/history.tsv"
+  printf 'timestamp\tapp\tmodel\tduration\ttranscript\n' >"${out}"
+  if [[ -d "${data}/History" ]]; then
+    for metadata in "${data}"/History/*/metadata.json; do
+      [[ -f "${metadata}" ]] || continue
+      printf '%s\t%s\t%s\t%s\t%s\n' \
+        "$(json_field "${metadata}" timestamp)" \
+        "$(json_field "${metadata}" appName)" \
+        "$(json_field "${metadata}" modelID)" \
+        "$(json_field "${metadata}" duration)" \
+        "$(json_field "${metadata}" transcript)"
+    done | sort >>"${out}"
+  fi
+  cat "${out}"
+}
+
+cleanup() {
+  local run_id="$1"
+  local root
+  local pid
+  local executable
+  local attempt
+  root="$(run_root "${run_id}")"
+  case "${root}" in
+    "${RUNS_ROOT}"/?*) ;;
+    *) die "refusing unsafe cleanup path: ${root}" ;;
+  esac
+  [[ -d "${root}" ]] || die "run does not exist: ${root}"
+
+  if [[ -f "${root}/textedit-doc" ]]; then
+    (textedit "${run_id}" close) \
+      || printf 'verify-onda: could not close the TextEdit document\n' >&2
+  fi
+  # the recorded PID, or the run's own process when launch died before
+  # recording it; never anything else
+  executable="$(cd "${root}" && pwd -P)/Onda.app/Contents/MacOS/Onda"
+  for pid in $(running_pids); do
+    is_run_process "${pid}" "${executable}" || continue
+    kill -TERM "${pid}"
+    for ((attempt = 0; attempt < 50; attempt++)); do
+      kill -0 "${pid}" 2>/dev/null || break
+      sleep 0.1
+    done
+    if kill -0 "${pid}" 2>/dev/null; then
+      die "PID ${pid} did not stop after TERM; runtime kept at ${root}"
+    fi
+    printf 'stopped pid=%s\n' "${pid}"
+  done
+  rm -rf "${root}"
+  printf 'removed runtime=%s\n' "${root}"
+  printf 'kept evidence=%s\n' "$(evidence_dir "${run_id}")"
+}
+
+main() {
+  local command="${1-}"
+  local run_id="${2-}"
+  if [[ -z "${command}" || "${command}" == "help" || -z "${run_id}" ]]; then
+    usage
+    exit 1
+  fi
+  check_run_id "${run_id}"
+  shift 2
+  case "${command}" in
+    launch) launch "${run_id}" "$@" ;;
+    doctor) doctor "${run_id}" ;;
+    wait-ready) wait_ready "${run_id}" "$@" ;;
+    evidence-dir) evidence_dir "${run_id}" ;;
+    record)
+      (($# == 3)) || die "record needs RUN_ID FEATURE ACTION RESULT"
+      record "${run_id}" "$@"
+      ;;
+    hotkey) hotkey "${run_id}" "$@" ;;
+    say) speak "${run_id}" "$@" ;;
+    textedit) textedit "${run_id}" "$@" ;;
+    menu) menu "${run_id}" "$@" ;;
+    click)
+      live_pid "${run_id}" >/dev/null
+      driver click "${1:?click needs X}" "${2:?click needs Y}"
+      ;;
+    windows)
+      printf 'id\tlayer\tx\ty\twidth\theight\talpha\tname\n'
+      driver windows "$(live_pid "${run_id}")"
+      ;;
+    screenshot) screenshot "${run_id}" "$@" ;;
+    log) show_log "${run_id}" "$@" ;;
+    history) history "${run_id}" ;;
+    cleanup) cleanup "${run_id}" ;;
+    *)
+      usage
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"

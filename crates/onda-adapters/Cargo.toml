@@ -1,0 +1,28 @@
+[package]
+name = "onda-adapters"
+description = "Binds the session engine's seams to Onda's portable crates."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+jiff = "0.2.38"
+onda-app = { path = "../onda-app" }
+onda-asr = { path = "../onda-asr" }
+onda-audio = { path = "../onda-audio" }
+onda-cleanup = { path = "../onda-cleanup" }
+onda-domain = { path = "../onda-domain" }
+onda-history = { path = "../onda-history" }
+onda-models = { path = "../onda-models" }
+onda-settings = { path = "../onda-settings" }
+tokio = { version = "1.54.1", features = ["rt"] }
+tracing = "0.1.44"
+uuid = { version = "1.29.0", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[lints]
+workspace = true

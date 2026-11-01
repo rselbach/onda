@@ -1,238 +1,191 @@
 name: Release
 
+# Builds, signs, notarizes, and publishes a release for a v* tag
+# (prd/10 REL-3, REL-4, REL-6; prd/08 UPD-3).
+#
+# Repository secrets (names match the github-deployment-secrets helper):
+#   MACOS_CERTIFICATE_P12_BASE64  Developer ID Application certificate and
+#                                 private key, base64-encoded P12
+#   MACOS_CERTIFICATE_PASSWORD    password of that P12
+#   APPLE_ID                      Apple Account that notarizes
+#   APPLE_TEAM_ID                 Developer team ID
+#   APPLE_APP_SPECIFIC_PASSWORD   app-specific password of that account
+#   SPARKLE_EDDSA_PRIVATE_KEY     EdDSA key matching SUPublicEDKey in
+#                                 shell/macos/Info.plist; signs the update
+#   DEEPSEEK_API_TOKEN            release notes (rselbach/actions/pi-release-notes)
+#
+# GitHub Pages must use "GitHub Actions" as its source.
+
 on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch:
-    inputs:
-      version:
-        description: 'Version to release (e.g., 1.0.0)'
-        required: false
 
 permissions:
   contents: write
   pages: write
   id-token: write
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   build:
-    runs-on: macos-26
-    
+    runs-on: macos-27
     steps:
       - name: Checkout
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
-      - name: Show Xcode version
-        run: xcodebuild -version
-
-      - name: Ensure Metal Toolchain
+      - name: Install Rust
         run: |
-          if ! xcrun metal -v >/dev/null 2>&1; then
-            xcodebuild -downloadComponent MetalToolchain
-          fi
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Show toolchains
+        run: |
+          [[ "$(uname -m)" == "arm64" ]]
+          xcodebuild -version
+          rustc --version
 
       - name: Validate required secrets
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          SPARKLE_EDDSA_PRIVATE_KEY: ${{ secrets.SPARKLE_EDDSA_PRIVATE_KEY }}
+          DEEPSEEK_API_TOKEN: ${{ secrets.DEEPSEEK_API_TOKEN }}
         run: |
-          if [[ -z "${{ secrets.DEVELOPER_ID_CERTIFICATE_P12 }}" ]]; then
-            echo "Error: DEVELOPER_ID_CERTIFICATE_P12 secret is required."
-            exit 1
-          fi
-
-          if [[ -z "${{ secrets.DEVELOPER_ID_CERTIFICATE_PASSWORD }}" ]]; then
-            echo "Error: DEVELOPER_ID_CERTIFICATE_PASSWORD secret is required."
-            exit 1
-          fi
-
-          if [[ -z "${{ secrets.APPLE_ID }}" ]]; then
-            echo "Error: APPLE_ID secret is required."
-            exit 1
-          fi
-
-          if [[ -z "${{ secrets.APPLE_TEAM_ID }}" ]]; then
-            echo "Error: APPLE_TEAM_ID secret is required."
-            exit 1
-          fi
-
-          if [[ -z "${{ secrets.APPLE_APP_PASSWORD }}" ]]; then
-            echo "Error: APPLE_APP_PASSWORD secret is required."
-            exit 1
-          fi
-
-          if [[ -z "${{ secrets.SPARKLE_EDDSA_PRIVATE_KEY }}" ]]; then
-            echo "Error: SPARKLE_EDDSA_PRIVATE_KEY secret is required."
-            exit 1
-          fi
-
-          if [[ -z "${{ secrets.DEEPSEEK_API_TOKEN }}" ]]; then
-            echo "Error: DEEPSEEK_API_TOKEN secret is required."
-            exit 1
-          fi
+          missing=0
+          for name in MACOS_CERTIFICATE_P12_BASE64 MACOS_CERTIFICATE_PASSWORD \
+            APPLE_ID APPLE_TEAM_ID APPLE_APP_SPECIFIC_PASSWORD \
+            SPARKLE_EDDSA_PRIVATE_KEY DEEPSEEK_API_TOKEN; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::secret ${name} is not set"
+              missing=1
+            fi
+          done
+          exit "${missing}"
 
       - name: Set version
         id: version
         run: |
-          if [[ "${{ github.event_name }}" == "push" ]]; then
-            VERSION="${GITHUB_REF#refs/tags/v}"
-          elif [[ -n "${{ github.event.inputs.version }}" ]]; then
-            VERSION="${{ github.event.inputs.version }}"
-          else
-            VERSION="0.0.0-dev"
-          fi
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "version=${GITHUB_REF_NAME#v}" >>"${GITHUB_OUTPUT}"
 
       - name: Generate release notes
         id: release_notes
-        if: startsWith(github.ref, 'refs/tags/')
         uses: rselbach/actions/pi-release-notes@v1
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_TOKEN }}
           DEEPSEEK_API_TOKEN: ${{ secrets.DEEPSEEK_API_TOKEN }}
         with:
-          project-name: Jabber
-          project-description: macOS menu bar app for local, on-device speech-to-text transcription.
-          output-file: .build/release-notes.md
+          project-name: Onda
+          project-description: macOS menu bar app for local, on-device speech-to-text dictation.
+          output-file: build/release-notes.md
           additional-context: >-
             Keep notes user-facing and concise. Do not include installation
             instructions; the signed DMG is attached to the GitHub release and
-            Sparkle appcast is updated separately.
-
-      - name: Update version in Info.plist
-        run: |
-          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${{ steps.version.outputs.version }}" Info.plist
-          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${{ github.run_number }}" Info.plist
+            the Sparkle appcast is updated separately.
 
       - name: Import signing certificate
         env:
-          CERTIFICATE_P12: ${{ secrets.DEVELOPER_ID_CERTIFICATE_P12 }}
-          CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+          CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
         run: |
-          KEYCHAIN_PATH="${RUNNER_TEMP}/signing.keychain-db"
-          KEYCHAIN_PASSWORD="$(openssl rand -base64 32)"
-          
-          security create-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
-          security set-keychain-settings -lut 21600 "${KEYCHAIN_PATH}"
-          security unlock-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
-          
-          echo "${CERTIFICATE_P12}" | base64 --decode > "${RUNNER_TEMP}/certificate.p12"
+          keychain_path="${RUNNER_TEMP}/signing.keychain-db"
+          keychain_password="$(openssl rand -base64 32)"
+          security create-keychain -p "${keychain_password}" "${keychain_path}"
+          security set-keychain-settings -lut 21600 "${keychain_path}"
+          security unlock-keychain -p "${keychain_password}" "${keychain_path}"
+
+          base64 --decode <<<"${CERTIFICATE_P12}" >"${RUNNER_TEMP}/certificate.p12"
           security import "${RUNNER_TEMP}/certificate.p12" \
-            -P "${CERTIFICATE_PASSWORD}" \
-            -A \
-            -t cert \
-            -f pkcs12 \
-            -k "${KEYCHAIN_PATH}"
-          
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
-          security list-keychain -d user -s "${KEYCHAIN_PATH}" login.keychain-db
-          
+            -P "${CERTIFICATE_PASSWORD}" -A -t cert -f pkcs12 \
+            -k "${keychain_path}"
           rm "${RUNNER_TEMP}/certificate.p12"
 
-      - name: Build, sign, and notarize DMG
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "${keychain_password}" "${keychain_path}"
+          security list-keychains -d user -s "${keychain_path}" login.keychain-db
+
+      # bundle-app.sh signs with the imported Developer ID identity
+      - name: Build, sign, notarize, and staple DMG
         env:
+          VERSION: ${{ steps.version.outputs.version }}
+          BUILD: ${{ github.run_number }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-          SIGNING_IDENTITY: Developer ID Application
-        run: ./scripts/release.sh
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: scripts/release.sh
 
-      - name: Rename DMG with version
-        run: |
-          mv .build/dmg/Jabber.dmg ".build/dmg/Jabber-${{ steps.version.outputs.version }}.dmg"
-
-      - name: Download Sparkle tools
+      # sign_update comes from the Sparkle artifact SwiftPM resolved (and
+      # checksum-verified) for the build, so it matches the embedded framework
+      - name: Sign update and generate appcast.xml
         env:
-          # SHA-256 of Sparkle-2.8.1.tar.xz
-          # Get this from: curl -sL <url> | shasum -a 256
-          # Update when upgrading Sparkle version
-          SPARKLE_SHA256: "5cddb7695674ef7704268f38eccaee80e3accbf19e61c1689efff5b6116d85be"
-        run: |
-          curl -L -o /tmp/Sparkle.tar.xz "https://github.com/sparkle-project/Sparkle/releases/download/2.8.1/Sparkle-2.8.1.tar.xz"
-          
-          # Verify checksum
-          COMPUTED_SHA256=$(shasum -a 256 /tmp/Sparkle.tar.xz | cut -d' ' -f1)
-          if [[ "${COMPUTED_SHA256}" != "${SPARKLE_SHA256}" ]]; then
-            echo "Error: Sparkle download checksum mismatch!"
-            echo "Expected: ${SPARKLE_SHA256}"
-            echo "Got:      ${COMPUTED_SHA256}"
-            exit 1
-          fi
-          echo "Sparkle checksum verified: ${COMPUTED_SHA256}"
-          
-          mkdir -p /tmp/sparkle
-          tar -xf /tmp/Sparkle.tar.xz -C /tmp/sparkle
-
-      - name: Sign update for Sparkle
-        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          BUILD: ${{ github.run_number }}
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_EDDSA_PRIVATE_KEY }}
         run: |
-          SIGNATURE=$(/tmp/sparkle/bin/sign_update ".build/dmg/Jabber-${{ steps.version.outputs.version }}.dmg" --ed-key-file <(echo "$SPARKLE_PRIVATE_KEY"))
-
-          if [[ -z "$SIGNATURE" ]]; then
-            echo "Error: Failed to generate Sparkle signature"
+          dmg="build/Onda-${VERSION}.dmg"
+          sign_update="shell/macos/.build/artifacts/sparkle/Sparkle/bin/sign_update"
+          signature="$("${sign_update}" --ed-key-file - "${dmg}" <<<"${SPARKLE_PRIVATE_KEY}")"
+          if [[ ! "${signature}" =~ ^sparkle:edSignature=\".+\"\ length=\"[0-9]+\"$ ]]; then
+            echo "::error::unexpected sign_update output"
             exit 1
           fi
 
-          if [[ ! "$SIGNATURE" =~ sparkle:edSignature= ]]; then
-            echo "Error: Sparkle signature has invalid format: $SIGNATURE"
-            exit 1
-          fi
-
-          echo "SPARKLE_SIGNATURE=$SIGNATURE" >> $GITHUB_ENV
-
-      - name: Generate appcast.xml
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          DATE=$(date -R)
-          
+          minimum_os="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' \
+            shell/macos/Info.plist)"
+          url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/Onda-${VERSION}.dmg"
+          pub_date="$(LC_ALL=C date -u '+%a, %d %b %Y %H:%M:%S +0000')"
           mkdir -p _site
-          printf '%s\n' '<?xml version="1.0" encoding="utf-8"?>' > _site/appcast.xml
-          printf '%s\n' '<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/">' >> _site/appcast.xml
-          printf '%s\n' '  <channel>' >> _site/appcast.xml
-          printf '%s\n' '    <title>Jabber Updates</title>' >> _site/appcast.xml
-          printf '%s\n' '    <link>https://rselbach.github.io/jabber/appcast.xml</link>' >> _site/appcast.xml
-          printf '%s\n' '    <description>Jabber app updates</description>' >> _site/appcast.xml
-          printf '%s\n' '    <language>en</language>' >> _site/appcast.xml
-          printf '%s\n' '    <item>' >> _site/appcast.xml
-          printf '%s\n' "      <title>Version ${VERSION}</title>" >> _site/appcast.xml
-          printf '%s\n' "      <pubDate>${DATE}</pubDate>" >> _site/appcast.xml
-          printf '%s\n' "      <sparkle:version>${{ github.run_number }}</sparkle:version>" >> _site/appcast.xml
-          printf '%s\n' "      <sparkle:shortVersionString>${VERSION}</sparkle:shortVersionString>" >> _site/appcast.xml
-          printf '%s\n' "      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>" >> _site/appcast.xml
-          printf '%s\n' "      <enclosure url=\"https://github.com/rselbach/jabber/releases/download/v${VERSION}/Jabber-${VERSION}.dmg\" ${SPARKLE_SIGNATURE} type=\"application/octet-stream\"/>" >> _site/appcast.xml
-          printf '%s\n' '    </item>' >> _site/appcast.xml
-          printf '%s\n' '  </channel>' >> _site/appcast.xml
-          printf '%s\n' '</rss>' >> _site/appcast.xml
+          cat >_site/appcast.xml <<EOF
+          <?xml version="1.0" encoding="utf-8"?>
+          <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+            <channel>
+              <title>Onda Updates</title>
+              <link>https://rselbach.github.io/onda/appcast.xml</link>
+              <description>Onda app updates</description>
+              <language>en</language>
+              <item>
+                <title>Version ${VERSION}</title>
+                <pubDate>${pub_date}</pubDate>
+                <sparkle:version>${BUILD}</sparkle:version>
+                <sparkle:shortVersionString>${VERSION}</sparkle:shortVersionString>
+                <sparkle:minimumSystemVersion>${minimum_os}</sparkle:minimumSystemVersion>
+                <enclosure url="${url}" ${signature} type="application/octet-stream"/>
+              </item>
+            </channel>
+          </rss>
+          EOF
+          xmllint --noout _site/appcast.xml
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: _site
 
-      - name: Upload DMG artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: Jabber-${{ steps.version.outputs.version }}
-          path: .build/dmg/Jabber-${{ steps.version.outputs.version }}.dmg
-
-      - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: .build/dmg/Jabber-${{ steps.version.outputs.version }}.dmg
+          files: build/Onda-${{ steps.version.outputs.version }}.dmg
           body_path: ${{ steps.release_notes.outputs.body-path }}
 
-      - name: Cleanup keychain
+      - name: Delete temporary keychain
         if: always()
         run: |
-          if ! security delete-keychain "${RUNNER_TEMP}/signing.keychain-db"; then
-            echo "Warning: failed to delete temporary keychain ${RUNNER_TEMP}/signing.keychain-db" >&2
+          keychain_path="${RUNNER_TEMP}/signing.keychain-db"
+          if [[ -f "${keychain_path}" ]] && ! security delete-keychain "${keychain_path}"; then
+            echo "::warning::failed to delete ${keychain_path}"
           fi
 
+  # the appcast goes live only after the release (and its DMG) exists
   deploy-appcast:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     environment:
       name: github-pages
