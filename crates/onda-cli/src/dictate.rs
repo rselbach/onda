@@ -42,6 +42,7 @@ use onda_domain::hotkey::{GlobeKeyAction, ModifierSet, Shortcut};
 use onda_domain::messages::{LoginItemRegistryStatus, NotificationAuthorization};
 use onda_domain::models::{Catalog, ModelId};
 use onda_domain::overlay::{OverlayContent, OverlayView};
+use onda_domain::privacy_naming::PrivacyNaming;
 use onda_domain::types::{ActivationMode, MicrophonePermission};
 use onda_history::{HistoryHooks, HistoryStore};
 use onda_models::ModelManager;
@@ -158,6 +159,9 @@ pub fn run(args: &Args, paths: &DataPaths, models_dir: &Path) -> Result<()> {
         secrets: secrets(),
         settings: Arc::new(settings_source),
         tray_term: "menu bar icon".into(),
+        // the terminal always reports Accessibility as trusted, so no copy
+        // names the permission
+        privacy_naming: PrivacyNaming::Accessibility,
         app_version: env!("CARGO_PKG_VERSION").to_owned(),
     };
     let app = App::start_on(runtime.handle(), ports, console.clone());

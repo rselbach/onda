@@ -36,6 +36,7 @@ use onda_cleanup::CleanupClient;
 use onda_domain::hotkey::{HeldModifiers, KeyCode, ModifierFlagsChange, RecorderEvent, Shortcut};
 use onda_domain::messages;
 use onda_domain::models::{Catalog, ModelId};
+use onda_domain::privacy_naming::PrivacyNaming;
 use onda_history::HistoryStore;
 use onda_models::ModelManager;
 use onda_settings::{KeychainSecretStore, Settings};
@@ -168,8 +169,10 @@ impl OndaCore {
     /// the shell resolves it). `os_language` is the OS locale's language
     /// code (LANG-2); `app_version` is the bundle's short version (WIN-14,
     /// WIN-21); `tray_term` is what copy calls the tray icon on this
-    /// platform, "menu bar icon" on macOS (09 "Copy catalog"). Events flow
-    /// to `listener` until [`OndaCore::shutdown`].
+    /// platform, "menu bar icon" on macOS (09 "Copy catalog");
+    /// `privacy_naming` is what the running OS calls the Accessibility
+    /// permission (08 "Permissions"). Events flow to `listener` until
+    /// [`OndaCore::shutdown`].
     #[uniffi::constructor]
     pub fn start(
         ports: ShellPorts,
@@ -177,6 +180,7 @@ impl OndaCore {
         os_language: Option<String>,
         app_version: String,
         tray_term: String,
+        privacy_naming: PrivacyNaming,
         listener: Arc<dyn CoreListener>,
     ) -> Result<Arc<Self>, StartError> {
         logging::init();
@@ -280,6 +284,7 @@ impl OndaCore {
             secrets: Arc::new(Keychain::new(KeychainSecretStore::new())),
             settings: settings_source,
             tray_term: tray_term.clone(),
+            privacy_naming,
             app_version,
         };
         let sink = Arc::new(ListenerSink {

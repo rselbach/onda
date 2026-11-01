@@ -248,6 +248,7 @@ mod tests {
     use onda_asr::{ManifestFile, ModelManifest};
     use onda_domain::model_selection::load_failure_notification;
     use onda_domain::models::{ModelError, SystemSpeechInfo};
+    use onda_domain::privacy_naming::PrivacyNaming;
     use onda_models::VERIFIED_MARKER;
 
     use super::*;
@@ -445,7 +446,7 @@ mod tests {
         let error = got.expect_err("load must fail");
         let message = load_failure_notification(MODEL, &f.models.downloaded(), &error.to_string());
         assert_eq!(
-            message.body("menu bar icon"),
+            message.body("menu bar icon", PrivacyNaming::Accessibility),
             "Failed to load the transcription model Choose Retry Loading Model from the menu bar icon, or Re-download Model to replace its files."
         );
     }

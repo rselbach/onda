@@ -35,6 +35,7 @@ use onda_domain::cleanup::CleanupModel;
 use onda_domain::hotkey::HotkeyPreset;
 use onda_domain::languages::LanguageSetting;
 use onda_domain::migration::NoticeChoice;
+use onda_domain::privacy_naming::PrivacyNaming;
 use onda_domain::setup::{PermissionFix, SetupAction};
 use onda_domain::types::{ActivationMode, HistoryRetention, OutputMode};
 use ports::{
@@ -95,6 +96,9 @@ pub struct Ports {
     /// What copy calls the tray icon on this platform: "menu bar icon" on
     /// macOS, "tray icon" elsewhere (09 "Copy catalog").
     pub tray_term: Arc<str>,
+    /// What the OS calls the Accessibility permission, which copy names
+    /// the way the running OS does (08 "Permissions").
+    pub privacy_naming: PrivacyNaming,
     /// The app version the shell reports, e.g. "1.2.0" (WIN-14, WIN-21).
     pub app_version: String,
 }

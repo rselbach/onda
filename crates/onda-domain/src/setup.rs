@@ -2,6 +2,7 @@
 //! permission rows (WIN-8), the missing-permission rule (UI-8), and where
 //! setup guidance sends the user (DICT-5).
 
+use crate::privacy_naming::PrivacyNaming;
 use crate::types::{MicrophonePermission, OutputMode};
 
 /// A permission dictation needs that the OS does not grant (UI-8).
@@ -117,6 +118,8 @@ pub struct SetupChecklistInput {
     pub accessibility_granted: bool,
     /// Accessibility is required by the current settings.
     pub accessibility_required: bool,
+    /// What the OS calls the Accessibility permission.
+    pub privacy_naming: PrivacyNaming,
     /// The selected model's files are installed.
     pub selected_model_downloaded: bool,
     /// Any model download is running.
@@ -139,7 +142,11 @@ impl SetupChecklist {
         Self {
             steps: [
                 microphone_step(input.microphone),
-                accessibility_step(input.accessibility_granted, input.accessibility_required),
+                accessibility_step(
+                    input.accessibility_granted,
+                    input.accessibility_required,
+                    input.privacy_naming,
+                ),
                 model_step(input.selected_model_downloaded, input.any_download_running),
             ],
         }
@@ -185,7 +192,7 @@ fn microphone_step(microphone: MicrophonePermission) -> SetupStep {
     }
 }
 
-fn accessibility_step(granted: bool, required: bool) -> SetupStep {
+fn accessibility_step(granted: bool, required: bool, naming: PrivacyNaming) -> SetupStep {
     let (status, message, button) = match (required, granted) {
         (false, _) => (
             SetupStepStatus::Complete,
@@ -199,7 +206,7 @@ fn accessibility_step(granted: bool, required: bool) -> SetupStep {
         ),
         (true, false) => (
             SetupStepStatus::NeedsAction,
-            "Allow Accessibility so Onda can type into other apps.",
+            naming.allow_message(),
             Some(SetupButton {
                 title: "Open Settings",
                 action: SetupAction::OpenAccessibilitySettings,
@@ -208,7 +215,7 @@ fn accessibility_step(granted: bool, required: bool) -> SetupStep {
     };
     SetupStep {
         id: SetupStepId::Accessibility,
-        title: "Accessibility",
+        title: naming.name(),
         status,
         message,
         button,
@@ -339,8 +346,9 @@ pub fn microphone_row(microphone: MicrophonePermission) -> PermissionRow {
     }
 }
 
-/// The Accessibility row (WIN-8). `needed` comes from [`accessibility_needed`].
-pub fn accessibility_row(granted: bool, needed: bool) -> PermissionRow {
+/// The Accessibility row (WIN-8), titled with the OS's name for the
+/// permission. `needed` comes from [`accessibility_needed`].
+pub fn accessibility_row(granted: bool, needed: bool, naming: PrivacyNaming) -> PermissionRow {
     let (needs_attention, detail, fix) = match (granted, needed) {
         (true, _) => (
             false,
@@ -359,7 +367,7 @@ pub fn accessibility_row(granted: bool, needed: bool) -> PermissionRow {
         ),
     };
     PermissionRow {
-        title: "Accessibility",
+        title: naming.name(),
         granted,
         needs_attention,
         detail,
@@ -408,6 +416,7 @@ mod tests {
             microphone: Granted,
             accessibility_granted: true,
             accessibility_required: true,
+            privacy_naming: PrivacyNaming::Accessibility,
             selected_model_downloaded: true,
             any_download_running: false,
         }
@@ -842,12 +851,48 @@ mod tests {
             },
         ];
         for tc in cases {
-            let got = accessibility_row(tc.granted, tc.needed);
+            let got = accessibility_row(tc.granted, tc.needed, PrivacyNaming::Accessibility);
             assert_eq!(got.title, "Accessibility", "{}", tc.name);
             assert_eq!(got.granted, tc.granted, "{}", tc.name);
             assert_eq!(got.needs_attention, tc.want_attention, "{}", tc.name);
             assert_eq!(got.detail, tc.want_detail, "{}", tc.name);
             assert_eq!(got.fix, tc.want_fix, "{}", tc.name);
+        }
+    }
+
+    #[test]
+    fn accessibility_rows_follow_privacy_naming() {
+        struct Case {
+            name: &'static str,
+            naming: PrivacyNaming,
+            want_title: &'static str,
+            want_message: &'static str,
+        }
+        let cases = [
+            Case {
+                name: "accessibility",
+                naming: PrivacyNaming::Accessibility,
+                want_title: "Accessibility",
+                want_message: "Allow Accessibility so Onda can type into other apps.",
+            },
+            Case {
+                name: "device control and data access",
+                naming: PrivacyNaming::DeviceControlAndDataAccess,
+                want_title: "Device Control and Data Access",
+                want_message: "Allow Device Control and Data Access so Onda can type into other apps.",
+            },
+        ];
+        for tc in cases {
+            let checklist = SetupChecklist::resolve(SetupChecklistInput {
+                accessibility_granted: false,
+                privacy_naming: tc.naming,
+                ..input()
+            });
+            let step = checklist.steps[1];
+            assert_eq!(step.title, tc.want_title, "{}", tc.name);
+            assert_eq!(step.message, tc.want_message, "{}", tc.name);
+            let row = accessibility_row(false, true, tc.naming);
+            assert_eq!(row.title, tc.want_title, "{}", tc.name);
         }
     }
 

@@ -6,6 +6,7 @@ use std::time::SystemTime;
 use onda_domain::messages::{
     CaptionTone, LOGIN_ITEM_TOGGLE_LABEL, LoginItemError, LoginItemStatus, login_item_caption,
 };
+use onda_domain::privacy_naming::PrivacyNaming;
 use onda_domain::setup::{accessibility_row, microphone_row};
 use onda_domain::types::{MicrophonePermission, OutputMode};
 
@@ -42,6 +43,8 @@ pub struct GeneralInputs<'a> {
     pub accessibility_granted: bool,
     /// Accessibility is needed by the current settings (UI-8).
     pub accessibility_needed: bool,
+    /// What the OS calls the Accessibility permission.
+    pub privacy_naming: PrivacyNaming,
     /// Connected input devices.
     pub devices: &'a [InputDeviceInfo],
     /// `inputDeviceUID`; empty for the system default.
@@ -155,8 +158,12 @@ pub struct GeneralPage {
 pub fn general_page(inputs: GeneralInputs<'_>) -> GeneralPage {
     GeneralPage {
         microphone: microphone_row(inputs.microphone).into(),
-        accessibility: accessibility_row(inputs.accessibility_granted, inputs.accessibility_needed)
-            .into(),
+        accessibility: accessibility_row(
+            inputs.accessibility_granted,
+            inputs.accessibility_needed,
+            inputs.privacy_naming,
+        )
+        .into(),
         input: input_picker(inputs.devices, inputs.selected_uid),
         output: OutputModePicker {
             label: "After transcription".to_owned(),

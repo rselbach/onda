@@ -275,6 +275,7 @@ pub fn reload_after_download(
 mod tests {
     use super::*;
     use crate::models::tests::{with_system, without_system};
+    use crate::privacy_naming::PrivacyNaming;
     use ModelId::*;
 
     fn lang(code: &str) -> LanguageSetting {
@@ -707,8 +708,14 @@ mod tests {
                 &tc.on_disk,
                 "Failed to load the transcription model",
             );
-            assert_eq!(got.title(), "Couldn't Load Speech Model", "{}", tc.name);
-            assert_eq!(got.body(tc.tray_term), tc.want, "{}", tc.name);
+            let naming = PrivacyNaming::Accessibility;
+            assert_eq!(
+                got.title(naming),
+                "Couldn't Load Speech Model",
+                "{}",
+                tc.name
+            );
+            assert_eq!(got.body(tc.tray_term, naming), tc.want, "{}", tc.name);
         }
     }
 

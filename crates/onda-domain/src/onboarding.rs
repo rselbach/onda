@@ -8,6 +8,7 @@
 
 use std::time::Duration;
 
+use crate::privacy_naming::PrivacyNaming;
 use crate::setup::{PermissionFix, try_it_placeholder};
 use crate::tray::percent;
 use crate::types::{HistoryRetention, MicrophonePermission, OutputMode};
@@ -162,6 +163,8 @@ pub struct OnboardingEnv<'a> {
     pub hotkey_display: &'a str,
     /// The current hotkey is a lone modifier, which needs Accessibility.
     pub hotkey_needs_accessibility: bool,
+    /// What the OS calls the Accessibility permission.
+    pub privacy_naming: PrivacyNaming,
     /// The selected model, when it is in the catalog.
     pub selected_model: Option<SelectedModel<'a>>,
     /// The selected language's recommended model (ONB-5).
@@ -289,7 +292,7 @@ impl Onboarding {
                     return Some("Microphone access is required for dictation".to_owned());
                 }
                 (!env.accessibility_granted && !self.skipped_accessibility)
-                    .then(|| "Enable Accessibility or choose clipboard output".to_owned())
+                    .then(|| env.privacy_naming.onboarding_hint().to_owned())
             }
             OnboardingStep::Hotkey => {
                 (env.hotkey_needs_accessibility && !env.accessibility_granted).then(|| {
@@ -968,6 +971,7 @@ mod tests {
             accessibility_granted: true,
             hotkey_display: "⌥ Space",
             hotkey_needs_accessibility: false,
+            privacy_naming: PrivacyNaming::Accessibility,
             selected_model: Some(SelectedModel {
                 name: "Parakeet TDT v2",
                 status: DOWNLOADED,
@@ -1251,6 +1255,17 @@ mod tests {
                 },
                 skip_accessibility: false,
                 want_hint: Some("Enable Accessibility or choose clipboard output"),
+            },
+            Case {
+                name: "ONB-6 accessibility missing on macOS 27",
+                step: OnboardingStep::Permissions,
+                env: OnboardingEnv {
+                    accessibility_granted: false,
+                    privacy_naming: PrivacyNaming::DeviceControlAndDataAccess,
+                    ..env()
+                },
+                skip_accessibility: false,
+                want_hint: Some("Enable Device Control and Data Access or choose clipboard output"),
             },
             Case {
                 name: "ONB-6 clipboard instead resolves it",

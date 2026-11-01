@@ -403,6 +403,7 @@ impl Actor {
                 login_item: ports.login_item.clone(),
                 updater: ports.updater.clone(),
                 tray_term: ports.tray_term.clone(),
+                privacy_naming: ports.privacy_naming,
             },
             move |message| {
                 let _ = fallback.send(Msg::Fallback(message));
@@ -767,7 +768,7 @@ impl Actor {
         match result {
             Err(notice) => {
                 // DICT-6: resume media, report, stay idle
-                tracing::error!(error = %notice.body(&self.ports.tray_term), "capture failed to start");
+                tracing::error!(error = %notice.body(&self.ports.tray_term, self.ports.privacy_naming), "capture failed to start");
                 end_media(self);
                 self.notify(notice);
             }
@@ -1633,8 +1634,8 @@ impl Actor {
             MessageClass::Feedback => self.show_notice(&message),
             MessageClass::Background => self.effects.send(Effect::Notify(message)),
             MessageClass::Critical => self.events.emit(Event::ShowAlert {
-                title: message.title().to_owned(),
-                message: message.body(&self.ports.tray_term),
+                title: message.title(self.ports.privacy_naming).to_owned(),
+                message: message.body(&self.ports.tray_term, self.ports.privacy_naming),
                 button: ALERT_BUTTON,
             }),
         }
@@ -1645,8 +1646,8 @@ impl Actor {
         let now = mono(self.origin);
         self.overlay.show_notice(
             Notice {
-                title: message.title().to_owned(),
-                message: message.body(&self.ports.tray_term),
+                title: message.title(self.ports.privacy_naming).to_owned(),
+                message: message.body(&self.ports.tray_term, self.ports.privacy_naming),
             },
             now,
         );
@@ -1685,6 +1686,7 @@ impl Actor {
             microphone: self.permissions.microphone,
             accessibility_granted: self.permissions.accessibility,
             accessibility_required: self.accessibility_needed(),
+            privacy_naming: self.ports.privacy_naming,
             selected_model_downloaded: self.downloaded.contains(&self.settings.selected_model),
             any_download_running: self.downloads.any_running(),
         })
@@ -1766,7 +1768,12 @@ impl Actor {
         );
         let status = AppStatus::resolve(phase, &non_dictation);
         let missing = self.missing_permission();
-        let tray = tray_view(status, missing, self.settings.first_run_pending);
+        let tray = tray_view(
+            status,
+            missing,
+            self.settings.first_run_pending,
+            self.ports.privacy_naming,
+        );
         let menu = self.menu(status, missing, phase);
         let clock = match &self.phase {
             Phase::Recording(recording) => {
@@ -1844,6 +1851,7 @@ impl Actor {
             hotkey_display: &hotkey,
             first_run_pending: settings.first_run_pending,
             missing_permission: missing,
+            privacy_naming: self.ports.privacy_naming,
             phase,
             output_mode: settings.output_mode,
             last_transcript_preview: self.last_transcript.as_deref().map(menu_preview),

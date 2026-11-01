@@ -43,6 +43,7 @@ use onda_domain::models::{Catalog, ModelId};
 use onda_domain::non_dictation_ui::DownloadOverlayView;
 use onda_domain::onboarding::OnboardingFlags;
 use onda_domain::overlay::{OverlayContent, OverlayView};
+use onda_domain::privacy_naming::PrivacyNaming;
 use onda_domain::status_menu::StatusMenu;
 use onda_domain::tray::TrayView;
 use onda_domain::types::{ActivationMode, HistoryRetention, MicrophonePermission, OutputMode};
@@ -1055,6 +1056,26 @@ impl Harness {
         system_speech: Option<Arc<dyn SystemSpeech>>,
         adjust: impl FnOnce(&mut Settings),
     ) -> Self {
+        Self::build_named(system_speech, PrivacyNaming::Accessibility, adjust)
+    }
+
+    /// A ready core with adjusted settings, on an OS that calls the
+    /// Accessibility permission `naming`.
+    pub async fn with_privacy_naming(
+        naming: PrivacyNaming,
+        adjust: impl FnOnce(&mut Settings),
+    ) -> Self {
+        let harness = Self::build_named(None, naming, adjust);
+        harness.app.ui_ready();
+        sleep(1).await;
+        harness
+    }
+
+    fn build_named(
+        system_speech: Option<Arc<dyn SystemSpeech>>,
+        privacy_naming: PrivacyNaming,
+        adjust: impl FnOnce(&mut Settings),
+    ) -> Self {
         let mut settings = default_settings();
         adjust(&mut settings);
         let log = Arc::new(Log::default());
@@ -1147,6 +1168,7 @@ impl Harness {
             secrets: secrets.clone(),
             settings: settings.clone(),
             tray_term: "menu bar icon".into(),
+            privacy_naming,
             app_version: "1.2.3".to_owned(),
         };
         let app = App::start_on(&tokio::runtime::Handle::current(), ports, recorder.clone());

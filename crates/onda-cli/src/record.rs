@@ -15,6 +15,7 @@ use onda_audio::{
 };
 use onda_domain::history::encode_wav;
 use onda_domain::pre_roll::SAMPLE_RATE;
+use onda_domain::privacy_naming::PrivacyNaming;
 
 const TAIL: Duration = Duration::from_millis(200);
 
@@ -57,9 +58,13 @@ pub fn run(args: &Args) -> Result<()> {
     capture.prepare();
 
     for session in 1..=args.sessions {
-        let start = capture
-            .start()
-            .map_err(|error| anyhow!("{} ({})", error, error.notice().title()))?;
+        let start = capture.start().map_err(|error| {
+            anyhow!(
+                "{} ({})",
+                error,
+                error.notice().title(PrivacyNaming::Accessibility)
+            )
+        })?;
         let mut peak_level = 0.0_f32;
         let wanted = Duration::from_secs_f64(args.seconds);
         let interrupted = watch(&events, wanted, start.capture_id, &mut peak_level);
@@ -112,7 +117,10 @@ fn watch(
                 capture_id: id,
                 error,
             }) => {
-                println!("  interrupted: {error} ({})", error.notice().title());
+                println!(
+                    "  interrupted: {error} ({})",
+                    error.notice().title(PrivacyNaming::Accessibility)
+                );
                 if id == capture_id {
                     return true;
                 }

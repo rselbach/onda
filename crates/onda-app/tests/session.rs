@@ -18,6 +18,7 @@ use onda_domain::languages::LanguageSetting;
 use onda_domain::messages::{NotificationAuthorization, UserMessage};
 use onda_domain::models::ModelId;
 use onda_domain::overlay::OverlayContent;
+use onda_domain::privacy_naming::PrivacyNaming;
 use onda_domain::replacements::{ReplacementRule, RuleId};
 use onda_domain::tray::TrayIcon;
 use onda_domain::types::{ActivationMode, MicrophonePermission, OutputMode};
@@ -251,6 +252,46 @@ async fn hot_28_releasing_during_the_microphone_prompt_aborts_the_start() {
 
 // ---------------------------------------------------------------------------
 // start checks (DICT-1, DICT-2, DICT-5, DICT-6)
+
+#[tokio::test(start_paused = true)]
+async fn accessibility_copy_uses_the_os_naming() {
+    struct Case {
+        name: &'static str,
+        naming: PrivacyNaming,
+        want_notice: &'static str,
+        want_tray: &'static str,
+    }
+    let cases = [
+        Case {
+            name: "macOS 26",
+            naming: PrivacyNaming::Accessibility,
+            want_notice: "Accessibility Permission Required",
+            want_tray: "Onda, accessibility access needed",
+        },
+        Case {
+            name: "macOS 27",
+            naming: PrivacyNaming::DeviceControlAndDataAccess,
+            want_notice: "Device Control and Data Access Required",
+            want_tray: "Onda, device control and data access needed",
+        },
+    ];
+    for tc in cases {
+        let h = Harness::with_privacy_naming(tc.naming, |s| {
+            s.activation_mode = ActivationMode::Toggle;
+        })
+        .await;
+        h.permissions.accessibility.store(false, Ordering::SeqCst);
+        h.tap();
+        sleep(100).await;
+        assert!(
+            h.notices().contains(&tc.want_notice.to_owned()),
+            "{}: {:?}",
+            tc.name,
+            h.notices()
+        );
+        assert_eq!(h.tray().accessibility_label, tc.want_tray, "{}", tc.name);
+    }
+}
 
 #[tokio::test(start_paused = true)]
 async fn dict_1_start_checks_in_order() {

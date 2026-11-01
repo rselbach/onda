@@ -221,6 +221,11 @@ close it.
 | `MediaControlPort` (optional) | `nowPlaying()` → raw `NowPlaying` (`.failed(reason:)`, `.noTrack`, `.track(isPlaying:playbackRate:)`, each fact optional; the core decides what counts as playing), `pause`, `play`, `playPauseKey`; blocking, called one at a time; nil disables media pause (MEDIA-1, MEDIA-5) |
 | `SystemSpeechPort` (optional) | `details()` (catalog description, languages, license, attribution), `currentLocale()`, `prepare(locale:progress:)` (install assets, report download fractions to `SpeechProgress.report`), `transcribe(samples:locale:)` → final results; blocking, called one at a time from core threads, never the main thread; throws `SpeechError` (`UnsupportedLocale(displayName:)`, `Cancelled`, `Failed`); nil leaves System Speech out of the catalog (MOD-4, SYS-1..SYS-7) |
 
-`OndaCore.start(ports:dataDir:osLanguage:appVersion:trayTerm:listener:)`;
+`OndaCore.start(ports:dataDir:osLanguage:appVersion:trayTerm:privacyNaming:listener:)`;
 `trayTerm` is what copy calls the tray icon ("menu bar icon" on macOS, 09
-"Copy catalog").
+"Copy catalog"). `privacyNaming` is what the running OS calls the
+Accessibility permission: `.deviceControlAndDataAccess` when
+`ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27`, else
+`.accessibility`. The core uses it for every string that names the
+permission (setup and General rows, notices, the status menu header, the
+tray label, onboarding's hint); the PERM-3 deep link is the same on both.

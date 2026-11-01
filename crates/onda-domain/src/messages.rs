@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use crate::cleanup::CleanupNotice;
 use crate::hotkey::{REGISTRATION_FAILURE_TITLE, RegistrationFailureNotice};
+use crate::privacy_naming::PrivacyNaming;
 use crate::types::{MonoTime, OutputMode};
 use crate::{clock, download_progress, speech_gate};
 
@@ -225,14 +226,14 @@ pub enum UserMessage {
 }
 
 impl UserMessage {
-    /// Title.
-    pub fn title(&self) -> &'static str {
+    /// Title. `naming` is the OS's name for the Accessibility permission.
+    pub fn title(&self, naming: PrivacyNaming) -> &'static str {
         match self {
             Self::ModelNotReady => "Model Not Ready",
             Self::ModelNotDownloaded => "Model Not Downloaded",
             Self::StillTranscribing => "Still Transcribing",
             Self::MicrophonePermissionRequired => "Microphone Permission Required",
-            Self::AccessibilityPermissionRequired => "Accessibility Permission Required",
+            Self::AccessibilityPermissionRequired => naming.required_title(),
             Self::NoSpeechDetected => speech_gate::NO_SPEECH_TITLE,
             Self::MicrophoneUnavailable { .. } => "Microphone Unavailable",
             Self::AudioProcessingError { .. } => "Audio Processing Error",
@@ -250,8 +251,9 @@ impl UserMessage {
         }
     }
 
-    /// Message body. `tray_term` names the tray icon on this platform.
-    pub fn body(&self, tray_term: &str) -> String {
+    /// Message body. `tray_term` names the tray icon on this platform;
+    /// `naming` is the OS's name for the Accessibility permission.
+    pub fn body(&self, tray_term: &str, naming: PrivacyNaming) -> String {
         match self {
             Self::ModelNotReady => {
                 "Onda is still preparing the speech model. Try again in a moment.".to_owned()
@@ -263,11 +265,11 @@ impl UserMessage {
             Self::MicrophonePermissionRequired => {
                 "Onda needs microphone access to record speech.".to_owned()
             }
-            Self::AccessibilityPermissionRequired => "Grant accessibility permission before dictating into the active app, or switch output to Copy to clipboard in Settings.".to_owned(),
+            Self::AccessibilityPermissionRequired => naming.required_body().to_owned(),
             Self::NoSpeechDetected => speech_gate::NO_SPEECH_MESSAGE.to_owned(),
             Self::MicrophoneUnavailable { error } => error.clone(),
             Self::AudioProcessingError { error } => format!("Failed to process audio: {error}"),
-            Self::TranscriptCopiedToClipboard => "Grant Accessibility permission in Privacy & Security to enable direct typing into apps.".to_owned(),
+            Self::TranscriptCopiedToClipboard => naming.copied_to_clipboard_body().to_owned(),
             Self::PasteFailed => "Could not simulate paste command. Text is in clipboard.".to_owned(),
             Self::ClipboardRestoreFailed => {
                 "Could not restore your previous clipboard contents. They may have been lost."
@@ -921,6 +923,7 @@ mod tests {
                 message: UserMessage::HotkeyRegistrationFailed(RegistrationFailureNotice::new(
                     &Shortcut::default(),
                     -9878,
+                    PrivacyNaming::Accessibility,
                 )),
                 term: "menu bar icon",
                 want_title: "Hotkey Registration Failed",
@@ -932,6 +935,7 @@ mod tests {
                 message: UserMessage::HotkeyRegistrationFailed(RegistrationFailureNotice::new(
                     &Shortcut::lone(ModifierKey::AltRight),
                     -1,
+                    PrivacyNaming::Accessibility,
                 )),
                 term: "menu bar icon",
                 want_title: "Hotkey Registration Failed",
@@ -950,9 +954,72 @@ mod tests {
             },
         ];
         for tc in cases {
-            assert_eq!(tc.message.title(), tc.want_title, "{}", tc.name);
-            assert_eq!(tc.message.body(tc.term), tc.want_body, "{}", tc.name);
+            let naming = PrivacyNaming::Accessibility;
+            assert_eq!(tc.message.title(naming), tc.want_title, "{}", tc.name);
+            assert_eq!(
+                tc.message.body(tc.term, naming),
+                tc.want_body,
+                "{}",
+                tc.name
+            );
             assert_eq!(tc.message.class(), tc.want_class, "{}", tc.name);
+        }
+    }
+
+    #[test]
+    fn accessibility_copy_follows_privacy_naming() {
+        struct Case {
+            name: &'static str,
+            message: UserMessage,
+            naming: PrivacyNaming,
+            want_title: &'static str,
+            want_body: &'static str,
+        }
+        let cases = [
+            Case {
+                name: "permission required",
+                message: UserMessage::AccessibilityPermissionRequired,
+                naming: PrivacyNaming::Accessibility,
+                want_title: "Accessibility Permission Required",
+                want_body: "Grant accessibility permission before dictating into the active app, or switch output to Copy to clipboard in Settings.",
+            },
+            Case {
+                name: "permission required on macOS 27",
+                message: UserMessage::AccessibilityPermissionRequired,
+                naming: PrivacyNaming::DeviceControlAndDataAccess,
+                want_title: "Device Control and Data Access Required",
+                want_body: "Grant Device Control and Data Access before dictating into the active app, or switch output to Copy to clipboard in Settings.",
+            },
+            Case {
+                name: "OUT-1 copied",
+                message: UserMessage::TranscriptCopiedToClipboard,
+                naming: PrivacyNaming::Accessibility,
+                want_title: "Transcript Copied to Clipboard",
+                want_body: "Grant Accessibility permission in Privacy & Security to enable direct typing into apps.",
+            },
+            Case {
+                name: "OUT-1 copied on macOS 27",
+                message: UserMessage::TranscriptCopiedToClipboard,
+                naming: PrivacyNaming::DeviceControlAndDataAccess,
+                want_title: "Transcript Copied to Clipboard",
+                want_body: "Grant Device Control and Data Access in Privacy & Security to enable direct typing into apps.",
+            },
+            Case {
+                name: "HOT-19 lone modifier on macOS 27",
+                message: UserMessage::HotkeyRegistrationFailed(RegistrationFailureNotice::new(
+                    &Shortcut::lone(ModifierKey::AltRight),
+                    -1,
+                    PrivacyNaming::DeviceControlAndDataAccess,
+                )),
+                naming: PrivacyNaming::DeviceControlAndDataAccess,
+                want_title: "Hotkey Registration Failed",
+                want_body: "Could not register Right Option as a global hotkey. Lone modifier keys require Device Control and Data Access in System Settings. OSStatus: -1",
+            },
+        ];
+        for tc in cases {
+            assert_eq!(tc.message.title(tc.naming), tc.want_title, "{}", tc.name);
+            let got = tc.message.body("menu bar icon", tc.naming);
+            assert_eq!(got, tc.want_body, "{}", tc.name);
         }
     }
 

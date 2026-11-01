@@ -13,6 +13,7 @@ use onda_app::ports::{
 };
 use onda_domain::hotkey::{GlobeKeyAction, ModifierSet, Shortcut};
 use onda_domain::messages::{LoginItemRegistryStatus, NotificationAuthorization};
+use onda_domain::privacy_naming::PrivacyNaming;
 use onda_domain::types::MicrophonePermission;
 use onda_history::HistoryHooks;
 
@@ -162,6 +163,16 @@ pub enum PrivacyPane {
     Microphone,
     /// Accessibility.
     Accessibility,
+}
+
+/// What the OS calls the Accessibility permission; the shell reports it at
+/// start (08 "Permissions").
+#[uniffi::remote(Enum)]
+pub enum PrivacyNaming {
+    /// "Accessibility" (macOS 26).
+    Accessibility,
+    /// "Device Control and Data Access" (macOS 27 and later).
+    DeviceControlAndDataAccess,
 }
 
 /// The login-item registry's raw status (macOS `SMAppService.Status`).

@@ -3,6 +3,7 @@
 
 use jiff::Timestamp;
 
+use crate::privacy_naming::PrivacyNaming;
 use crate::setup::MissingPermission;
 use crate::tray::{AppStatus, percent};
 use crate::types::{ModelState, OutputMode, SessionPhase};
@@ -46,6 +47,8 @@ pub struct StatusMenuInput<'a> {
     pub first_run_pending: bool,
     /// Permission to warn about (UI-8).
     pub missing_permission: Option<MissingPermission>,
+    /// What the OS calls the Accessibility permission.
+    pub privacy_naming: PrivacyNaming,
     /// Dictation session phase.
     pub phase: SessionPhase,
     /// Current output mode.
@@ -208,6 +211,7 @@ impl StatusMenu {
                 input.hotkey_display,
                 input.first_run_pending,
                 input.missing_permission,
+                input.privacy_naming,
             ),
             fix_permissions: input
                 .missing_permission
@@ -256,6 +260,7 @@ fn header(
     hotkey_display: &str,
     first_run_pending: bool,
     missing_permission: Option<MissingPermission>,
+    naming: PrivacyNaming,
 ) -> String {
     match status {
         AppStatus::Preparing { progress: None } => "Preparing Speech Model…".to_owned(),
@@ -264,7 +269,7 @@ fn header(
         } => format!("Preparing Speech Model… {}%", percent(progress)),
         AppStatus::Ready => match missing_permission {
             Some(MissingPermission::Microphone) => "Microphone Access Needed".to_owned(),
-            Some(MissingPermission::Accessibility) => "Accessibility Access Needed".to_owned(),
+            Some(MissingPermission::Accessibility) => naming.needed_header().to_owned(),
             None => format!("Ready to Dictate — {hotkey_display}"),
         },
         AppStatus::Recording => "Recording…".to_owned(),
@@ -303,6 +308,7 @@ mod tests {
             hotkey_display: "⌥ Space",
             first_run_pending: false,
             missing_permission: None,
+            privacy_naming: PrivacyNaming::Accessibility,
             phase: SessionPhase::Idle,
             output_mode: OutputMode::Type,
             last_transcript_preview: None,
@@ -442,6 +448,25 @@ mod tests {
             if let Some(item) = got.fix_permissions {
                 assert_eq!(item.title, "Fix Permissions…", "{}", tc.name);
             }
+        }
+    }
+
+    #[test]
+    fn accessibility_header_follows_privacy_naming() {
+        let cases = [
+            (PrivacyNaming::Accessibility, "Accessibility Access Needed"),
+            (
+                PrivacyNaming::DeviceControlAndDataAccess,
+                "Device Control and Data Access Needed",
+            ),
+        ];
+        for (naming, want) in cases {
+            let got = StatusMenu::resolve(StatusMenuInput {
+                missing_permission: Some(MissingPermission::Accessibility),
+                privacy_naming: naming,
+                ..input(&READY)
+            });
+            assert_eq!(got.header, want, "{naming:?}");
         }
     }
 

@@ -267,7 +267,12 @@ impl Actor {
     // episode; a lone-modifier episode notifies on its first failure only
     fn deliver_hotkey_failure(&mut self, status: i32, trusted: bool) {
         let hotkey = self.settings.hotkey.clone();
-        if let Some(notice) = self.hotkeys.retry.record_failure(&hotkey, status, trusted) {
+        let naming = self.ports.privacy_naming;
+        if let Some(notice) = self
+            .hotkeys
+            .retry
+            .record_failure(&hotkey, status, trusted, naming)
+        {
             self.notify(UserMessage::HotkeyRegistrationFailed(notice));
         }
         self.update_trust_polling();

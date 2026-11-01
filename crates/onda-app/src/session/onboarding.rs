@@ -11,6 +11,7 @@ use onda_domain::onboarding::{
     ModelChoice, ModelStatus, Onboarding, OnboardingDownloadUpdate, OnboardingEffect,
     OnboardingEnv, OnboardingOrigin, OnboardingStep, POLL_INTERVAL, SelectedModel,
 };
+use onda_domain::privacy_naming::PrivacyNaming;
 use onda_domain::routing::{recommended_model, routes};
 use onda_domain::types::MicrophonePermission;
 use tokio::sync::mpsc;
@@ -36,6 +37,7 @@ struct EnvParts {
     accessibility: bool,
     hotkey_display: String,
     hotkey_needs_accessibility: bool,
+    privacy_naming: PrivacyNaming,
     selected: Option<(String, ModelStatus)>,
     recommended: ModelStatus,
 }
@@ -47,6 +49,7 @@ impl EnvParts {
             accessibility_granted: self.accessibility,
             hotkey_display: &self.hotkey_display,
             hotkey_needs_accessibility: self.hotkey_needs_accessibility,
+            privacy_naming: self.privacy_naming,
             selected_model: self.selected.as_ref().map(|(name, status)| SelectedModel {
                 name,
                 status: *status,
@@ -144,6 +147,7 @@ impl Actor {
             accessibility: self.permissions.accessibility,
             hotkey_display: self.settings.hotkey.display(),
             hotkey_needs_accessibility: self.settings.hotkey.needs_accessibility(),
+            privacy_naming: self.ports.privacy_naming,
             selected: self
                 .catalog
                 .model(selected)

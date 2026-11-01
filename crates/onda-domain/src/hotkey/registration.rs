@@ -5,6 +5,7 @@
 use std::time::Duration;
 
 use super::shortcut::{ModifierSet, Shortcut};
+use crate::privacy_naming::PrivacyNaming;
 use crate::types::MonoTime;
 
 /// Most re-enables tolerated within [`REENABLE_WINDOW`] (HOT-17).
@@ -84,11 +85,13 @@ pub struct RegistrationFailureNotice {
 
 impl RegistrationFailureNotice {
     /// The notice for `shortcut` failing with OS status `status` (HOT-19).
-    pub fn new(shortcut: &Shortcut, status: i32) -> Self {
+    /// `naming` is the OS's name for the Accessibility permission.
+    pub fn new(shortcut: &Shortcut, status: i32, naming: PrivacyNaming) -> Self {
         let display = shortcut.display();
         let message = if shortcut.is_lone_modifier() {
             format!(
-                "Could not register {display} as a global hotkey. Lone modifier keys require Accessibility permission in System Settings. OSStatus: {status}"
+                "Could not register {display} as a global hotkey. {} OSStatus: {status}",
+                naming.lone_modifier_requirement()
             )
         } else {
             format!(
@@ -130,15 +133,17 @@ impl RegistrationRetry {
     /// Records that registering `shortcut` failed with `status` while
     /// Accessibility trust was `trusted`. Returns the notice to post, if
     /// any: always for a combo (which also ends any lone-modifier episode),
-    /// and only for the first failure of a lone-modifier episode.
+    /// and only for the first failure of a lone-modifier episode. `naming`
+    /// is the OS's name for the Accessibility permission.
     pub fn record_failure(
         &mut self,
         shortcut: &Shortcut,
         status: i32,
         trusted: bool,
+        naming: PrivacyNaming,
     ) -> Option<RegistrationFailureNotice> {
         let notify = self.record(shortcut.is_lone_modifier(), trusted);
-        notify.then(|| RegistrationFailureNotice::new(shortcut, status))
+        notify.then(|| RegistrationFailureNotice::new(shortcut, status, naming))
     }
 
     /// Records a trust check. Returns true when the caller should register
@@ -576,7 +581,16 @@ mod tests {
                         trusted,
                     } => {
                         let shortcut = if is_lone { &lone } else { &combo };
-                        got.push(retry.record_failure(shortcut, -9874, trusted).is_some());
+                        got.push(
+                            retry
+                                .record_failure(
+                                    shortcut,
+                                    -9874,
+                                    trusted,
+                                    PrivacyNaming::Accessibility,
+                                )
+                                .is_some(),
+                        );
                     }
                     Trust(trusted) => got.push(retry.record_trust(trusted)),
                     Reset => {
@@ -597,23 +611,40 @@ mod tests {
                 "combo",
                 Shortcut::default(),
                 -9878,
+                PrivacyNaming::Accessibility,
                 "Could not register the global hotkey (⌥ Space). It may be in use by another application. OSStatus: -9878",
             ),
             (
                 "lone modifier",
                 Shortcut::lone(ModifierKey::AltRight),
                 -9874,
+                PrivacyNaming::Accessibility,
                 "Could not register Right Option as a global hotkey. Lone modifier keys require Accessibility permission in System Settings. OSStatus: -9874",
             ),
             (
                 "fn",
                 Shortcut::lone(ModifierKey::Fn),
                 0,
+                PrivacyNaming::Accessibility,
                 "Could not register Fn as a global hotkey. Lone modifier keys require Accessibility permission in System Settings. OSStatus: 0",
             ),
+            (
+                "combo on macOS 27",
+                Shortcut::default(),
+                -9878,
+                PrivacyNaming::DeviceControlAndDataAccess,
+                "Could not register the global hotkey (⌥ Space). It may be in use by another application. OSStatus: -9878",
+            ),
+            (
+                "lone modifier on macOS 27",
+                Shortcut::lone(ModifierKey::AltRight),
+                -9874,
+                PrivacyNaming::DeviceControlAndDataAccess,
+                "Could not register Right Option as a global hotkey. Lone modifier keys require Device Control and Data Access in System Settings. OSStatus: -9874",
+            ),
         ];
-        for (name, shortcut, status, want) in cases {
-            let got = RegistrationFailureNotice::new(&shortcut, status);
+        for (name, shortcut, status, naming, want) in cases {
+            let got = RegistrationFailureNotice::new(&shortcut, status, naming);
             assert_eq!(got.title, "Hotkey Registration Failed", "{name}");
             assert_eq!(got.message, want, "{name}");
         }

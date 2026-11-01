@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use onda_domain::hotkey::{ModifierSet, Shortcut};
 use onda_domain::messages::{Channel, MessageClass, UserMessage, route};
+use onda_domain::privacy_naming::PrivacyNaming;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::spawn_blocking;
 
@@ -66,6 +67,7 @@ pub(crate) struct EffectPorts {
     pub(crate) login_item: Arc<dyn LoginItem>,
     pub(crate) updater: Arc<dyn Updater>,
     pub(crate) tray_term: Arc<str>,
+    pub(crate) privacy_naming: PrivacyNaming,
 }
 
 /// Handle to the effects task.
@@ -149,9 +151,10 @@ fn run(ports: &EffectPorts, effect: Effect, fallback: &(dyn Fn(UserMessage) + Se
             let authorization = ports.notifier.authorization();
             match route(MessageClass::Background, authorization) {
                 Channel::Notification => {
-                    let body = message.body(&ports.tray_term);
-                    if let Err(error) = ports.notifier.post(message.title(), &body) {
-                        tracing::warn!(%error, title = message.title(), "notification failed");
+                    let title = message.title(ports.privacy_naming);
+                    let body = message.body(&ports.tray_term, ports.privacy_naming);
+                    if let Err(error) = ports.notifier.post(title, &body) {
+                        tracing::warn!(%error, title, "notification failed");
                         fallback(message);
                     }
                 }

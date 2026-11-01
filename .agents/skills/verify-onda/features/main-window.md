@@ -13,8 +13,11 @@ own files.
 - `win-presence`: Onda becomes a regular app (Dock icon, app menu) while the
   window is open and returns to accessory when it closes (UI-2).
 - `win-getting-started`: setup checklist (`Onda is ready`, Microphone,
-  Accessibility, Speech Model), "Run Setup Again", Try It box.
-- `win-general`: Permissions, Microphone input picker, Output, Media,
+  Accessibility, Speech Model), "Run Setup Again", Try It box. On macOS 27
+  the Accessibility row reads "Device Control and Data Access", the name
+  System Settings shows there (08 "Permissions").
+- `win-general`: Permissions (Microphone, and Accessibility or, on macOS 27,
+  "Device Control and Data Access"), Microphone input picker, Output, Media,
   Feedback (sounds), Startup (Launch at Login), Updates sections.
 - `win-hotkey`: Shortcut keycaps, recorder, "Reset to ⌥ Space", Activation
   picker with description.

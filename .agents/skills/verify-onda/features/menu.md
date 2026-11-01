@@ -6,8 +6,13 @@ it opens. prd/07 "Tray icon" and "Status menu"; shell/macos/FFI.md.
 ## Sub-features
 
 - `menu-header`: disabled header per state, e.g. `Ready to Dictate — ⌥ Space`,
-  `Recording…`, `Finish Setup to Dictate` (UI-7).
-- `menu-tray-label`: icon accessibility label, e.g. `Onda, ready to dictate`.
+  `Recording…`, `Finish Setup to Dictate` (UI-7). With typing access
+  missing it is `Accessibility Access Needed` on macOS 26 and
+  `Device Control and Data Access Needed` on macOS 27.
+- `menu-tray-label`: icon accessibility label, e.g. `Onda, ready to dictate`
+  (`Onda, accessibility access needed` on macOS 26 and
+  `Onda, device control and data access needed` on macOS 27 when typing
+  access is missing).
 - `menu-dictation`: Start / Stop / Cancel Dictation (UI-9).
 - `menu-last-transcript`: Paste Last Transcript with preview subtitle.
 - `menu-recent`: Recent Transcripts submenu with "Show All…" (history on).

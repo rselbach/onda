@@ -87,6 +87,7 @@ impl AudioError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use onda_domain::privacy_naming::PrivacyNaming;
 
     #[test]
     fn messages_and_notices_match_the_audio_errors_table() {
@@ -145,7 +146,7 @@ mod tests {
         for tc in cases {
             assert_eq!(tc.error.to_string(), tc.want_message);
             assert_eq!(
-                tc.error.notice().title(),
+                tc.error.notice().title(PrivacyNaming::Accessibility),
                 tc.want_title,
                 "{}",
                 tc.want_message
@@ -157,7 +158,7 @@ mod tests {
     fn processing_notice_body_wraps_the_message() {
         let notice = AudioError::ConverterUnavailable.notice();
         assert_eq!(
-            notice.body("menu bar icon"),
+            notice.body("menu bar icon", PrivacyNaming::Accessibility),
             "Failed to process audio: Audio converter could not be created"
         );
     }

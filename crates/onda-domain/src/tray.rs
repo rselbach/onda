@@ -1,6 +1,7 @@
 //! Tray icon view model (07 "Tray icon", UI-5, SET-4).
 
 use crate::non_dictation_ui::NonDictationState;
+use crate::privacy_naming::PrivacyNaming;
 use crate::setup::MissingPermission;
 use crate::types::SessionPhase;
 
@@ -97,11 +98,13 @@ pub struct TrayView {
 /// Builds the tray view model.
 ///
 /// A missing permission only matters while ready; first-run pending
-/// (SET-4) only changes the unavailable label.
+/// (SET-4) only changes the unavailable label. `naming` is the OS's name
+/// for the Accessibility permission.
 pub fn tray_view(
     status: AppStatus,
     missing_permission: Option<MissingPermission>,
     first_run_pending: bool,
+    naming: PrivacyNaming,
 ) -> TrayView {
     let (icon, label) = match status {
         AppStatus::Ready => match missing_permission {
@@ -110,10 +113,9 @@ pub fn tray_view(
                 TrayIcon::Warning,
                 "Onda, microphone access needed".to_owned(),
             ),
-            Some(MissingPermission::Accessibility) => (
-                TrayIcon::Warning,
-                "Onda, accessibility access needed".to_owned(),
-            ),
+            Some(MissingPermission::Accessibility) => {
+                (TrayIcon::Warning, naming.needed_label().to_owned())
+            }
         },
         AppStatus::Recording => (TrayIcon::Recording, "Onda, recording".to_owned()),
         AppStatus::Transcribing => (TrayIcon::Transcribing, "Onda, transcribing".to_owned()),
@@ -265,10 +267,39 @@ mod tests {
             },
         ];
         for tc in cases {
-            let got = tray_view(tc.status, tc.missing, tc.pending);
+            let got = tray_view(
+                tc.status,
+                tc.missing,
+                tc.pending,
+                PrivacyNaming::Accessibility,
+            );
             assert_eq!(got.icon, tc.want_icon, "{}", tc.name);
             assert_eq!(got.red_tint, tc.want_red, "{}", tc.name);
             assert_eq!(got.accessibility_label, tc.want_label, "{}", tc.name);
+        }
+    }
+
+    #[test]
+    fn accessibility_label_follows_privacy_naming() {
+        let cases = [
+            (
+                PrivacyNaming::Accessibility,
+                "Onda, accessibility access needed",
+            ),
+            (
+                PrivacyNaming::DeviceControlAndDataAccess,
+                "Onda, device control and data access needed",
+            ),
+        ];
+        for (naming, want) in cases {
+            let got = tray_view(
+                AppStatus::Ready,
+                Some(MissingPermission::Accessibility),
+                false,
+                naming,
+            );
+            assert_eq!(got.icon, TrayIcon::Warning, "{naming:?}");
+            assert_eq!(got.accessibility_label, want, "{naming:?}");
         }
     }
 

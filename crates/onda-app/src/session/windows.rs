@@ -680,6 +680,7 @@ impl Actor {
             microphone: self.permissions.microphone,
             accessibility_granted: self.permissions.accessibility,
             accessibility_needed: self.accessibility_needed(),
+            privacy_naming: self.ports.privacy_naming,
             devices: &general.devices,
             selected_uid: &self.settings.input_device_uid,
             output_mode: self.settings.output_mode,

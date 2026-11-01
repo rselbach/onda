@@ -50,6 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 osLanguage: Locale.current.language.languageCode?.identifier,
                 appVersion: Self.appVersion(),
                 trayTerm: "menu bar icon",
+                privacyNaming: Self.privacyNaming(),
                 listener: relay
             )
         } catch {
@@ -143,6 +144,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The bundle's short version (WIN-14, WIN-21).
     private static func appVersion() -> String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
+    }
+
+    /// macOS 27 renamed the Accessibility privacy pane to "Device Control
+    /// and Data Access"; copy uses the name this OS shows.
+    private static func privacyNaming() -> PrivacyNaming {
+        ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27
+            ? .deviceControlAndDataAccess
+            : .accessibility
     }
 
     private func render(_ tray: TrayState) {

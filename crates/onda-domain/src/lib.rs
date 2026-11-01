@@ -22,6 +22,7 @@ pub mod overlay;
 pub mod pre_roll;
 pub mod preview;
 pub mod preview_text;
+pub mod privacy_naming;
 pub mod replacements;
 pub mod routing;
 pub mod setup;
