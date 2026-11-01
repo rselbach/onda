@@ -235,14 +235,14 @@ launch() {
     fi
   fi
   local model
-  for model in "${models[@]}"; do
+  for model in ${models[@]+"${models[@]}"}; do
     clone_model "${data}" "${model}"
   done
-  if ((${#models[@]} > 0)) && [[ " ${settings[*]} " != *" selectedModel="* ]]; then
+  if ((${#models[@]} > 0)) && [[ " ${settings[*]-} " != *" selectedModel="* ]]; then
     "${CLI}" --data-dir "${data}" settings set selectedModel "\"${models[0]}\""
   fi
   local setting
-  for setting in "${settings[@]}"; do
+  for setting in ${settings[@]+"${settings[@]}"}; do
     "${CLI}" --data-dir "${data}" settings set "${setting%%=*}" \
       "${setting#*=}"
   done
@@ -383,7 +383,7 @@ speak() {
   sleep "${after}"
   printf '%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${text}" \
     >>"$(evidence_dir "${run_id}")/spoken.tsv"
-  say "${flags[@]}" -- "${text}"
+  say ${flags[@]+"${flags[@]}"} -- "${text}"
 }
 
 # click the middle of the run's TextEdit document, so keyboard focus is

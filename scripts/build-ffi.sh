@@ -18,10 +18,14 @@ readonly TARGET="aarch64-apple-darwin"
 export MACOSX_DEPLOYMENT_TARGET="26.0"
 STAGING=""
 
+# keeps the failing status: bash 3.2 (macOS's /bin/bash) otherwise exits with
+# the trap's last status, so a failed build would report success
 cleanup() {
+  local status=$?
   if [[ -n "${STAGING}" ]]; then
     rm -rf "${STAGING}"
   fi
+  exit "${status}"
 }
 
 main() {
@@ -41,7 +45,7 @@ main() {
   trap cleanup EXIT
 
   cargo build --manifest-path "${ROOT}/Cargo.toml" -p onda-ffi \
-    --target "${TARGET}" "${cargo_flags[@]}"
+    --target "${TARGET}" ${cargo_flags[@]+"${cargo_flags[@]}"}
 
   cargo run --quiet --manifest-path "${ROOT}/Cargo.toml" -p uniffi-bindgen -- \
     generate --library "${lib_dir}/libonda_ffi.dylib" \

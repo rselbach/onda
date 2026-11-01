@@ -35,13 +35,17 @@ die() {
   exit 1
 }
 
+# keeps the failing status: bash 3.2 (macOS's /bin/bash) otherwise exits with
+# the trap's last status, so a failed build would report success
 cleanup() {
+  local status=$?
   if [[ -n "${MOUNT_POINT}" ]]; then
     hdiutil detach -quiet "${MOUNT_POINT}" || true
   fi
   if [[ -n "${STAGING}" ]]; then
     rm -rf "${STAGING}"
   fi
+  exit "${status}"
 }
 
 plist_value() {

@@ -20,10 +20,14 @@ readonly ENTITLEMENTS="${SHELL_DIR}/Onda.entitlements"
 readonly DEVELOPER_ID="Developer ID Application"
 STAGING=""
 
+# keeps the failing status: bash 3.2 (macOS's /bin/bash) otherwise exits with
+# the trap's last status, so a failed build would report success
 cleanup() {
+  local status=$?
   if [[ -n "${STAGING}" ]]; then
     rm -rf "${STAGING}"
   fi
+  exit "${status}"
 }
 
 signing_identity() {
