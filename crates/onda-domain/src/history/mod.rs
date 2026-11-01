@@ -1,4 +1,4 @@
-//! Transcript history rules (prd/06): the entry metadata format, folder
+//! Transcript history rules: the entry metadata format, folder
 //! naming and path safety, load-time cleanup, retention and audio budgets,
 //! WAV encoding, the History page listing, and the tray's recent transcripts.
 //!

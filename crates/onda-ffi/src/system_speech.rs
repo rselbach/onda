@@ -1,5 +1,5 @@
 //! The optional `SystemSpeech` port as a UniFFI foreign trait, adapted to
-//! `onda-app`'s [`SystemSpeech`] (02 "Ports", SYS-1..SYS-7). The adapter
+//! `onda-app`'s [`SystemSpeech`] (SYS-1..SYS-7). The adapter
 //! only converts types and bridges progress; the core decides locales,
 //! copy, and error handling.
 

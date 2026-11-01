@@ -1,7 +1,7 @@
 # Status menu and tray
 
 The menu-bar icon and its menu, rebuilt from the core's `MenuState` each time
-it opens. prd/07 "Tray icon" and "Status menu"; shell/macos/FFI.md.
+it opens. See shell/macos/FFI.md.
 
 ## Sub-features
 
@@ -29,7 +29,8 @@ Click the Onda icon in the menu bar.
 ## Driving it with verify-onda
 
 - `menu RUN_ID list` prints items in order (`----` separators, `(disabled)`
-  flags) and closes the menu. Compare against prd/07's layout.
+  flags) and closes the menu. Compare against the order of `StatusMenu`
+  in crates/onda-domain/src/status_menu.rs.
 - `menu RUN_ID open`, `screenshot RUN_ID status-menu --window menu`,
   `menu RUN_ID close` for visual proof.
 - `menu RUN_ID press "Open Onda"` then `screenshot RUN_ID ... --window main`:

@@ -1,5 +1,5 @@
 //! Instant replacements: user rules that swap phrases the speech model keeps
-//! getting wrong (05, "Instant replacements").
+//! getting wrong.
 
 use std::collections::HashSet;
 

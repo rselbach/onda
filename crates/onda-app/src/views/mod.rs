@@ -1,5 +1,5 @@
-//! Complete view models for the main window pages, onboarding, and the
-//! update notice (02 "Events": complete view models, not deltas).
+//! Complete view models, not deltas, for the main window pages,
+//! onboarding, and the update notice.
 //!
 //! Each builder is a pure function of what the session actor knows, so the
 //! shell only renders (ARCH-3). Copy rides along in the view models; dates

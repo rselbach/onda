@@ -2,7 +2,7 @@
 #
 # Builds a release Onda.app with scripts/bundle-app.sh, packages it as a
 # compressed, signed DMG with an /Applications symlink, then notarizes,
-# staples, and verifies it (prd/10 REL-3). Writes build/Onda-<version>.dmg.
+# staples, and verifies it (REL-3). Writes build/Onda-<version>.dmg.
 #
 # Version and build number come from --version/--build, else VERSION/BUILD in
 # the environment, else shell/macos/Info.plist. Notarization authenticates

@@ -1,5 +1,5 @@
 //! Shell ports as UniFFI foreign traits, adapted to `onda-app`'s port
-//! traits (02 "Ports"). The adapters only convert types; every decision
+//! traits. The adapters only convert types; every decision
 //! stays in the core.
 
 use std::fmt;
@@ -166,7 +166,7 @@ pub enum PrivacyPane {
 }
 
 /// What the OS calls the Accessibility permission; the shell reports it at
-/// start (08 "Permissions").
+/// start.
 #[uniffi::remote(Enum)]
 pub enum PrivacyNaming {
     /// "Accessibility" (macOS 26).
@@ -325,7 +325,7 @@ pub trait NotifierPort: Send + Sync {
     fn request_authorization(&self);
 }
 
-/// File manager services (02 "Ports": `Files`).
+/// File manager services.
 #[uniffi::export(with_foreign)]
 pub trait FilesPort: Send + Sync {
     /// Marks `path` as excluded from backups (HIS-6).

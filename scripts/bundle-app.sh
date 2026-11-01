@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Builds the Rust core and the Swift shell and assembles a signed
-# build/Onda.app (prd/10 REL-1, REL-2). Signs with the "Developer ID
+# build/Onda.app (REL-1, REL-2). Signs with the "Developer ID
 # Application" identity when the keychain has one, so the designated
 # requirement (and with it the TCC grants) survives rebuilds; otherwise
 # signs ad hoc. Override with SIGNING_IDENTITY. VERSION and BUILD, when set,

@@ -1,4 +1,4 @@
-//! Transcript history store (prd/06): one folder per entry under
+//! Transcript history store: one folder per entry under
 //! `<data>/History/`, each holding `metadata.json` and, when audio is kept,
 //! `audio.wav` (HIS-5).
 //!

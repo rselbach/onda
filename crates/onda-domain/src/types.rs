@@ -42,7 +42,7 @@ pub enum MicrophonePermission {
     Restricted,
 }
 
-/// State of the transcription engine (04, "States").
+/// State of the transcription engine.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ModelState {
     /// No model loaded and no load in progress.

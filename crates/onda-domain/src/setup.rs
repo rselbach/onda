@@ -15,7 +15,7 @@ pub enum MissingPermission {
 }
 
 /// Whether Accessibility is needed: type-into-app output or a lone-modifier
-/// hotkey (UI-8, 08 "Permissions").
+/// hotkey (UI-8).
 pub fn accessibility_needed(output_mode: OutputMode, hotkey_is_lone_modifier: bool) -> bool {
     output_mode == OutputMode::Type || hotkey_is_lone_modifier
 }

@@ -10,7 +10,7 @@ final class UpdateNoticeModel {
     var notice: UpdateNotice?
 }
 
-/// The model update notice window (DL-14, 07 "Model update notice").
+/// The model update notice window (DL-14).
 /// Every button and closing the window go to the core, which closes it.
 @MainActor
 final class UpdateNoticeWindowController: NSObject, NSWindowDelegate {

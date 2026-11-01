@@ -15,12 +15,12 @@ use crate::views::{
     OnboardingView, PostProcessingPage, ReplacementsPage, SpeechPage, UpdateNotice,
 };
 
-/// A complete view model or request for the shell (02 "Events").
+/// A complete view model or request for the shell.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     /// The tray icon changed.
     TrayChanged(TrayView),
-    /// The status menu changed (07 "Status menu").
+    /// The status menu changed.
     MenuChanged(Box<StatusMenu>),
     /// The recording overlay changed, notices included (OVL-5..OVL-15).
     OverlayChanged(OverlayView),
@@ -54,8 +54,8 @@ pub enum Event {
     /// Bring Onda to the front, e.g. after a Keychain prompt pushed it back
     /// (CLN-25).
     ActivateApp,
-    /// Show a blocking modal alert: the channel of critical messages (08
-    /// "User messages"). Nothing in v1 sends one.
+    /// Show a blocking modal alert: the channel of critical messages.
+    /// Nothing in v1 sends one.
     ShowAlert {
         /// The message title.
         title: String,

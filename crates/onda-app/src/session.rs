@@ -74,7 +74,7 @@ pub(crate) use windows::UiMsg;
 /// Recording continues this long after a hotkey stop (DICT-11).
 pub(crate) const RELEASE_TAIL: Duration = Duration::from_millis(200);
 
-/// The only button of a critical alert (08 "User messages").
+/// The only button of a critical alert.
 const ALERT_BUTTON: &str = "OK";
 
 /// How long shutdown waits for media and shell calls to drain.
@@ -1622,7 +1622,7 @@ impl Actor {
 
     // --- messages (DICT-2, MSG-1) ---
 
-    // routes `message` to its channel (08 "User messages"); false when the
+    // routes `message` to its channel; false when the
     // rate limit swallowed it (DICT-2)
     fn notify(&mut self, message: UserMessage) -> bool {
         if let Some(kind) = message.rate_limit()

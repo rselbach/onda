@@ -1,7 +1,7 @@
 # Onboarding
 
 The first-run wizard "Set Up Onda": Welcome, Language, Permissions, Hotkey,
-Speech Model, Ready. prd/07 "Onboarding" (ONB-1..13).
+Speech Model, Ready (ONB-1..13).
 
 ## Sub-features
 

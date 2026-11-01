@@ -22,8 +22,7 @@ pub use models::{
 pub use secrets::{Keychain, OpenRouter};
 pub use settings::SettingsAdapter;
 
-/// Where Onda keeps its files under the platform data directory (02 "Data
-/// on disk").
+/// Where Onda keeps its files under the platform data directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataPaths {
     root: PathBuf,
@@ -50,7 +49,7 @@ impl DataPaths {
         self.root.join("History")
     }
 
-    /// `<data>/Models` (02 "Data on disk").
+    /// `<data>/Models`.
     pub fn models_dir(&self) -> PathBuf {
         self.root.join("Models")
     }

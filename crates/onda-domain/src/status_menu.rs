@@ -1,5 +1,5 @@
-//! The status menu view model (07 "Status menu", UI-6 to UI-11, DICT-21,
-//! DICT-25 to DICT-27, HIS-28, LANG-9, LANG-10).
+//! The status menu view model (UI-6 to UI-11, DICT-21, DICT-25 to DICT-27,
+//! HIS-28, LANG-9, LANG-10).
 
 use jiff::Timestamp;
 
@@ -154,7 +154,7 @@ pub struct LanguageMenu {
     pub other_title: &'static str,
 }
 
-/// The status menu, top to bottom (07 "Status menu"). Optional items are
+/// The status menu, top to bottom. Optional items are
 /// `None` when hidden. Separators sit before the language menu, before
 /// `open_app`, before `check_for_updates`, and before `quit`.
 #[derive(Debug, Clone, PartialEq)]

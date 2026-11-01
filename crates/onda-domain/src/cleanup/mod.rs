@@ -1,4 +1,4 @@
-//! Optional transcript cleanup through OpenRouter (05, "Cleanup").
+//! Optional transcript cleanup through OpenRouter.
 //!
 //! Everything here is pure: the prompt, the model catalog, request building,
 //! response parsing, guardrails, the attempt/retry decisions, notice copy,

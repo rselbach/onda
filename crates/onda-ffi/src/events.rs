@@ -27,7 +27,7 @@ pub trait CoreListener: Send + Sync {
     fn on_event(&self, event: CoreEvent);
 }
 
-/// A core → shell event (02 "Events").
+/// A core → shell event.
 // lowered into a foreign value at once, so boxing would buy nothing
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, uniffi::Enum)]
@@ -90,8 +90,8 @@ pub enum CoreEvent {
     },
     /// Bring Onda to the front (CLN-25).
     ActivateApp,
-    /// Show a blocking modal alert with one button (08 "User messages",
-    /// critical messages).
+    /// Show a blocking modal alert with one button (critical
+    /// messages).
     ShowAlert {
         /// The title.
         title: String,
@@ -189,7 +189,7 @@ impl From<HotkeyView> for HotkeyState {
     }
 }
 
-/// Tray icon view model (07 "Tray icon").
+/// Tray icon view model.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct TrayState {
     /// Icon to show.
@@ -313,7 +313,7 @@ pub struct LanguageSubmenu {
     pub other_title: String,
 }
 
-/// The status menu, top to bottom (07 "Status menu"). Separators sit before
+/// The status menu, top to bottom. Separators sit before
 /// `language`, `open_app`, `check_for_updates`, and `quit`.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct MenuState {
@@ -655,8 +655,8 @@ impl EventSink for ListenerSink {
 mod tests {
     use super::*;
 
-    /// Critical messages reach the shell as a modal alert with "OK" (08
-    /// "User messages"); the start failure's copy comes from the core too
+    /// Critical messages reach the shell as a modal alert with "OK"; the
+    /// start failure's copy comes from the core too
     /// (MSG-3).
     #[test]
     fn critical_alert_copy_crosses_the_ffi_msg_3() {

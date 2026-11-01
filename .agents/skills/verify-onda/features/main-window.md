@@ -2,7 +2,7 @@
 
 The settings window with a grouped sidebar: Setup (Getting Started),
 Configure (General, Hotkey, Speech, Post-Processing, Replacements), Activity
-(History), Help (About). prd/07 "Main window"; page contracts in
+(History), Help (About). Page contracts are in
 shell/macos/FFI.md. History, Post-Processing, and model controls have their
 own files.
 
@@ -15,7 +15,7 @@ own files.
 - `win-getting-started`: setup checklist (`Onda is ready`, Microphone,
   Accessibility, Speech Model), "Run Setup Again", Try It box. On macOS 27
   the Accessibility row reads "Device Control and Data Access", the name
-  System Settings shows there (08 "Permissions").
+  System Settings shows there.
 - `win-general`: Permissions (Microphone, and Accessibility or, on macOS 27,
   "Device Control and Data Access"), Microphone input picker, Output, Media,
   Feedback (sounds), Startup (Launch at Login), Updates sections.

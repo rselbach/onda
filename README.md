@@ -7,9 +7,6 @@ cleanup goes through OpenRouter. It is a Rust rewrite of Jabber: the core is a
 Rust workspace, and a thin Swift shell supplies the native UI and system
 integration.
 
-The product requirements (`PRD.md`, `prd/`) are kept outside version control
-and are not part of this repository.
-
 ## Requirements
 
 - macOS 26 or later on Apple Silicon (arm64 only)

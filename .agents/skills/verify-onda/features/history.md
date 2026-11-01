@@ -2,7 +2,6 @@
 
 Saved transcripts on disk (`<data>/History/<entry>/metadata.json`, optional
 `audio.wav`), the History page, and Recent Transcripts in the status menu.
-prd/06.
 
 ## Sub-features
 

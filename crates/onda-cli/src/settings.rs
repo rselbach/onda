@@ -18,7 +18,7 @@ use serde_json::Value;
 pub enum Command {
     /// Print a setting's effective value as JSON.
     Get {
-        /// Setting key, e.g. `hotkey` (09 "Settings keys").
+        /// Setting key, e.g. `hotkey`.
         key: String,
     },
     /// Store a setting from JSON, e.g. `hotkey '{"key":"AltRight","modifiers":[]}'`.

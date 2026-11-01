@@ -1,7 +1,7 @@
 name: Release
 
 # Builds, signs, notarizes, and publishes a release for a v* tag
-# (prd/10 REL-3, REL-4, REL-6; prd/08 UPD-3).
+# (REL-3, REL-4, REL-6, UPD-3).
 #
 # Repository secrets (names match the github-deployment-secrets helper):
 #   MACOS_CERTIFICATE_P12_BASE64  Developer ID Application certificate and

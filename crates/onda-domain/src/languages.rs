@@ -1,5 +1,5 @@
 //! Offered languages, the `selectedLanguage` setting, and system-speech
-//! locale mapping (LANG-1..4, SYS-2, SYS-3, SYS-6, 09 "Languages").
+//! locale mapping (LANG-1..4, SYS-2, SYS-3, SYS-6).
 
 use crate::models::SYSTEM_SPEECH_NAME;
 use std::fmt;

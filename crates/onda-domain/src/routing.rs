@@ -1,5 +1,5 @@
 //! Which model for which language (LANG-4..7) and the Speech page
-//! compatibility note (04 "Compatibility note").
+//! compatibility note.
 
 use crate::languages::{Language, LanguageSetting, display_name_for_code};
 use crate::models::{Catalog, ModelFamily, ModelId, PARAKEET_ULTRA_LANGUAGES};
@@ -20,7 +20,7 @@ const fn route(model: ModelId, is_recommended: bool) -> Route {
     }
 }
 
-/// Models for `language` in display order (04 "Routing").
+/// Models for `language` in display order.
 ///
 /// Without a system engine, the system routes disappear and the first
 /// remaining Parakeet route becomes the recommendation (LANG-5). A language
@@ -196,7 +196,7 @@ pub struct CompatibilityNote {
     pub action: Option<NoteAction>,
 }
 
-/// Builds the compatibility note (04 "Compatibility note", WIN-18).
+/// Builds the compatibility note (WIN-18).
 /// `availability` reports the recommended model's download state.
 pub fn compatibility_note(
     catalog: &Catalog,
@@ -560,7 +560,7 @@ mod tests {
 
     #[test]
     fn system_only_languages_lack_a_model_without_system_engine() {
-        // the ten system-only languages (09 "Languages")
+        // the ten system-only languages
         let catalog = without_system();
         let none: Vec<&str> = Language::all()
             .filter(|l| recommended_model(&catalog, LanguageSetting::Specific(*l)).is_none())

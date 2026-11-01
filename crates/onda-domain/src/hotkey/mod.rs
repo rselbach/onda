@@ -1,4 +1,4 @@
-//! Dictation hotkey rules (prd/03-dictation.md, HOT-1 to HOT-35): the
+//! Dictation hotkey rules (HOT-1 to HOT-35): the
 //! shortcut model, presets, the recorder, the lone-modifier gesture,
 //! registration policies, activation-mode press routing, and the Fn warning.
 //!

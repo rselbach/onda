@@ -1,7 +1,7 @@
 # Post-processing (cleanup)
 
 Optional OpenRouter cleanup of transcripts, configured on the Post-Processing
-page. prd/05 "Cleanup". Verify the UI only: no real API key, no requests.
+page. Verify the UI only: no real API key, no requests.
 
 ## Sub-features
 

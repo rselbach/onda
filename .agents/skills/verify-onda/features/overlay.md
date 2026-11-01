@@ -2,7 +2,6 @@
 
 Floating, non-activating panels at the bottom center of the screen with the
 pointer: 400x104 during a session, 400x72 for model downloads and loads.
-prd/07 "Recording overlay" and "Download overlay".
 
 ## Sub-features
 

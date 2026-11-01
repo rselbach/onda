@@ -1,4 +1,4 @@
-//! Window, onboarding, notice, and status menu commands (07, M7, M8). Each
+//! Window, onboarding, notice, and status menu commands (M7, M8). Each
 //! is one user action; ids cross as strings and are parsed here. An id the
 //! core does not know is logged and ignored: the shell only ever sends ids
 //! the core gave it.

@@ -1,4 +1,4 @@
-//! Tray icon view model (07 "Tray icon", UI-5, SET-4).
+//! Tray icon view model (UI-5, SET-4).
 
 use crate::non_dictation_ui::NonDictationState;
 use crate::privacy_naming::PrivacyNaming;

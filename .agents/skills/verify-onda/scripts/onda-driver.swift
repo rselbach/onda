@@ -54,7 +54,7 @@ func postModifier(_ name: String, down: Bool) {
     event.post(tap: .cghidEventTap)
 }
 
-// Option+Space, Onda's default hotkey (09 "Settings keys")
+// Option+Space, Onda's default hotkey
 func combo(seconds: Double) {
     let option = CGEventFlags(rawValue: CGEventFlags.maskAlternate.rawValue | 0x20)
     postModifier("option", down: true)

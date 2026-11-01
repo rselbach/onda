@@ -1,5 +1,5 @@
 //! Input selection, device listing types, and the optional device-change
-//! port (AUD-2, AUD-3, AUD-10; 02 "Ports").
+//! port (AUD-2, AUD-3, AUD-10).
 
 use std::fmt;
 use std::sync::Arc;
@@ -107,7 +107,7 @@ impl DeviceChangeSink {
     }
 }
 
-/// Port for OS device-change notifications (02 "Ports").
+/// Port for OS device-change notifications.
 ///
 /// cpal reports a lost device or a format change on an open stream, but not
 /// default-input or device-list changes, so something else must feed them.

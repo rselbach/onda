@@ -1,4 +1,4 @@
-//! Audio errors with their exact user-facing messages (03 "Audio errors").
+//! Audio errors with their exact user-facing messages.
 
 use std::fmt;
 

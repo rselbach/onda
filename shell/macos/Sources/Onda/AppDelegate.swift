@@ -125,7 +125,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // `activate()` would be refused
             NSApp.activate(ignoringOtherApps: true)
         case let .showAlert(title, message, button):
-            // critical messages (08): a blocking modal alert
+            // critical messages: a blocking modal alert
             let alert = NSAlert()
             alert.alertStyle = .critical
             alert.messageText = title
@@ -162,8 +162,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         button.setAccessibilityLabel(tray.accessibilityLabel)
     }
 
-    /// 02 "Data on disk": `~/Library/Application Support/Onda`, or
-    /// `ONDA_DATA_DIR` for isolated verification runs.
+    /// `~/Library/Application Support/Onda`, or `ONDA_DATA_DIR` for isolated
+    /// verification runs.
     private static func dataDirectory() -> URL {
         if let override = ProcessInfo.processInfo.environment["ONDA_DATA_DIR"], !override.isEmpty {
             return URL(fileURLWithPath: override, isDirectory: true)

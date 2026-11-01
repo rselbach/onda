@@ -110,7 +110,7 @@ pub enum CaptionTone {
     Secondary,
 }
 
-/// The compatibility note button's action (04 "Compatibility note").
+/// The compatibility note button's action.
 #[uniffi::remote(Enum)]
 pub enum NoteActionKind {
     /// `select_model`.

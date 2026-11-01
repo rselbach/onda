@@ -1,5 +1,5 @@
 //! Static speech-model catalog, model errors, and validation detail copy
-//! (04 "Model catalog", MOD-1..4, 09 "Error descriptions").
+//! (MOD-1..4).
 //!
 //! Download URLs and per-model file lists (DL-6) belong to the inference
 //! backend (MOD-1); see `onda_asr::ModelManifest`.
@@ -177,8 +177,8 @@ pub const PARAKEET_ULTRA_LANGUAGES: &[&str] = &[
 const CC_BY_4: &str = "CC BY 4.0";
 const CC_BY_4_URL: &str = "https://creativecommons.org/licenses/by/4.0/";
 
-// size hints are the PRD's; MOD-2 requires re-checking them against the files
-// the chosen backend downloads.
+// size hints are each download's total in decimal MB; a test in onda-asr-coreml
+// checks them against the backend's manifests (MOD-2).
 const STATIC_MODELS: [ModelInfo<'static>; 4] = [
     ModelInfo {
         id: ModelId::ParakeetTdtV2,

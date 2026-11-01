@@ -276,7 +276,7 @@ pub struct CaptureInfo {
 /// Methods are short requests to a capture worker and may be called from
 /// the session actor.
 pub trait AudioSource: Send + Sync {
-    /// Opens a capture. The error is the notice to show (03 "Audio errors").
+    /// Opens a capture. The error is the notice to show.
     fn start(&self) -> Result<CaptureInfo, UserMessage>;
 
     /// Records the hotkey release; returns the sample count at that moment

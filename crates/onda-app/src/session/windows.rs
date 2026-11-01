@@ -1,7 +1,7 @@
 //! The windows inside the session actor: which pages are visible, the
 //! commands their controls send, the status menu items that open them, and
-//! the complete view models published when their inputs change (02
-//! "Events", UI-2, UI-4, UI-6, UI-11, WIN-1..WIN-21).
+//! the complete view models published when their inputs change (UI-2,
+//! UI-4, UI-6, UI-11, WIN-1..WIN-21).
 
 use std::collections::{HashMap, VecDeque};
 
@@ -567,7 +567,7 @@ impl Actor {
         }
     }
 
-    // --- publishing (02 "Events") ---
+    // --- publishing ---
 
     pub(super) fn publish_windows(&mut self) {
         let regular = self.ui.main_window_open

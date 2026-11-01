@@ -1,4 +1,4 @@
-//! The Speech page (WIN-18..WIN-20, 04 "Compatibility note").
+//! The Speech page (WIN-18..WIN-20).
 
 use onda_domain::languages::{AUTO_CODE, AUTO_NAME, Language, LanguageSetting};
 use onda_domain::model_selection::has_delete_control;

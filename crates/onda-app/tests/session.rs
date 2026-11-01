@@ -1,5 +1,5 @@
-//! The session engine end to end against fakes (prd/10 "Integration
-//! tests"), including the cases of Jabber's DictationCoordinatorTests.
+//! The session engine end to end against fakes, including the cases of
+//! Jabber's DictationCoordinatorTests.
 
 mod common;
 

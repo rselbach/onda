@@ -1,5 +1,5 @@
-//! What copy calls the permission that lets Onda type into other apps
-//! (08 "Permissions"). macOS 27 renamed the Accessibility privacy pane to
+//! What copy calls the permission that lets Onda type into other apps.
+//! macOS 27 renamed the Accessibility privacy pane to
 //! "Device Control and Data Access"; copy uses the name the running OS shows.
 
 /// The name the running OS gives the typing permission. The shell reports

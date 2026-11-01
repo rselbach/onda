@@ -1,4 +1,4 @@
-//! Ports the shell implements (02 "Ports").
+//! Ports the shell implements.
 //!
 //! Every method may block. The core never calls a port from the session
 //! actor itself: calls run on blocking threads and report back, so a slow
@@ -60,7 +60,7 @@ impl InsertOutcome {
     }
 }
 
-/// Text delivery (02 "Ports", OUT-1..OUT-7).
+/// Text delivery (OUT-1..OUT-7).
 pub trait TextOutput: Send + Sync {
     /// The app owning the focused element, or `None` when unknown (no
     /// Accessibility, or nothing focused).
@@ -129,7 +129,7 @@ pub enum NowPlaying {
     },
 }
 
-/// Now-playing control (08 "Media pause"). The core bounds `now_playing` to
+/// Now-playing control. The core bounds `now_playing` to
 /// 500 ms and runs every call one at a time, in order (MEDIA-1, MEDIA-5).
 pub trait MediaControl: Send + Sync {
     /// What the now-playing query reports.
@@ -252,7 +252,7 @@ pub trait Updater: Send + Sync {
     fn last_check(&self) -> Option<SystemTime>;
 }
 
-/// File manager services (02 "Ports": `Files`).
+/// File manager services.
 pub trait Files: Send + Sync {
     /// Reveals `path` in the file manager (HIS-24 "Show Recording in
     /// Finder").
@@ -279,9 +279,9 @@ pub enum SystemSpeechError {
     },
 }
 
-/// The platform speech recognizer, when the OS has one (02 "Ports":
-/// `SystemSpeech`, SYS-1..SYS-7). The core decides which locale to prepare
-/// and when; the shell only runs the OS calls.
+/// The platform speech recognizer, when the OS has one (SYS-1..SYS-7).
+/// The core decides which locale to prepare and when; the shell only runs
+/// the OS calls.
 ///
 /// `prepare` and `transcribe` block the calling core thread until the OS
 /// finishes; the core never calls them from the session actor.

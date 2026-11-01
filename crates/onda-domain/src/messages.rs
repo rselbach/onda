@@ -1,9 +1,9 @@
-//! User messages: the copy catalog (09), channel routing (08 "User
-//! messages", MSG-1), the per-kind notice rate limit (DICT-2, CLN-13), and
-//! launch-at-login status and copy (LOGIN-1, LOGIN-2).
+//! User messages: the copy catalog, channel routing (MSG-1), the per-kind
+//! notice rate limit (DICT-2, CLN-13), and launch-at-login status and copy
+//! (LOGIN-1, LOGIN-2).
 //!
 //! Copy that names the tray icon takes the platform's term as a parameter
-//! ("menu bar icon" on macOS, "tray icon" elsewhere; 09 "Copy catalog").
+//! ("menu bar icon" on macOS, "tray icon" elsewhere).
 //! Copy owned by a feature module (speech gate, clock, cleanup, hotkey,
 //! downloads) is delegated to it so each string has one home.
 
@@ -23,7 +23,7 @@ pub const START_FAILURE_TITLE: &str = "Onda Could Not Start";
 /// The start-failure alert's only button; it quits Onda.
 pub const START_FAILURE_BUTTON: &str = "Quit";
 
-/// How a message class reaches the user (08 "User messages").
+/// How a message class reaches the user.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MessageClass {
     /// A reaction to something the user just did: always the overlay notice.
@@ -101,8 +101,7 @@ pub fn route(class: MessageClass, authorization: NotificationAuthorization) -> C
 /// CLN-13).
 pub const NOTICE_RATE_LIMIT: Duration = Duration::from_millis(1500);
 
-/// Notices limited to one per [`NOTICE_RATE_LIMIT`] each (DICT-2, CLN-13,
-/// 03 "Audio errors").
+/// Notices limited to one per [`NOTICE_RATE_LIMIT`] each (DICT-2, CLN-13).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RateLimitedNotice {
     /// "Model Not Ready" or "Model Not Downloaded".
@@ -155,7 +154,7 @@ impl NoticeRateLimiter {
     }
 }
 
-/// Every titled message in the copy catalog (09 "Copy catalog").
+/// Every titled message in the copy catalog.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UserMessage {
     /// DICT-1: the model is still preparing.

@@ -25,7 +25,7 @@ pub(crate) enum Command {
 }
 
 /// Microphone capture to 16 kHz mono with warm standby, pre-roll, and input
-/// recovery (03 "Audio capture").
+/// recovery.
 ///
 /// A worker thread owns the stream; every method is a short request to it.
 /// Events arrive on the receiver returned by [`AudioCapture::new`].

@@ -17,7 +17,7 @@ pub const DOWNLOAD_OVERLAY_FADE: Duration = Duration::from_millis(300);
 pub const HIDE_ACCESSIBILITY_LABEL: &str = "Hide";
 
 /// Tooltip of the download overlay's close button (OVL-17). `tray_term` is
-/// the platform's name for the tray icon, "menu bar icon" on macOS (09).
+/// the platform's name for the tray icon, "menu bar icon" on macOS.
 pub fn hide_tooltip(tray_term: &str) -> String {
     format!("Hide — progress stays in the {tray_term}")
 }

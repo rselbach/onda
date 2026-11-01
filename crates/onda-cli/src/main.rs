@@ -1,4 +1,4 @@
-//! `onda-cli`: exercises the core from a terminal (10 "Milestones", M2–M6).
+//! `onda-cli`: exercises the core from a terminal (M2–M6).
 //!
 //! Logs go to stderr; set `RUST_LOG=debug` for detail.
 
@@ -90,7 +90,7 @@ fn run(cli: Cli) -> Result<()> {
     }
 }
 
-// 02 "Data on disk": ~/Library/Application Support/Onda on macOS
+// ~/Library/Application Support/Onda on macOS
 fn default_data_dir() -> Result<PathBuf> {
     let data = dirs::data_dir().context("no application data directory on this system")?;
     Ok(data.join("Onda"))

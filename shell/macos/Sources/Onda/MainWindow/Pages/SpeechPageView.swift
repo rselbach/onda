@@ -66,8 +66,7 @@ struct SpeechPageView: View {
     }
 }
 
-/// The note under the language picker, with its fix button (04
-/// "Compatibility note").
+/// The note under the language picker, with its fix button.
 private struct SpeechCompatibilityNote: View {
     let note: CompatibilityView
     let core: OndaCore

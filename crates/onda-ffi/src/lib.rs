@@ -1,5 +1,4 @@
-//! The macOS composition root and the bindings the native shell calls (02
-//! "Core ↔ shell contract").
+//! The macOS composition root and the bindings the native shell calls.
 //!
 //! [`OndaCore::start`] opens settings, history, and models under the data
 //! directory the shell passes, picks the CoreML Parakeet backend, starts the
@@ -165,13 +164,13 @@ pub struct OndaCore {
 
 #[uniffi::export]
 impl OndaCore {
-    /// Starts the core with its data under `data_dir` (02 "Data on disk";
-    /// the shell resolves it). `os_language` is the OS locale's language
+    /// Starts the core with its data under `data_dir` (the shell resolves
+    /// it). `os_language` is the OS locale's language
     /// code (LANG-2); `app_version` is the bundle's short version (WIN-14,
     /// WIN-21); `tray_term` is what copy calls the tray icon on this
-    /// platform, "menu bar icon" on macOS (09 "Copy catalog");
+    /// platform, "menu bar icon" on macOS;
     /// `privacy_naming` is what the running OS calls the Accessibility
-    /// permission (08 "Permissions"). Events flow to `listener` until
+    /// permission. Events flow to `listener` until
     /// [`OndaCore::shutdown`].
     #[uniffi::constructor]
     pub fn start(
@@ -508,7 +507,7 @@ fn parakeet_engine(model: ModelId, dir: &Path) -> Option<Box<dyn SpeechEngine>> 
     Some(Box::new(engine))
 }
 
-// creates <data>/Models and keeps it out of backups (02 "Data on disk")
+// creates <data>/Models and keeps it out of backups
 fn prepare_models_dir(manager: &ModelManager, files: &dyn FilesPort) {
     if let Err(error) = manager.create_models_dir() {
         tracing::error!(%error, "could not create the models folder");

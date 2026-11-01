@@ -1,6 +1,6 @@
 //! Onda orchestration.
 //!
-//! The core is the app (02 "Core ↔ shell contract"): it owns state, decides
+//! The core is the app: it owns state, decides
 //! with `onda-domain`, and pushes complete view models to the shell through
 //! an [`EventSink`]. The shell renders them and implements the [`ports`].
 //!
@@ -94,10 +94,10 @@ pub struct Ports {
     /// Settings.
     pub settings: Arc<dyn SettingsSource>,
     /// What copy calls the tray icon on this platform: "menu bar icon" on
-    /// macOS, "tray icon" elsewhere (09 "Copy catalog").
+    /// macOS, "tray icon" elsewhere.
     pub tray_term: Arc<str>,
     /// What the OS calls the Accessibility permission, which copy names
-    /// the way the running OS does (08 "Permissions").
+    /// the way the running OS does.
     pub privacy_naming: PrivacyNaming,
     /// The app version the shell reports, e.g. "1.2.0" (WIN-14, WIN-21).
     pub app_version: String,

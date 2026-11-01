@@ -36,7 +36,7 @@ in the running app. Read this index, then the feature file.
 
 ## Feature entry contract
 
-Each file has four H2s: `Sub-features` (stable IDs, PRD requirement IDs in
+Each file has four H2s: `Sub-features` (stable IDs, requirement IDs in
 parentheses), `How to get to it (user POV)`, `Driving it with verify-onda`,
 and `Gotchas`.
 

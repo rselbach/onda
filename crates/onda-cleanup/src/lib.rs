@@ -1,4 +1,4 @@
-//! OpenRouter HTTP client for transcript cleanup (05, "Cleanup").
+//! OpenRouter HTTP client for transcript cleanup.
 //!
 //! A thin transport: [`onda_domain::cleanup::build_request`] describes the
 //! request and [`onda_domain::cleanup::parse_response`] reads the reply. This

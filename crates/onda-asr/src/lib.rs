@@ -1,5 +1,4 @@
-//! Speech-engine interface shared by every inference backend (02 "Inference
-//! runtime").
+//! Speech-engine interface shared by every inference backend.
 
 mod engine;
 mod manifest;

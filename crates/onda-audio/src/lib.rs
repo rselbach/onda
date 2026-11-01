@@ -1,4 +1,4 @@
-//! Core-owned audio capture (02 "Ports", 03 "Audio capture").
+//! Core-owned audio capture.
 //!
 //! [`AudioCapture`] records the chosen microphone as 16 kHz mono `f32`
 //! (AUD-1), prepares the input ahead of time (AUD-4), idles warm for 8 s

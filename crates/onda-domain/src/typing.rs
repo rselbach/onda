@@ -1,4 +1,4 @@
-//! Pure helpers behind "Type into active app" (03, "Text output").
+//! Pure helpers behind "Type into active app".
 
 use unicode_segmentation::UnicodeSegmentation;
 

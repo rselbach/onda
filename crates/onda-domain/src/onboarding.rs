@@ -613,7 +613,7 @@ pub struct LanguageStepView {
     pub cards: Vec<LanguageCard>,
 }
 
-/// The onboarding flag for a language (09 "Languages").
+/// The onboarding flag for a language.
 pub fn language_flag(code: &str) -> &'static str {
     match code {
         "en" => "🇺🇸",

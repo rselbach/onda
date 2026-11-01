@@ -1,6 +1,6 @@
 name: CI
 
-# prd/10 REL-5. No secrets: the release build is signed ad hoc.
+# REL-5. No secrets: the release build is signed ad hoc.
 
 on:
   pull_request:

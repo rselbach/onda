@@ -1,7 +1,7 @@
 import AppKit
 import OndaCore
 
-/// macOS rendering of the platform-neutral tray icon (07 "Tray icon").
+/// macOS rendering of the platform-neutral tray icon.
 enum TrayImage {
     static func make(for icon: TrayIcon, label: String) -> NSImage? {
         switch icon {

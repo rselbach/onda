@@ -1,8 +1,8 @@
-//! Setting key names (09 "Settings keys").
+//! Setting key names.
 
 use std::fmt;
 
-/// One key in `settings.json`. Names are exactly those in prd/09.
+/// One key in `settings.json`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Key {
     /// `selectedModel`: speech model id.
@@ -46,7 +46,7 @@ pub enum Key {
 }
 
 impl Key {
-    /// Every key, in prd/09 order.
+    /// Every key.
     pub const ALL: [Key; 19] = [
         Key::SelectedModel,
         Key::SelectedLanguage,

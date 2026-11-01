@@ -1,7 +1,6 @@
 # Models and downloads
 
-Choosing, downloading, loading, and deleting speech models. prd/04 "Model
-catalog", "Transcription engine", "Model management".
+Choosing, downloading, loading, and deleting speech models.
 
 ## Sub-features
 

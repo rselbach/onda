@@ -1,5 +1,5 @@
-//! The speech-engine interface every inference backend implements (02
-//! "Inference runtime", ASR-1..ASR-21).
+//! The speech-engine interface every inference backend implements
+//! (ASR-1..ASR-21).
 //!
 //! Engines are synchronous and blocking. The session engine runs every call
 //! on a blocking thread behind one serialized gate (ARCH-8, ASR-14), so an
@@ -22,8 +22,8 @@ pub struct LoadProgress {
     pub fraction: f64,
 }
 
-/// Why an engine call failed. `Display` is the user-facing copy from 09
-/// "Transcription"; `detail` is for logs only (LOG-2).
+/// Why an engine call failed. `Display` is the user-facing copy; `detail`
+/// is for logs only (LOG-2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AsrError {
     /// The model files could not be read or compiled (ASR-6).
@@ -117,7 +117,7 @@ pub trait SpeechEngine: Send {
 mod tests {
     use super::*;
 
-    /// 09 "Transcription" copy; details stay out of the user-facing text.
+    /// Reference copy; details stay out of the user-facing text.
     #[test]
     fn errors_display_reference_copy() {
         let cases = [

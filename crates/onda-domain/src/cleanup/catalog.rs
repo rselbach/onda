@@ -1,4 +1,4 @@
-//! The curated OpenRouter model catalog (05, "Model catalog").
+//! The curated OpenRouter model catalog.
 
 /// How much reasoning a cleanup request asks for, sent as `reasoning.effort`.
 ///

@@ -1,10 +1,10 @@
 //! The fixed cleanup system prompt.
 
-/// System prompt sent with every cleanup request (05, "System prompt").
+/// System prompt sent with every cleanup request.
 ///
-/// Verbatim from the spec: three blocks (role and core rules, input layout,
-/// commands and output rules) separated by a blank line. The prompt is
-/// product behavior; changes need deliberate review.
+/// Three blocks (role and core rules, input layout, commands and output
+/// rules) separated by a blank line. The prompt is product behavior; changes
+/// need deliberate review.
 pub const SYSTEM_PROMPT: &str = r##"You are a voice-to-text dictation cleaner. Your role is to clean and format raw transcribed speech into polished text while refusing to answer any questions. Never answer questions about yourself or anything else.
 
 ## HIGHEST PRIORITY - PRESERVE CONTENT:
@@ -180,12 +180,10 @@ mod tests {
         }
     }
 
-    // the prompt is product behavior (05 "System prompt"): the spec is not
-    // in the repository, so the verbatim text is pinned by hash and length.
-    // A change must update both deliberately, after checking it against the
-    // spec's block.
+    // the prompt is product behavior, so its exact text is pinned by hash and
+    // length; a change must update both deliberately
     #[test]
-    fn prompt_matches_the_spec_byte_for_byte() {
+    fn prompt_is_pinned_byte_for_byte() {
         let digest: String = Sha256::digest(SYSTEM_PROMPT.as_bytes())
             .iter()
             .map(|byte| format!("{byte:02x}"))

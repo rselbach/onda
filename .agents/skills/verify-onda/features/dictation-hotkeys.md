@@ -2,7 +2,7 @@
 
 The global hotkey records speech, the selected model transcribes it, and the
 text is typed into the app that was focused at start (or left on the
-clipboard). prd/03.
+clipboard).
 
 ## Sub-features
 
