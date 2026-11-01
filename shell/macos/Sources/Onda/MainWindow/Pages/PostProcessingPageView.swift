@@ -135,7 +135,12 @@ private struct ProvidersSheet: View {
                 }
             )) {
                 ForEach(dialog.providers, id: \.id) { provider in
-                    Text(provider.name).tag(provider.id)
+                    Label {
+                        Text(provider.name)
+                    } icon: {
+                        ProviderLogo(id: provider.id)
+                    }
+                    .tag(provider.id)
                 }
             }
             .navigationSplitViewColumnWidth(min: 140, ideal: 160)
@@ -152,6 +157,26 @@ private struct ProvidersSheet: View {
             }
         }
         .frame(minWidth: 680, minHeight: 520)
+    }
+}
+
+/// A provider's mark, `<id>-light.svg` or `<id>-dark.svg` from the bundle
+/// (assets/providers). The brand's own light and dark versions are used
+/// as is, never tinted; a missing file draws nothing.
+private struct ProviderLogo: View {
+    let id: String
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        let variant = colorScheme == .dark ? "dark" : "light"
+        if let url = Bundle.main.url(forResource: "\(id)-\(variant)", withExtension: "svg"),
+           let image = NSImage(contentsOf: url) {
+            Image(nsImage: image)
+                .resizable()
+                .scaledToFit()
+                .frame(width: 16, height: 16)
+        }
     }
 }
 

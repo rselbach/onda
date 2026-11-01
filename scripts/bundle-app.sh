@@ -109,6 +109,7 @@ assemble() {
   stamp_version "${contents}/Info.plist"
   printf 'APPL????' >"${contents}/PkgInfo"
   cp "${ROOT}"/assets/sounds/*.m4a "${contents}/Resources/"
+  cp "${ROOT}"/assets/providers/*.svg "${contents}/Resources/"
   compile_icon "${contents}/Resources"
   embed_frameworks "${bin_dir}"
 }
