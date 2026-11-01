@@ -1,18 +1,28 @@
-//! The OpenRouter API key in the OS credential store (CLN-23, CLN-24).
+//! Each cleanup provider's API key in the OS credential store (CLN-23,
+//! CLN-24), one account per provider.
 //!
 //! The key is carried as [`ApiKey`], whose `Debug` is redacted, and is never
 //! logged (CLN-8, LOG-2).
 
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use onda_domain::cleanup::ApiKey;
+use onda_domain::cleanup::{ApiKey, CleanupProvider};
 
 /// Credential-store service, the bundle identifier (ARCH-13).
 pub const SERVICE: &str = "com.rselbach.onda";
 
 /// Credential-store account holding the OpenRouter key.
 pub const OPENROUTER_ACCOUNT: &str = "openRouterApiKey";
+
+/// The credential-store account holding `provider`'s key. Keys are never
+/// shared between providers.
+pub const fn key_account(provider: CleanupProvider) -> &'static str {
+    match provider {
+        CleanupProvider::OpenRouter => OPENROUTER_ACCOUNT,
+    }
+}
 
 /// The credential-store operation that failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -73,32 +83,33 @@ impl fmt::Display for SecretError {
 
 impl std::error::Error for SecretError {}
 
-/// Where the OpenRouter key lives (CLN-23, CLN-24).
+/// Where each provider's key lives (CLN-23, CLN-24).
 ///
 /// A missing key is `Ok(None)`, not an error, and deleting a missing key
 /// succeeds. Implementations must never log or `Debug`-print the key.
 pub trait SecretStore: Send + Sync {
-    /// The stored key, or `None` when none (or a blank one) is stored.
-    fn read(&self) -> Result<Option<ApiKey>, SecretError>;
+    /// `provider`'s stored key, or `None` when none (or a blank one) is
+    /// stored.
+    fn read(&self, provider: CleanupProvider) -> Result<Option<ApiKey>, SecretError>;
 
-    /// Creates or replaces the stored key.
-    fn write(&self, key: &ApiKey) -> Result<(), SecretError>;
+    /// Creates or replaces `provider`'s stored key.
+    fn write(&self, provider: CleanupProvider, key: &ApiKey) -> Result<(), SecretError>;
 
-    /// Deletes the stored key; succeeds when none is stored.
-    fn delete(&self) -> Result<(), SecretError>;
+    /// Deletes `provider`'s stored key; succeeds when none is stored.
+    fn delete(&self, provider: CleanupProvider) -> Result<(), SecretError>;
 
-    /// Saves what the user typed (CLN-24): trims it, and a blank value
-    /// deletes the stored key.
-    fn save(&self, value: &str) -> Result<(), SecretError> {
+    /// Saves what the user typed as `provider`'s key (CLN-24): trims it,
+    /// and a blank value deletes the stored key.
+    fn save(&self, provider: CleanupProvider, value: &str) -> Result<(), SecretError> {
         match ApiKey::new(value) {
-            Ok(key) => self.write(&key),
-            Err(_) => self.delete(),
+            Ok(key) => self.write(provider, &key),
+            Err(_) => self.delete(provider),
         }
     }
 }
 
 /// The OS credential store through the `keyring` crate: Keychain on macOS
-/// (service [`SERVICE`], account [`OPENROUTER_ACCOUNT`]).
+/// (service [`SERVICE`], one account per provider, see [`key_account`]).
 ///
 /// On macOS `keyring` writes a generic password to the login keychain and
 /// offers no accessibility attribute. The login keychain unlocks at login,
@@ -115,7 +126,7 @@ impl Default for KeychainSecretStore {
 }
 
 impl KeychainSecretStore {
-    /// The store for Onda's OpenRouter key.
+    /// The store for Onda's provider keys.
     pub fn new() -> KeychainSecretStore {
         KeychainSecretStore {
             service: SERVICE.to_owned(),
@@ -129,28 +140,33 @@ impl KeychainSecretStore {
         }
     }
 
-    fn entry(&self, op: SecretOp) -> Result<keyring::Entry, SecretError> {
-        keyring::Entry::new(&self.service, OPENROUTER_ACCOUNT).map_err(|error| failure(op, &error))
+    fn entry(
+        &self,
+        provider: CleanupProvider,
+        op: SecretOp,
+    ) -> Result<keyring::Entry, SecretError> {
+        keyring::Entry::new(&self.service, key_account(provider))
+            .map_err(|error| failure(op, &error))
     }
 }
 
 impl SecretStore for KeychainSecretStore {
-    fn read(&self) -> Result<Option<ApiKey>, SecretError> {
-        match self.entry(SecretOp::Read)?.get_password() {
+    fn read(&self, provider: CleanupProvider) -> Result<Option<ApiKey>, SecretError> {
+        match self.entry(provider, SecretOp::Read)?.get_password() {
             Ok(value) => Ok(ApiKey::new(&value).ok()),
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(error) => Err(failure(SecretOp::Read, &error)),
         }
     }
 
-    fn write(&self, key: &ApiKey) -> Result<(), SecretError> {
-        self.entry(SecretOp::Save)?
+    fn write(&self, provider: CleanupProvider, key: &ApiKey) -> Result<(), SecretError> {
+        self.entry(provider, SecretOp::Save)?
             .set_password(key.expose())
             .map_err(|error| failure(SecretOp::Save, &error))
     }
 
-    fn delete(&self) -> Result<(), SecretError> {
-        match self.entry(SecretOp::Delete)?.delete_credential() {
+    fn delete(&self, provider: CleanupProvider) -> Result<(), SecretError> {
+        match self.entry(provider, SecretOp::Delete)?.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(error) => Err(failure(SecretOp::Delete, &error)),
         }
@@ -187,14 +203,14 @@ fn os_status(_error: &keyring::Error) -> Option<i32> {
 /// a given error, to exercise the inline error paths (CLN-24, CLN-25).
 #[derive(Default)]
 pub struct MemorySecretStore {
-    key: Mutex<Option<String>>,
+    keys: Mutex<HashMap<CleanupProvider, String>>,
     failure: Mutex<Option<SecretError>>,
 }
 
 impl fmt::Debug for MemorySecretStore {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MemorySecretStore")
-            .field("stored", &lock(&self.key).is_some())
+            .field("stored", &lock(&self.keys).keys().collect::<Vec<_>>())
             .field("failure", &*lock(&self.failure))
             .finish()
     }
@@ -221,22 +237,22 @@ impl MemorySecretStore {
 }
 
 impl SecretStore for MemorySecretStore {
-    fn read(&self) -> Result<Option<ApiKey>, SecretError> {
+    fn read(&self, provider: CleanupProvider) -> Result<Option<ApiKey>, SecretError> {
         self.check(SecretOp::Read)?;
-        Ok(lock(&self.key)
-            .as_deref()
+        Ok(lock(&self.keys)
+            .get(&provider)
             .and_then(|value| ApiKey::new(value).ok()))
     }
 
-    fn write(&self, key: &ApiKey) -> Result<(), SecretError> {
+    fn write(&self, provider: CleanupProvider, key: &ApiKey) -> Result<(), SecretError> {
         self.check(SecretOp::Save)?;
-        *lock(&self.key) = Some(key.expose().to_owned());
+        lock(&self.keys).insert(provider, key.expose().to_owned());
         Ok(())
     }
 
-    fn delete(&self) -> Result<(), SecretError> {
+    fn delete(&self, provider: CleanupProvider) -> Result<(), SecretError> {
         self.check(SecretOp::Delete)?;
-        *lock(&self.key) = None;
+        lock(&self.keys).remove(&provider);
         Ok(())
     }
 }
@@ -251,9 +267,11 @@ mod tests {
 
     use super::*;
 
+    const OPENROUTER: CleanupProvider = CleanupProvider::OpenRouter;
+
     fn exposed(store: &dyn SecretStore) -> Option<String> {
         store
-            .read()
+            .read(OPENROUTER)
             .expect("read")
             .map(|key| key.expose().to_owned())
     }
@@ -263,34 +281,54 @@ mod tests {
         let store = MemorySecretStore::new();
         assert_eq!(exposed(&store), None, "starts empty");
         store
-            .delete()
+            .delete(OPENROUTER)
             .expect("deleting a missing key is not an error");
 
-        store.save("  sk-or-troy-barnes \n").expect("save");
+        store
+            .save(OPENROUTER, "  sk-or-troy-barnes \n")
+            .expect("save");
         assert_eq!(
             exposed(&store).as_deref(),
             Some("sk-or-troy-barnes"),
             "save trims"
         );
 
-        store.save("sk-or-abed-nadir").expect("overwrite");
+        store
+            .save(OPENROUTER, "sk-or-abed-nadir")
+            .expect("overwrite");
         assert_eq!(
             exposed(&store).as_deref(),
             Some("sk-or-abed-nadir"),
             "save replaces"
         );
 
-        store.save("   ").expect("blank save");
+        store.save(OPENROUTER, "   ").expect("blank save");
         assert_eq!(exposed(&store), None, "blank save deletes");
-        store.save("").expect("empty save on a missing key");
+        store
+            .save(OPENROUTER, "")
+            .expect("empty save on a missing key");
         assert_eq!(exposed(&store), None);
+    }
+
+    #[test]
+    fn every_provider_has_its_own_account() {
+        assert_eq!(key_account(OPENROUTER), "openRouterApiKey");
+        let accounts: std::collections::HashSet<_> =
+            CleanupProvider::ALL.into_iter().map(key_account).collect();
+        assert_eq!(
+            accounts.len(),
+            CleanupProvider::ALL.len(),
+            "no shared accounts"
+        );
     }
 
     #[test]
     fn memory_store_never_debug_prints_the_key_cln_8() {
         let store = MemorySecretStore::new();
-        store.save("sk-or-greendale-secret").expect("save");
-        let key = store.read().expect("read").expect("stored");
+        store
+            .save(OPENROUTER, "sk-or-greendale-secret")
+            .expect("save");
+        let key = store.read(OPENROUTER).expect("read").expect("stored");
         for (name, got) in [("store", format!("{store:?}")), ("key", format!("{key:?}"))] {
             assert!(
                 !got.contains("greendale-secret"),
@@ -302,13 +340,18 @@ mod tests {
     #[test]
     fn memory_store_fails_only_the_chosen_op() {
         let store = MemorySecretStore::new();
-        store.save("sk-or-dean-pelton").expect("save");
+        store.save(OPENROUTER, "sk-or-dean-pelton").expect("save");
         let error = SecretError::new(SecretOp::Read, Some(-25293));
         store.fail_with(Some(error));
-        assert_eq!(store.read().map(|_| ()), Err(error));
-        store.save("sk-or-dean-pelton-2").expect("save still works");
+        assert_eq!(store.read(OPENROUTER).map(|_| ()), Err(error));
+        store
+            .save(OPENROUTER, "sk-or-dean-pelton-2")
+            .expect("save still works");
         store.fail_with(Some(SecretError::new(SecretOp::Delete, None)));
-        assert!(store.save("  ").is_err(), "blank save goes through delete");
+        assert!(
+            store.save(OPENROUTER, "  ").is_err(),
+            "blank save goes through delete"
+        );
         store.fail_with(None);
         assert_eq!(exposed(&store).as_deref(), Some("sk-or-dean-pelton-2"));
     }
@@ -380,7 +423,7 @@ mod tests {
         struct Cleanup(KeychainSecretStore);
         impl Drop for Cleanup {
             fn drop(&mut self) {
-                if let Err(error) = self.0.delete() {
+                if let Err(error) = self.0.delete(OPENROUTER) {
                     eprintln!("cleanup failed: {error}");
                 }
             }
@@ -397,25 +440,29 @@ mod tests {
 
         assert_eq!(exposed(store), None, "absent at start");
         store
-            .delete()
+            .delete(OPENROUTER)
             .expect("deleting a missing key is not an error");
 
-        store.save("  sk-or-troy-barnes  ").expect("save");
+        store
+            .save(OPENROUTER, "  sk-or-troy-barnes  ")
+            .expect("save");
         assert_eq!(
             exposed(store).as_deref(),
             Some("sk-or-troy-barnes"),
             "save trims"
         );
 
-        store.save("sk-or-abed-nadir").expect("overwrite");
+        store
+            .save(OPENROUTER, "sk-or-abed-nadir")
+            .expect("overwrite");
         assert_eq!(
             exposed(store).as_deref(),
             Some("sk-or-abed-nadir"),
             "save replaces"
         );
 
-        store.save(" ").expect("blank save");
+        store.save(OPENROUTER, " ").expect("blank save");
         assert_eq!(exposed(store), None, "blank save deletes");
-        store.delete().expect("second delete");
+        store.delete(OPENROUTER).expect("second delete");
     }
 }

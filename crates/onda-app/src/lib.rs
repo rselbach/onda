@@ -31,7 +31,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use events::EventBus;
 pub use events::{Event, EventSink};
-use onda_domain::cleanup::CleanupModel;
+use onda_domain::cleanup::CleanupProvider;
 use onda_domain::hotkey::HotkeyPreset;
 use onda_domain::languages::LanguageSetting;
 use onda_domain::migration::NoticeChoice;
@@ -513,9 +513,34 @@ impl App {
         self.ui(UiMsg::SetCleanupEnabled(on));
     }
 
-    /// The "Model" picker (CLN-26).
-    pub fn set_cleanup_model(&self, model: &'static CleanupModel) {
-        self.ui(UiMsg::SetCleanupModel(model));
+    /// The "Model" row: opens the model sheet, which loads the API key
+    /// (CLN-25) and the provider's model list.
+    pub fn open_providers_dialog(&self) {
+        self.ui(UiMsg::OpenProvidersDialog);
+    }
+
+    /// "Done" in the model sheet; saves the key field (CLN-25).
+    pub fn close_providers_dialog(&self) {
+        self.ui(UiMsg::CloseProvidersDialog);
+    }
+
+    /// A provider in the sheet's sidebar.
+    pub fn select_dialog_provider(&self, provider: CleanupProvider) {
+        self.ui(UiMsg::SelectDialogProvider(provider));
+    }
+
+    /// A model row or the use-by-ID field in the model sheet: `provider`
+    /// and the model become the ones in use (CLN-26).
+    pub fn select_cleanup_model(&self, provider: CleanupProvider, slug: impl Into<String>) {
+        self.ui(UiMsg::SelectCleanupModel {
+            provider,
+            slug: slug.into(),
+        });
+    }
+
+    /// "Refresh Models" in the sheet.
+    pub fn refresh_cleanup_models(&self) {
+        self.ui(UiMsg::RefreshCleanupModels);
     }
 
     /// The API key field changed; typing during the load cancels it

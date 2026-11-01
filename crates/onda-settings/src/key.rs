@@ -33,6 +33,8 @@ pub enum Key {
     ReplacementEntries,
     /// `postProcessingEnabled`.
     PostProcessingEnabled,
+    /// `cleanupProvider`: cleanup provider id.
+    CleanupProvider,
     /// `openRouterModel`: cleanup model slug (CLN-21).
     OpenRouterModel,
     /// `onboardingCompleted` (SET-4).
@@ -47,7 +49,7 @@ pub enum Key {
 
 impl Key {
     /// Every key.
-    pub const ALL: [Key; 19] = [
+    pub const ALL: [Key; 20] = [
         Key::SelectedModel,
         Key::SelectedLanguage,
         Key::RecentLanguages,
@@ -62,6 +64,7 @@ impl Key {
         Key::HistoryRetention,
         Key::ReplacementEntries,
         Key::PostProcessingEnabled,
+        Key::CleanupProvider,
         Key::OpenRouterModel,
         Key::OnboardingCompleted,
         Key::DidShowFirstRunSetup,
@@ -86,6 +89,7 @@ impl Key {
             Key::HistoryRetention => "historyRetention",
             Key::ReplacementEntries => "replacementEntries",
             Key::PostProcessingEnabled => "postProcessingEnabled",
+            Key::CleanupProvider => "cleanupProvider",
             Key::OpenRouterModel => "openRouterModel",
             Key::OnboardingCompleted => "onboardingCompleted",
             Key::DidShowFirstRunSetup => "didShowFirstRunSetup",

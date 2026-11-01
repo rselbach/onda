@@ -6,7 +6,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use onda_domain::cleanup::{CleanupModel, model_for_slug, resolve_model};
+use onda_domain::cleanup::{CleanupModel, CleanupProvider};
 use onda_domain::hotkey::Shortcut;
 use onda_domain::language_menu::encode_recent;
 use onda_domain::languages::{
@@ -119,10 +119,11 @@ impl Settings {
 
     /// Rewrites stale enum-like values to their canonical form at launch
     /// (SET-3): `outputMode`, `hotkeyActivationMode`, `historyRetention`,
-    /// and `openRouterModel` (replaced slugs map to their successor, unknown
+    /// and `openRouterModel` (replaced slugs map to their successor, blank
     /// ones to the default; CLN-21). Unset keys stay unset. Idempotent:
     /// returns the keys it rewrote, empty once everything is canonical.
     pub fn canonicalize(&self) -> Result<Vec<Key>, SettingsError> {
+        let model = self.cleanup_model(CleanupProvider::OpenRouter);
         let canonical = [
             (Key::OutputMode, self.output_mode().as_setting()),
             (
@@ -130,7 +131,7 @@ impl Settings {
                 self.activation_mode().as_setting(),
             ),
             (Key::HistoryRetention, self.history_retention().as_setting()),
-            (Key::OpenRouterModel, self.openrouter_model().slug),
+            (Key::OpenRouterModel, model.slug.as_ref()),
         ];
         let changes: Vec<(Key, Option<Value>)> = canonical
             .into_iter()
@@ -346,22 +347,36 @@ impl Settings {
         self.put(Key::PostProcessingEnabled, Value::from(enabled))
     }
 
-    /// The cleanup model actually used (CLN-21): replaced slugs map to their
-    /// successor, unknown or corrupt values to the default.
-    pub fn openrouter_model(&self) -> &'static CleanupModel {
-        let stored = self.string(Key::OpenRouterModel);
-        if stored
-            .as_deref()
-            .is_some_and(|slug| model_for_slug(slug).is_none())
-        {
-            tracing::warn!(key = %Key::OpenRouterModel, "stale or unknown slug; resolving to the catalog");
-        }
-        resolve_model(stored.as_deref())
+    /// `cleanupProvider`; missing or unknown ids read as the default.
+    pub fn cleanup_provider(&self) -> CleanupProvider {
+        let Some(id) = self.string(Key::CleanupProvider) else {
+            return CleanupProvider::default();
+        };
+        CleanupProvider::from_id(&id).unwrap_or_else(|| {
+            tracing::warn!(key = %Key::CleanupProvider, "unknown provider; reading as the default");
+            CleanupProvider::default()
+        })
     }
 
-    /// Stores `openRouterModel`.
-    pub fn set_openrouter_model(&self, model: &CleanupModel) -> Result<(), SettingsError> {
-        self.put(Key::OpenRouterModel, Value::from(model.slug))
+    /// Stores `cleanupProvider`.
+    pub fn set_cleanup_provider(&self, provider: CleanupProvider) -> Result<(), SettingsError> {
+        self.put(Key::CleanupProvider, Value::from(provider.id()))
+    }
+
+    /// The model `provider` actually uses (CLN-21): replaced slugs map to
+    /// their successor, blank or corrupt values to the default, and any
+    /// other slug is kept.
+    pub fn cleanup_model(&self, provider: CleanupProvider) -> CleanupModel {
+        provider.resolve_model(self.string(model_key(provider)).as_deref())
+    }
+
+    /// Stores `provider`'s model slug.
+    pub fn set_cleanup_model(
+        &self,
+        provider: CleanupProvider,
+        model: &CleanupModel,
+    ) -> Result<(), SettingsError> {
+        self.put(model_key(provider), Value::from(model.slug.as_ref()))
     }
 
     /// `onboardingCompleted`. Default false.
@@ -517,6 +532,12 @@ impl Settings {
             changed.into_iter().for_each(observer);
         }
         Ok(())
+    }
+}
+
+fn model_key(provider: CleanupProvider) -> Key {
+    match provider {
+        CleanupProvider::OpenRouter => Key::OpenRouterModel,
     }
 }
 

@@ -4,6 +4,7 @@
 //! [`build_request`] describes and hands `(status, body)` to
 //! [`parse_response`].
 
+use std::collections::HashSet;
 use std::fmt;
 use std::time::Duration;
 
@@ -16,6 +17,9 @@ use super::prompt::SYSTEM_PROMPT;
 
 /// Chat-completions endpoint (CLN-4).
 pub const ENDPOINT: &str = "https://openrouter.ai/api/v1/chat/completions";
+
+/// The public model list; needs no key.
+pub const MODELS_ENDPOINT: &str = "https://openrouter.ai/api/v1/models";
 
 /// Total and idle timeout for one cleanup request (CLN-7).
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
@@ -100,12 +104,14 @@ impl fmt::Display for CleanupError {
 
 impl std::error::Error for CleanupError {}
 
-/// One cleanup request, ready for an HTTP client: `POST` to [`ENDPOINT`]
+/// One cleanup request, ready for an HTTP client: `POST` to `endpoint`
 /// with [`REQUEST_TIMEOUT`], these headers, and `body` serialized as JSON.
 ///
 /// `Debug` redacts the `Authorization` header (CLN-8).
 #[derive(Clone, PartialEq)]
 pub struct CleanupRequest {
+    /// Where to post the request.
+    pub endpoint: &'static str,
     /// Header name/value pairs (CLN-4).
     pub headers: Vec<(&'static str, String)>,
     /// Body; serialize it with `serde_json` (CLN-5).
@@ -115,11 +121,12 @@ pub struct CleanupRequest {
 /// The chat-completions body (CLN-5). Opaque; only serialized.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RequestBody {
-    model: &'static str,
+    model: String,
     messages: [ChatMessage; 2],
     stream: bool,
     temperature: u8,
-    reasoning: Reasoning,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<Reasoning>,
     provider: ProviderPreferences,
 }
 
@@ -153,6 +160,7 @@ impl fmt::Debug for CleanupRequest {
             })
             .collect();
         f.debug_struct("CleanupRequest")
+            .field("endpoint", &self.endpoint)
             .field("headers", &headers)
             .field("body", &self.body)
             .finish()
@@ -177,7 +185,7 @@ pub fn build_request(
         ),
     ];
     let body = RequestBody {
-        model: model.slug,
+        model: model.slug.clone().into_owned(),
         messages: [
             ChatMessage {
                 role: "system",
@@ -190,15 +198,19 @@ pub fn build_request(
         ],
         stream: false,
         temperature: 0,
-        reasoning: Reasoning {
-            effort: model.reasoning_effort.as_str(),
-        },
+        reasoning: model.reasoning_effort.map(|effort| Reasoning {
+            effort: effort.as_str(),
+        }),
         provider: ProviderPreferences {
             sort: "latency",
             zdr: true,
         },
     };
-    CleanupRequest { headers, body }
+    CleanupRequest {
+        endpoint: ENDPOINT,
+        headers,
+        body,
+    }
 }
 
 /// The user message: the transcript fenced in `<transcript>` tags, preceded
@@ -241,6 +253,65 @@ pub fn parse_response(status: u16, body: &[u8]) -> Result<String, CleanupError> 
         .and_then(Value::as_str)
         .ok_or(CleanupError::Malformed)?;
     Ok(unwrap_transcript_tags(content))
+}
+
+/// Turns a [`MODELS_ENDPOINT`] response into the models that write text,
+/// sorted by name. Entries without an id are skipped; a missing name falls
+/// back to the id.
+pub fn parse_models_response(status: u16, body: &[u8]) -> Result<Vec<CleanupModel>, CleanupError> {
+    if !(200..300).contains(&status) {
+        return Err(CleanupError::Http {
+            status,
+            message: error_message(body),
+        });
+    }
+    let json: Value = serde_json::from_slice(body).map_err(|_| CleanupError::Malformed)?;
+    let entries = json
+        .get("data")
+        .and_then(Value::as_array)
+        .ok_or(CleanupError::Malformed)?;
+    let mut seen = HashSet::new();
+    let mut models: Vec<CleanupModel> = entries
+        .iter()
+        .filter(|entry| writes_text(entry) && serves_chat(entry))
+        .filter_map(|entry| {
+            let id = entry.get("id").and_then(Value::as_str)?.trim();
+            if id.is_empty() || !seen.insert(id) {
+                return None;
+            }
+            let name = entry
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .unwrap_or(id);
+            Some(CleanupModel::listed(id, name))
+        })
+        .collect();
+    models.sort_by_cached_key(|model| model.display_name.to_lowercase());
+    Ok(models)
+}
+
+// an entry that does not say what it outputs is assumed to write text
+fn writes_text(entry: &Value) -> bool {
+    entry
+        .get("architecture")
+        .and_then(|architecture| architecture.get("output_modalities"))
+        .and_then(Value::as_array)
+        .is_none_or(|modalities| modalities.iter().any(|m| m.as_str() == Some("text")))
+}
+
+// batch-only entries list no endpoints; one that does not say is assumed
+// to serve chat completions
+fn serves_chat(entry: &Value) -> bool {
+    entry
+        .get("endpoints")
+        .and_then(Value::as_array)
+        .is_none_or(|endpoints| {
+            endpoints
+                .iter()
+                .any(|e| e.as_str() == Some("/api/v1/chat/completions"))
+        })
 }
 
 // CLN-10: drop <transcript> tags a model echoed, and always trim
@@ -329,8 +400,9 @@ mod tests {
 
     #[test]
     fn build_request_shape_cln_4_cln_5() {
-        let model = CLEANUP_MODELS[1];
-        let request = build_request(&key(), &model, "señor chang", None);
+        let model = &CLEANUP_MODELS[1];
+        let request = build_request(&key(), model, "señor chang", None);
+        assert_eq!(request.endpoint, ENDPOINT, "endpoint");
         let want_headers = vec![
             ("Content-Type", "application/json".to_owned()),
             ("Authorization", format!("Bearer {KEY}")),
@@ -355,6 +427,16 @@ mod tests {
         let body = serde_json::to_value(&request.body).expect("serialize body");
         assert_eq!(body, want_body, "body");
         assert_eq!(REQUEST_TIMEOUT, Duration::from_secs(20), "CLN-7 timeout");
+    }
+
+    #[test]
+    fn models_outside_the_catalog_send_no_reasoning_setting() {
+        // a model with mandatory reasoning rejects effort "none"
+        let model = CleanupModel::custom("openai/gpt-6.1-terra-pro");
+        let request = build_request(&key(), &model, "pop pop", None);
+        let body = serde_json::to_value(&request.body).expect("serialize body");
+        assert_eq!(body.get("reasoning"), None, "{body}");
+        assert_eq!(body["model"], "openai/gpt-6.1-terra-pro");
     }
 
     #[test]
@@ -552,6 +634,76 @@ mod tests {
         for tc in cases {
             let got = parse_response(tc.status, tc.body.as_bytes());
             assert_eq!(got, tc.want.map(str::to_owned), "{}", tc.name);
+        }
+    }
+
+    #[test]
+    fn parse_models_response_keeps_text_models_sorted_by_name() {
+        let body = json!({"data": [
+            {"id": "openai/gpt-4o", "name": "OpenAI: GPT-4o",
+             "architecture": {"output_modalities": ["text"]}},
+            {"id": "acme/painter", "name": "Acme: Painter",
+             "architecture": {"output_modalities": ["image"]}},
+            {"id": "anthropic/claude-haiku", "name": "Anthropic: Claude Haiku"},
+            {"id": "greendale/unnamed"},
+            {"id": "openai/gpt-4o", "name": "Duplicate"},
+            {"id": "openai/gpt-4o:batch", "name": "OpenAI: GPT-4o (batch)", "endpoints": []},
+            {"id": "acme/responses-only", "name": "Acme: Responses",
+             "endpoints": ["/api/v1/responses"]},
+            {"id": "x-ai/grok", "name": "xAI: Grok",
+             "endpoints": ["/api/v1/chat/completions", "/api/v1/responses"]},
+            {"name": "No id"},
+            {"id": "  "},
+        ]})
+        .to_string();
+        let got = parse_models_response(200, body.as_bytes()).expect("models");
+        let got: Vec<(&str, &str)> = got
+            .iter()
+            .map(|m| (m.slug.as_ref(), m.display_name.as_ref()))
+            .collect();
+        let want = vec![
+            ("anthropic/claude-haiku", "Anthropic: Claude Haiku"),
+            ("greendale/unnamed", "greendale/unnamed"),
+            ("openai/gpt-4o", "OpenAI: GPT-4o"),
+            ("x-ai/grok", "xAI: Grok"),
+        ];
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn parse_models_response_errors() {
+        struct Case {
+            name: &'static str,
+            status: u16,
+            body: &'static str,
+            want: CleanupError,
+        }
+        let cases = [
+            Case {
+                name: "non-2xx carries the API message",
+                status: 503,
+                body: r#"{"error":{"message":"Down for paintball."}}"#,
+                want: CleanupError::Http {
+                    status: 503,
+                    message: Some("Down for paintball.".to_owned()),
+                },
+            },
+            Case {
+                name: "garbage is malformed",
+                status: 200,
+                body: "not json",
+                want: CleanupError::Malformed,
+            },
+            Case {
+                name: "missing data is malformed",
+                status: 200,
+                body: r#"{"models":[]}"#,
+                want: CleanupError::Malformed,
+            },
+        ];
+        for tc in cases {
+            let got = parse_models_response(tc.status, tc.body.as_bytes());
+            assert_eq!(got, Err(tc.want), "{}", tc.name);
         }
     }
 

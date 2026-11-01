@@ -1284,6 +1284,11 @@ async fn cln_2_missing_key_delivers_raw_silently() {
     *lock(&h.secrets.0) = Ok(None);
     h.dictate().await;
     assert_eq!(h.cleanup.calls(), 0);
+    assert_eq!(
+        *lock(&h.secrets.2),
+        [("read", onda_domain::cleanup::CleanupProvider::OpenRouter)],
+        "the selected provider's key is read"
+    );
     assert_eq!(h.typed(), vec!["hello world"]);
     assert!(h.notices().is_empty());
     let entry = &h.history.entries()[0];

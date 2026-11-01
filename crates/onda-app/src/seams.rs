@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use jiff::Timestamp;
 use onda_asr::SpeechEngine;
-use onda_domain::cleanup::{CleanupError, CleanupModel, CleanupRequest};
+use onda_domain::cleanup::{CleanupError, CleanupModel, CleanupProvider, CleanupRequest};
 use onda_domain::history::{HistoryEntry, NewEntry, RecentTranscript};
 use onda_domain::hotkey::Shortcut;
 use onda_domain::languages::LanguageSetting;
@@ -40,8 +40,10 @@ pub struct Settings {
     pub selected_model: ModelId,
     /// `postProcessingEnabled` (CLN-1).
     pub cleanup_enabled: bool,
-    /// The OpenRouter model, resolved from its slug.
-    pub cleanup_model: &'static CleanupModel,
+    /// `cleanupProvider`.
+    pub cleanup_provider: CleanupProvider,
+    /// The provider's model, resolved from its slug (CLN-21).
+    pub cleanup_model: CleanupModel,
     /// `replacementEntries` (REP-7).
     pub replacement_rules: Vec<ReplacementRule>,
     /// Save transcripts (HIS-1).
@@ -107,8 +109,10 @@ pub enum SettingChange {
     ReplacementRules(Vec<ReplacementRule>),
     /// `postProcessingEnabled`.
     CleanupEnabled(bool),
-    /// `openRouterModel`.
-    CleanupModel(&'static CleanupModel),
+    /// `cleanupProvider`.
+    CleanupProvider(CleanupProvider),
+    /// The provider's model slug (`openRouterModel`).
+    CleanupModel(CleanupProvider, CleanupModel),
     /// Both onboarding flags in one write (SET-4).
     Onboarding(OnboardingFlags),
     /// `lastModelMigrationNoticeKey`.
@@ -137,16 +141,18 @@ pub trait SettingsSource: Send + Sync {
     fn reset_invalid_language(&self) -> Option<UserMessage>;
 }
 
-/// The OpenRouter key in the OS credential store (CLN-2, CLN-23).
+/// Each provider's API key in the OS credential store (CLN-2, CLN-23).
+/// Providers never share a key.
 pub trait SecretSource: Send + Sync {
-    /// The stored key, `Ok(None)` when none is stored. Read once per
-    /// dictation. An `Err` is logged and treated as no key; its text is the
-    /// inline CLN-24 message ("Keychain read failed (OSStatus N).").
-    fn openrouter_key(&self) -> Result<Option<String>, String>;
+    /// `provider`'s stored key, `Ok(None)` when none is stored. Read once
+    /// per dictation. An `Err` is logged and treated as no key; its text is
+    /// the inline CLN-24 message ("Keychain read failed (OSStatus N).").
+    fn api_key(&self, provider: CleanupProvider) -> Result<Option<String>, String>;
 
-    /// Saves what the user typed: trimmed, and blank deletes the stored key
-    /// (CLN-24). The error text is the inline CLN-24 message.
-    fn save_openrouter_key(&self, value: &str) -> Result<(), String>;
+    /// Saves what the user typed as `provider`'s key: trimmed, and blank
+    /// deletes the stored key (CLN-24). The error text is the inline CLN-24
+    /// message.
+    fn save_api_key(&self, provider: CleanupProvider, value: &str) -> Result<(), String>;
 }
 
 /// Sends one cleanup request (`onda-cleanup` in the app).
@@ -158,6 +164,12 @@ pub trait SecretSource: Send + Sync {
 pub trait CleanupTransport: Send + Sync {
     /// Sends `request`.
     fn send(&self, request: CleanupRequest) -> BoxFuture<'static, Result<String, CleanupError>>;
+
+    /// The models `provider` lists; empty when it cannot list them.
+    fn list_models(
+        &self,
+        provider: CleanupProvider,
+    ) -> BoxFuture<'static, Result<Vec<CleanupModel>, CleanupError>>;
 }
 
 /// Transcript history (`onda-history` in the app).

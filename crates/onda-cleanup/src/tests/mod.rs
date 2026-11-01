@@ -24,7 +24,7 @@ const GUARD: Duration = Duration::from_secs(5);
 
 fn client(url: &str) -> CleanupClient {
     // tests talk to 127.0.0.1; keep proxy settings from intercepting
-    CleanupClient::build(url, reqwest::Client::builder().no_proxy()).expect("client")
+    CleanupClient::build(Some(url), reqwest::Client::builder().no_proxy()).expect("client")
 }
 
 fn cleanup_request(key: &str) -> CleanupRequest {
@@ -84,7 +84,7 @@ async fn request_on_the_wire_cln_4_cln_5_cln_6() {
         ],
         "stream": false,
         "temperature": 0,
-        "reasoning": {"effort": model.reasoning_effort.as_str()},
+        "reasoning": {"effort": "none"},
         "provider": {"sort": "latency", "zdr": true},
     });
     let body: serde_json::Value = serde_json::from_slice(&captured.body).expect("JSON body");
@@ -332,7 +332,7 @@ async fn key_transcript_and_response_stay_out_of_errors_and_logs_cln_8_log_2() {
     printed.push(format!("{:?}", cleanup_request(KEY)));
 
     let logs = String::from_utf8(logs.0.lock().expect("log buffer").clone()).expect("UTF-8 logs");
-    let model = default_model().slug;
+    let model = default_model().slug.as_ref();
     assert!(logs.contains(model), "logs name the model: {logs}");
     assert!(logs.contains("status=200"), "logs carry the status: {logs}");
     assert!(logs.contains("latency_ms="), "logs carry latency: {logs}");
@@ -345,6 +345,44 @@ async fn key_transcript_and_response_stay_out_of_errors_and_logs_cln_8_log_2() {
     }
 }
 
+#[tokio::test]
+async fn list_models_gets_and_parses_the_list() {
+    let body = json!({"data": [
+        {"id": "openai/gpt-4o", "name": "OpenAI: GPT-4o"},
+        {"id": "anthropic/claude-haiku", "name": "Anthropic: Claude Haiku"},
+    ]})
+    .to_string();
+    let mut server = Server::start(Reply::Respond { status: 200, body }).await;
+
+    let got = tokio::time::timeout(GUARD, client(&server.url).list_models("unused"))
+        .await
+        .expect("listing finished");
+    let slugs: Vec<String> = got
+        .expect("models")
+        .into_iter()
+        .map(|m| m.slug.into_owned())
+        .collect();
+    assert_eq!(slugs, ["anthropic/claude-haiku", "openai/gpt-4o"]);
+    let captured = server.captured().await;
+    assert_eq!(
+        captured.request_line,
+        format!("GET {} HTTP/1.1", server::PATH)
+    );
+    assert!(
+        captured.header("authorization").is_empty(),
+        "no key is sent"
+    );
+}
+
+#[tokio::test]
+async fn list_models_reports_transport_errors() {
+    let got = client(&refused_url().await).list_models("unused").await;
+    assert!(
+        matches!(got, Err(CleanupError::Transport(_))),
+        "refused connection: {got:?}"
+    );
+}
+
 #[test]
 fn futures_are_send() {
     fn assert_send<T: Send>(_: &T) {}
@@ -353,4 +391,5 @@ fn futures_are_send() {
     let cancel = CancellationToken::new();
     assert_send(&client.send(&request));
     assert_send(&client.send_cancellable(&request, &cancel));
+    assert_send(&client.list_models("http://127.0.0.1:9/"));
 }

@@ -1224,8 +1224,14 @@ async fn ui_2_window_presence_follows_open_windows() {
 async fn cln_25_the_key_field_loads_and_saves_by_the_rules() {
     let h = Harness::with(|s| s.cleanup_enabled = true).await;
     h.app.page_appeared(MainWindowSection::PostProcessing);
+    h.app.open_providers_dialog();
     sleep(10).await;
-    let key = post_processing(&h).details.expect("details").key;
+    let key = post_processing(&h)
+        .details
+        .expect("details")
+        .dialog
+        .expect("sheet")
+        .key;
     assert_eq!(key.text, "sk-or-greendale");
     assert_eq!(key.revision, 1);
     assert!(!key.loading);
@@ -1236,7 +1242,13 @@ async fn cln_25_the_key_field_loads_and_saves_by_the_rules() {
     h.app.api_key_edited("  sk-or-dean-pelton  ");
     sleep(1).await;
     assert_eq!(
-        post_processing(&h).details.expect("details").key.revision,
+        post_processing(&h)
+            .details
+            .expect("details")
+            .dialog
+            .expect("sheet")
+            .key
+            .revision,
         1,
         "typing never replaces the field"
     );
@@ -1256,8 +1268,14 @@ async fn cln_24_a_failed_load_shows_inline_and_blank_never_deletes() {
     let h = Harness::with(|s| s.cleanup_enabled = true).await;
     *lock(&h.secrets.0) = Err("Keychain read failed (OSStatus -25293).".to_owned());
     h.app.page_appeared(MainWindowSection::PostProcessing);
+    h.app.open_providers_dialog();
     sleep(10).await;
-    let key = post_processing(&h).details.expect("details").key;
+    let key = post_processing(&h)
+        .details
+        .expect("details")
+        .dialog
+        .expect("sheet")
+        .key;
     assert_eq!(
         key.error.as_deref(),
         Some("Keychain read failed (OSStatus -25293).")
@@ -1271,13 +1289,20 @@ async fn cln_24_a_failed_load_shows_inline_and_blank_never_deletes() {
     );
 
     h.app.page_appeared(MainWindowSection::PostProcessing);
+    h.app.open_providers_dialog();
     sleep(10).await;
     h.app.api_key_edited("sk-or-britta");
     h.app.api_key_commit();
     sleep(10).await;
     assert_eq!(h.secrets.stored().as_deref(), Some("sk-or-britta"));
     assert_eq!(
-        post_processing(&h).details.expect("details").key.error,
+        post_processing(&h)
+            .details
+            .expect("details")
+            .dialog
+            .expect("sheet")
+            .key
+            .error,
         None
     );
 }
@@ -1286,6 +1311,7 @@ async fn cln_24_a_failed_load_shows_inline_and_blank_never_deletes() {
 async fn cln_27_the_test_runs_resets_and_cancels_silently() {
     let h = Harness::with(|s| s.cleanup_enabled = true).await;
     h.app.page_appeared(MainWindowSection::PostProcessing);
+    h.app.open_providers_dialog();
     sleep(10).await;
     h.cleanup.respond(vec![Ok(
         "Tell Troy and Abed that the study group meets at 4 in the library. Thanks!".to_owned(),
@@ -1314,8 +1340,10 @@ async fn cln_27_the_test_runs_resets_and_cancels_silently() {
         "no app name"
     );
 
-    h.app
-        .set_cleanup_model(&onda_domain::cleanup::CLEANUP_MODELS[1]);
+    h.app.select_cleanup_model(
+        onda_domain::cleanup::CleanupProvider::OpenRouter,
+        onda_domain::cleanup::CLEANUP_MODELS[1].slug.as_ref(),
+    );
     sleep(1).await;
     assert_eq!(
         post_processing(&h).details.expect("details").test_result,
@@ -1350,6 +1378,7 @@ async fn cln_27_the_test_runs_resets_and_cancels_silently() {
     hold.notify_waiters();
     sleep(10).await;
     h.app.page_appeared(MainWindowSection::PostProcessing);
+    h.app.open_providers_dialog();
     sleep(10).await;
     let details = post_processing(&h).details.expect("details");
     assert!(!details.test_running);
@@ -1735,9 +1764,15 @@ async fn his_16_retention_applies_at_launch_and_preloads_the_menu() {
 async fn cln_25_typing_during_the_load_cancels_it() {
     let h = Harness::with(|s| s.cleanup_enabled = true).await;
     h.app.page_appeared(MainWindowSection::PostProcessing);
+    h.app.open_providers_dialog();
     h.app.api_key_edited("sk-or-chang");
     sleep(10).await;
-    let key = post_processing(&h).details.expect("details").key;
+    let key = post_processing(&h)
+        .details
+        .expect("details")
+        .dialog
+        .expect("sheet")
+        .key;
     assert_eq!(key.revision, 0, "the late load never replaces the field");
     assert!(!key.loading);
     assert_eq!(h.count(|e| matches!(e, Event::ActivateApp)), 0);
@@ -1750,17 +1785,30 @@ async fn cln_25_typing_during_the_load_cancels_it() {
 async fn cln_25_a_failed_reload_blanks_the_field_and_saves_nothing() {
     let h = Harness::with(|s| s.cleanup_enabled = true).await;
     h.app.page_appeared(MainWindowSection::PostProcessing);
+    h.app.open_providers_dialog();
     sleep(10).await;
     assert_eq!(
-        post_processing(&h).details.expect("details").key.text,
+        post_processing(&h)
+            .details
+            .expect("details")
+            .dialog
+            .expect("sheet")
+            .key
+            .text,
         "sk-or-greendale"
     );
     h.app.page_disappeared(MainWindowSection::PostProcessing);
 
     *lock(&h.secrets.0) = Err("Keychain read failed (OSStatus -25293).".to_owned());
     h.app.page_appeared(MainWindowSection::PostProcessing);
+    h.app.open_providers_dialog();
     sleep(10).await;
-    let key = post_processing(&h).details.expect("details").key;
+    let key = post_processing(&h)
+        .details
+        .expect("details")
+        .dialog
+        .expect("sheet")
+        .key;
     assert_eq!(key.text, "", "the earlier key is never shown again");
     assert_eq!(key.revision, 2, "the field rebinds to the blank text");
     assert!(key.error.is_some());
@@ -1777,6 +1825,7 @@ async fn cln_25_a_failed_reload_blanks_the_field_and_saves_nothing() {
 async fn cln_25_a_reload_waits_for_the_save_in_flight() {
     let h = Harness::with(|s| s.cleanup_enabled = true).await;
     h.app.page_appeared(MainWindowSection::PostProcessing);
+    h.app.open_providers_dialog();
     sleep(10).await;
     let hold = h.secrets.hold_save();
     h.app.api_key_edited("  sk-or-dean-pelton  ");
@@ -1786,15 +1835,22 @@ async fn cln_25_a_reload_waits_for_the_save_in_flight() {
     // a quick revisit: the load queues behind the save (the paused clock
     // cannot advance while the save blocks, so poll in real time)
     h.app.page_appeared(MainWindowSection::PostProcessing);
+    h.app.open_providers_dialog();
     common::eventually("the revisit", || {
         post_processing(&h)
             .details
-            .is_some_and(|details| details.key.loading)
+            .and_then(|details| details.dialog)
+            .is_some_and(|dialog| dialog.key.loading)
     })
     .await;
     hold.release();
     sleep(10).await;
-    let key = post_processing(&h).details.expect("details").key;
+    let key = post_processing(&h)
+        .details
+        .expect("details")
+        .dialog
+        .expect("sheet")
+        .key;
     assert_eq!(key.text, "sk-or-dean-pelton", "never the older key");
     assert!(!key.loading);
     assert_eq!(h.secrets.stored().as_deref(), Some("sk-or-dean-pelton"));
@@ -1804,52 +1860,182 @@ async fn cln_25_a_reload_waits_for_the_save_in_flight() {
 async fn cln_24_a_save_shows_the_trimmed_value() {
     let h = Harness::with(|s| s.cleanup_enabled = true).await;
     h.app.page_appeared(MainWindowSection::PostProcessing);
+    h.app.open_providers_dialog();
     sleep(10).await;
     h.app.api_key_edited("  sk-or-annie  ");
     h.app.api_key_commit();
     sleep(10).await;
-    let key = post_processing(&h).details.expect("details").key;
+    let key = post_processing(&h)
+        .details
+        .expect("details")
+        .dialog
+        .expect("sheet")
+        .key;
     assert_eq!(key.text, "sk-or-annie");
     assert_eq!(key.revision, 2);
 }
 
 #[tokio::test(start_paused = true)]
-async fn cln_25_the_key_loads_only_while_the_field_shows() {
+async fn cln_25_the_key_loads_only_while_the_sheet_shows() {
     let h = Harness::new().await;
     h.app.page_appeared(MainWindowSection::PostProcessing);
+    h.app.open_providers_dialog();
     sleep(10).await;
     assert!(post_processing(&h).details.is_none(), "cleanup is off");
     assert_eq!(
         h.count(|e| matches!(e, Event::ActivateApp)),
         0,
-        "no keychain read, nothing pulled forward"
+        "no sheet, no keychain read, nothing pulled forward"
     );
 
-    // turning it on shows the field, which loads
+    // turning it on shows the page, not the key field
     h.app.set_cleanup_enabled(true);
     sleep(10).await;
-    let key = post_processing(&h).details.expect("details").key;
+    let details = post_processing(&h).details.expect("details");
+    assert_eq!(details.dialog, None);
+    assert_eq!(h.count(|e| matches!(e, Event::ActivateApp)), 0);
+
+    // opening the sheet loads the key
+    h.app.open_providers_dialog();
+    sleep(10).await;
+    let key = post_processing(&h)
+        .details
+        .expect("details")
+        .dialog
+        .expect("sheet")
+        .key;
     assert_eq!(key.text, "sk-or-greendale");
     assert_eq!(h.count(|e| matches!(e, Event::ActivateApp)), 1);
 
-    // turning it off abandons a load in flight
-    h.app.page_disappeared(MainWindowSection::PostProcessing);
-    h.app.page_appeared(MainWindowSection::PostProcessing);
+    // "Done" saves what was typed and closes the sheet
+    h.app.api_key_edited("sk-or-shirley");
+    h.app.close_providers_dialog();
+    sleep(10).await;
+    assert_eq!(h.secrets.stored().as_deref(), Some("sk-or-shirley"));
+    assert_eq!(post_processing(&h).details.expect("details").dialog, None);
+
+    // every keychain call names the provider whose key it is
+    let openrouter = onda_domain::cleanup::CleanupProvider::OpenRouter;
+    assert_eq!(
+        *lock(&h.secrets.2),
+        [("read", openrouter), ("save", openrouter)]
+    );
+
+    // turning cleanup off closes the sheet and abandons a load in flight
+    h.app.open_providers_dialog();
     h.app.set_cleanup_enabled(false);
     sleep(10).await;
     assert_eq!(h.count(|e| matches!(e, Event::ActivateApp)), 1);
 
-    // the setting changing elsewhere loads nothing while the page is hidden
-    h.app.page_disappeared(MainWindowSection::PostProcessing);
+    // leaving the page closes the sheet and saves
     h.app.set_cleanup_enabled(true);
+    h.app.open_providers_dialog();
     sleep(10).await;
-    assert_eq!(h.count(|e| matches!(e, Event::ActivateApp)), 1);
+    h.app.api_key_edited("sk-or-pierce");
+    h.app.page_disappeared(MainWindowSection::PostProcessing);
+    sleep(10).await;
+    assert_eq!(h.secrets.stored().as_deref(), Some("sk-or-pierce"));
+    h.app.page_appeared(MainWindowSection::PostProcessing);
+    sleep(10).await;
+    assert_eq!(post_processing(&h).details.expect("details").dialog, None);
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_model_sheet_picks_the_model_in_one_click() {
+    use onda_domain::cleanup::{CleanupError, CleanupModel, CleanupProvider};
+
+    let openrouter = CleanupProvider::OpenRouter;
+    let in_use = |h: &Harness| {
+        let settings = lock(&h.settings.settings);
+        (
+            settings.cleanup_provider,
+            settings.cleanup_model.slug.clone().into_owned(),
+        )
+    };
+    let sheet = |h: &Harness| {
+        post_processing(h)
+            .details
+            .expect("details")
+            .dialog
+            .expect("sheet")
+    };
+    let h = Harness::with(|s| s.cleanup_enabled = true).await;
+    *lock(&h.cleanup.listed) = Some(Err(CleanupError::Transport("offline".to_owned())));
+    h.app.page_appeared(MainWindowSection::PostProcessing);
+    h.app.open_providers_dialog();
+    sleep(10).await;
+    assert_eq!(
+        h.cleanup.list_calls.load(Ordering::SeqCst),
+        1,
+        "page and sheet share one listing"
+    );
+    let dialog = sheet(&h);
+    assert_eq!(
+        dialog.models_error.as_deref(),
+        Some("Couldn't load OpenRouter models: OpenRouter request failed: offline")
+    );
+    assert_eq!(
+        dialog.selected_model.as_deref(),
+        Some("~openai/gpt-luna-latest")
+    );
+
+    // refreshing replaces the error with the list
+    *lock(&h.cleanup.listed) = Some(Ok(vec![
+        CleanupModel::listed("openai/gpt-4o", "OpenAI: GPT-4o"),
+        CleanupModel::listed("x-ai/grok", "xAI: Grok"),
+    ]));
+    h.app.refresh_cleanup_models();
+    sleep(10).await;
+    let dialog = sheet(&h);
+    assert_eq!(dialog.models_error, None);
+    let titles: Vec<&str> = dialog
+        .model_groups
+        .iter()
+        .map(|g| g.title.as_str())
+        .collect();
+    assert_eq!(titles, ["Recommended", "All OpenRouter Models"]);
+
+    // clicking a listed model uses it at once
+    h.app.select_cleanup_model(openrouter, "openai/gpt-4o");
+    sleep(1).await;
+    assert_eq!(in_use(&h), (openrouter, "openai/gpt-4o".to_owned()));
+    assert_eq!(sheet(&h).selected_model.as_deref(), Some("openai/gpt-4o"));
+    let details = post_processing(&h).details.expect("details");
+    assert_eq!(details.provider_name, "OpenRouter");
+    assert_eq!(details.model_name, "OpenAI: GPT-4o");
+
+    // a typed ID is trimmed and used; a blank one is ignored
+    h.app
+        .select_cleanup_model(openrouter, "  greendale/human-being ");
+    h.app.select_cleanup_model(openrouter, "   ");
+    sleep(1).await;
+    assert_eq!(in_use(&h), (openrouter, "greendale/human-being".to_owned()));
+    let dialog = sheet(&h);
+    assert_eq!(dialog.model_groups[1].title, "Custom");
+    assert_eq!(
+        post_processing(&h).details.expect("details").model_name,
+        "greendale/human-being"
+    );
+
+    // "Done" closes the sheet; the choice stays
+    h.app.close_providers_dialog();
+    sleep(1).await;
+    assert_eq!(post_processing(&h).details.expect("details").dialog, None);
+    assert_eq!(in_use(&h), (openrouter, "greendale/human-being".to_owned()));
+
+    // the list is fetched once; showing the page again reuses it
+    h.app.page_disappeared(MainWindowSection::PostProcessing);
+    h.app.page_appeared(MainWindowSection::PostProcessing);
+    h.app.open_providers_dialog();
+    sleep(10).await;
+    assert_eq!(h.cleanup.list_calls.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test(start_paused = true)]
 async fn cln_25_quitting_saves_the_typed_key() {
     let h = Harness::with(|s| s.cleanup_enabled = true).await;
     h.app.page_appeared(MainWindowSection::PostProcessing);
+    h.app.open_providers_dialog();
     sleep(10).await;
     h.app.api_key_edited("sk-or-ben-chang");
     let secrets = h.secrets.clone();

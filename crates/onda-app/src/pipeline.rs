@@ -6,7 +6,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use onda_asr::AsrError;
-use onda_domain::cleanup::{self, CleanupModel, CleanupOutcome, CleanupStart, CleanupStep};
+use onda_domain::cleanup::{
+    self, CleanupModel, CleanupOutcome, CleanupProvider, CleanupStart, CleanupStep,
+};
 use onda_domain::joiner::join;
 use onda_domain::languages::Language;
 use onda_domain::messages::UserMessage;
@@ -225,7 +227,8 @@ pub(crate) struct CleanupJob {
     pub(crate) id: SessionId,
     pub(crate) secrets: Arc<dyn SecretSource>,
     pub(crate) transport: Arc<dyn CleanupTransport>,
-    pub(crate) model: &'static CleanupModel,
+    pub(crate) provider: CleanupProvider,
+    pub(crate) model: CleanupModel,
     pub(crate) raw: String,
     pub(crate) app_name: Option<String>,
     pub(crate) messages: mpsc::UnboundedSender<Msg>,
@@ -235,10 +238,11 @@ pub(crate) struct CleanupJob {
 /// read once and used for both requests (CLN-2).
 pub(crate) async fn clean_up(job: CleanupJob) -> Msg {
     let secrets = job.secrets.clone();
-    let key = match spawn_blocking(move || secrets.openrouter_key()).await {
+    let provider = job.provider;
+    let key = match spawn_blocking(move || secrets.api_key(provider)).await {
         Ok(Ok(key)) => key,
         Ok(Err(error)) => {
-            tracing::warn!(%error, "could not read the OpenRouter key");
+            tracing::warn!(%error, provider = provider.id(), "could not read the cleanup API key");
             None
         }
         Err(error) => {
@@ -251,7 +255,7 @@ pub(crate) async fn clean_up(job: CleanupJob) -> Msg {
         CleanupStart::Request(key) => {
             let _ = job.messages.send(Msg::Refining(job.id));
             let request =
-                || cleanup::build_request(&key, job.model, &job.raw, job.app_name.as_deref());
+                || cleanup::build_request(&key, &job.model, &job.raw, job.app_name.as_deref());
             let first = job.transport.send(request()).await;
             match cleanup::after_first_attempt(&job.raw, first) {
                 CleanupStep::Done(outcome) => outcome,

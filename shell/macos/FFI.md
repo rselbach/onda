@@ -123,13 +123,32 @@ The device list updates live (the core hears device changes itself).
 ### Post-Processing — `PostProcessingChanged(page: PostProcessingPage)`
 
 - `enabled` toggle: `setCleanupEnabled(on:)`. `details` is nil while off.
-- API key secure field `details.key`: show `text` when `revision` changes
-  (never overwrite while typing); `loading`; red `error`. Every edit:
-  `apiKeyEdited(text:)`. Return / end of editing: `apiKeyCommit()`. The core
-  saves on disappear, window close, and quit by itself. It reads the
-  Keychain (and sends `ActivateApp`) only while the field shows: on appear
-  with cleanup on, or when cleanup turns on while the page is visible.
-- Model picker `models` / `selectedModel`: `setCleanupModel(slug:)`.
+- A clickable `modelLabel` row showing `modelName` over `providerName` and
+  a chevron → `openProvidersDialog()`. The core lists the provider's
+  models when the page shows with cleanup on, for the model's name.
+- Present `dialog` as a sheet while it is non-nil; "Done" (`doneTitle`) or
+  dismissing the sheet → `closeProvidersDialog()`.
+- Sheet sidebar `dialog.providers` / `dialog.selectedProvider`:
+  `selectDialogProvider(id:)`.
+- Sheet API key secure field `dialog.key`, holding the key of the sheet's
+  selected provider (each provider has its own): show `text` when `revision`
+  changes (never overwrite while typing); `loading`; red `error`. Every
+  edit: `apiKeyEdited(text:)`. Return / end of editing: `apiKeyCommit()`.
+  The core saves when the sheet closes, on page disappear, window close,
+  and quit by itself. It reads the Keychain (and sends `ActivateApp`) only
+  when the sheet opens or its provider changes.
+- Sheet models `dialog.modelGroups` (one section per group), with a
+  checkmark on `dialog.selectedModel` (nil when another provider is in
+  use). Clicking a row → `selectCleanupModel(provider:slug:)` with the
+  sheet's provider; that provider and model are used at once. One field
+  above the list (`searchPlaceholder`) filters rows by name or slug in the
+  shell. When its trimmed text has no spaces and matches no row's slug, a
+  row showing that text over `useIdCaption` heads the list; clicking it
+  (or Return) sends `selectCleanupModel(provider:slug:)` with the text. `refreshModels`
+  (nil when the provider cannot list) → `refreshCleanupModels()`. While
+  `modelsLoading`, show a spinner by it and a `loadingTitle` row with a
+  spinner above the list; red `modelsError`. The list can hold hundreds of
+  rows: render it lazily (a `List`, not a `Form`).
 - `testButton` + spinner while `testRunning`: `testCleanup()`.
   `testResult` (`said`, `result`, selectable); `testError` alert →
   `dismissCleanupTestError()`.
