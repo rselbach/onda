@@ -1300,6 +1300,59 @@ async fn cln_2_missing_key_delivers_raw_silently() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn apple_intelligence_cleans_on_device_without_a_key() {
+    use onda_domain::cleanup::{APPLE_MODELS, CleanupProvider, OnDeviceStatus};
+
+    let h = Harness::with(|s| {
+        s.cleanup_enabled = true;
+        s.cleanup_provider = CleanupProvider::AppleIntelligence;
+        s.cleanup_model = APPLE_MODELS[0].clone();
+    })
+    .await;
+    *lock(&h.cleanup.on_device) = Some(OnDeviceStatus::Available);
+    h.cleanup.respond(vec![Ok("Hello world.".to_owned())]);
+    h.dictate().await;
+    assert_eq!(h.typed(), vec!["Hello world."]);
+    assert!(lock(&h.secrets.2).is_empty(), "no keychain read");
+    let requests = lock(&h.cleanup.requests).clone();
+    assert_eq!(requests.len(), 1);
+    assert!(
+        requests[0]["prompt"]
+            .as_str()
+            .is_some_and(|prompt| prompt.contains("<transcript>\nhello world\n</transcript>")),
+        "{}",
+        requests[0]
+    );
+    assert_eq!(
+        h.processing_labels(),
+        vec!["Transcribing...", "Refining..."]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn apple_intelligence_turned_off_delivers_raw_silently() {
+    use onda_domain::cleanup::{APPLE_MODELS, CleanupProvider, OnDeviceStatus};
+
+    let h = Harness::with(|s| {
+        s.cleanup_enabled = true;
+        s.cleanup_provider = CleanupProvider::AppleIntelligence;
+        s.cleanup_model = APPLE_MODELS[0].clone();
+    })
+    .await;
+    *lock(&h.cleanup.on_device) = Some(OnDeviceStatus::NotEnabled);
+    h.dictate().await;
+    assert_eq!(h.cleanup.calls(), 0);
+    assert_eq!(h.typed(), vec!["hello world"]);
+    assert!(h.notices().is_empty());
+    let entry = &h.history.entries()[0];
+    assert_eq!(
+        entry.post_processing_error_description.as_deref(),
+        Some("Apple Intelligence unavailable")
+    );
+    assert_eq!(h.processing_labels(), vec!["Transcribing..."]);
+}
+
+#[tokio::test(start_paused = true)]
 async fn cleanup_is_skipped_when_off_or_the_transcript_is_blank() {
     struct Case {
         name: &'static str,

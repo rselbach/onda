@@ -3,7 +3,8 @@
 Onda is a macOS menu bar app for dictation: hold or toggle a hotkey, speak,
 and the transcript is typed into the frontmost app. Speech recognition runs on
 the device (Parakeet on CoreML, or Apple's System Speech); optional transcript
-cleanup goes through OpenRouter or Fireworks AI. It is a Rust rewrite of Jabber: the core is a
+cleanup goes through OpenRouter, Fireworks AI, or Apple Intelligence's
+on-device model. It is a Rust rewrite of Jabber: the core is a
 Rust workspace, and a thin Swift shell supplies the native UI and system
 integration.
 

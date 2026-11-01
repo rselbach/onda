@@ -1,6 +1,7 @@
 # Post-processing (cleanup)
 
-Optional OpenRouter or Fireworks AI cleanup of transcripts, configured on the Post-Processing
+Optional OpenRouter, Fireworks AI, or on-device Apple Intelligence cleanup
+of transcripts, configured on the Post-Processing
 page. Verify the UI only: no real API key, no requests.
 
 ## Sub-features
@@ -47,6 +48,11 @@ Main window > Post-Processing.
   `launch --setting postProcessingEnabled=true` refuses when it exists. With
   a key present, verify only the page, toggle it back off, and never dictate
   while it is on.
+- Apple Intelligence uses no key and sends nothing off the Mac, so it is
+  the one provider a run may dictate with while post-processing is on. It
+  appears only on a Mac that can run it; its pane shows a status line when
+  it is turned off or still getting ready, and dictation then delivers the
+  raw transcript with history note "Apple Intelligence unavailable".
 - Fireworks AI lists its models only with its key, so with no key stored its
   sheet shows "Enter your Fireworks AI API key to see its models." and only
   the curated models. That is expected; do not add a key to get the list.

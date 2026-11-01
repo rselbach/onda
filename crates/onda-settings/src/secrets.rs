@@ -21,10 +21,12 @@ pub const FIREWORKS_ACCOUNT: &str = "fireworksApiKey";
 
 /// The credential-store account holding `provider`'s key. Keys are never
 /// shared between providers.
-pub const fn key_account(provider: CleanupProvider) -> &'static str {
+pub const fn key_account(provider: CleanupProvider) -> Option<&'static str> {
     match provider {
-        CleanupProvider::OpenRouter => OPENROUTER_ACCOUNT,
-        CleanupProvider::Fireworks => FIREWORKS_ACCOUNT,
+        CleanupProvider::OpenRouter => Some(OPENROUTER_ACCOUNT),
+        CleanupProvider::Fireworks => Some(FIREWORKS_ACCOUNT),
+        // the on-device model needs no key
+        CleanupProvider::AppleIntelligence => None,
     }
 }
 
@@ -144,19 +146,27 @@ impl KeychainSecretStore {
         }
     }
 
+    // `None` for a provider without a key: nothing is stored for it
     fn entry(
         &self,
         provider: CleanupProvider,
         op: SecretOp,
-    ) -> Result<keyring::Entry, SecretError> {
-        keyring::Entry::new(&self.service, key_account(provider))
+    ) -> Result<Option<keyring::Entry>, SecretError> {
+        let Some(account) = key_account(provider) else {
+            return Ok(None);
+        };
+        keyring::Entry::new(&self.service, account)
+            .map(Some)
             .map_err(|error| failure(op, &error))
     }
 }
 
 impl SecretStore for KeychainSecretStore {
     fn read(&self, provider: CleanupProvider) -> Result<Option<ApiKey>, SecretError> {
-        match self.entry(provider, SecretOp::Read)?.get_password() {
+        let Some(entry) = self.entry(provider, SecretOp::Read)? else {
+            return Ok(None);
+        };
+        match entry.get_password() {
             Ok(value) => Ok(ApiKey::new(&value).ok()),
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(error) => Err(failure(SecretOp::Read, &error)),
@@ -164,13 +174,19 @@ impl SecretStore for KeychainSecretStore {
     }
 
     fn write(&self, provider: CleanupProvider, key: &ApiKey) -> Result<(), SecretError> {
-        self.entry(provider, SecretOp::Save)?
+        let Some(entry) = self.entry(provider, SecretOp::Save)? else {
+            return Ok(());
+        };
+        entry
             .set_password(key.expose())
             .map_err(|error| failure(SecretOp::Save, &error))
     }
 
     fn delete(&self, provider: CleanupProvider) -> Result<(), SecretError> {
-        match self.entry(provider, SecretOp::Delete)?.delete_credential() {
+        let Some(entry) = self.entry(provider, SecretOp::Delete)? else {
+            return Ok(());
+        };
+        match entry.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(error) => Err(failure(SecretOp::Delete, &error)),
         }
@@ -316,15 +332,24 @@ mod tests {
 
     #[test]
     fn every_provider_has_its_own_account() {
-        assert_eq!(key_account(OPENROUTER), "openRouterApiKey");
-        assert_eq!(key_account(CleanupProvider::Fireworks), "fireworksApiKey");
-        let accounts: std::collections::HashSet<_> =
-            CleanupProvider::ALL.into_iter().map(key_account).collect();
+        assert_eq!(key_account(OPENROUTER), Some("openRouterApiKey"));
         assert_eq!(
-            accounts.len(),
-            CleanupProvider::ALL.len(),
-            "no shared accounts"
+            key_account(CleanupProvider::Fireworks),
+            Some("fireworksApiKey")
         );
+        for provider in CleanupProvider::ALL {
+            assert_eq!(
+                key_account(provider).is_some(),
+                provider.uses_key(),
+                "{provider:?} has an account exactly when it uses a key"
+            );
+        }
+        let accounts: Vec<_> = CleanupProvider::ALL
+            .into_iter()
+            .filter_map(key_account)
+            .collect();
+        let unique: std::collections::HashSet<_> = accounts.iter().collect();
+        assert_eq!(unique.len(), accounts.len(), "no shared accounts");
     }
 
     #[test]

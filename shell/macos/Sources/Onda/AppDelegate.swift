@@ -38,7 +38,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             updater: Updater(),
             updateHost: Updater.host(isolated: isolated),
             media: MediaControl(),
-            systemSpeech: SystemSpeech()
+            systemSpeech: SystemSpeech(),
+            onDevice: OnDeviceCleanup()
         )
         let relay = EventRelay { [weak self] event in
             self?.handle(event)

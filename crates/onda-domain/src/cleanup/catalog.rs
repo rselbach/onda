@@ -69,6 +69,10 @@ pub static CLEANUP_MODELS: [CleanupModel; 3] = [
     CleanupModel::curated("google/gemini-3.1-flash-lite", "Gemini Flash Lite"),
 ];
 
+/// Apple Intelligence's one model.
+pub static APPLE_MODELS: [CleanupModel; 1] =
+    [CleanupModel::curated("on-device", "On-Device Model")];
+
 /// Slugs an earlier release offered, mapped to their replacement, so a
 /// catalog update keeps the user's vendor (CLN-21).
 const REPLACED_SLUGS: [(&str, &str); 1] = [(

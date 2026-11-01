@@ -120,9 +120,10 @@ impl CleanupNotice {
 pub enum CleanupStart {
     /// No request; this is the outcome.
     Skip(CleanupOutcome),
-    /// Show "Refining..." (CLN-3) and send request 1 with this key. Use the
-    /// same key for a retry (CLN-2).
-    Request(ApiKey),
+    /// Show "Refining..." (CLN-3) and send request 1 with this key, or
+    /// with none for a provider that uses no key. Use the same key for a
+    /// retry (CLN-2).
+    Request(Option<ApiKey>),
 }
 
 /// Decides whether cleanup runs (CLN-1, CLN-2).
@@ -138,12 +139,21 @@ pub fn start(
     if !enabled || raw.trim().is_empty() {
         return CleanupStart::Skip(CleanupOutcome::NotRun);
     }
+    if !provider.uses_key() {
+        return CleanupStart::Request(None);
+    }
     match stored_key.map(ApiKey::new) {
-        Some(Ok(key)) => CleanupStart::Request(key),
-        Some(Err(_)) | None => CleanupStart::Skip(CleanupOutcome::FellBack {
-            error: unavailable_error(provider),
-            notice: None,
-        }),
+        Some(Ok(key)) => CleanupStart::Request(Some(key)),
+        Some(Err(_)) | None => CleanupStart::Skip(unavailable(provider)),
+    }
+}
+
+/// The outcome when `provider` cannot run: no usable key, or the
+/// on-device model is unavailable. Raw transcript, no notice (CLN-2).
+pub fn unavailable(provider: CleanupProvider) -> CleanupOutcome {
+    CleanupOutcome::FellBack {
+        error: unavailable_error(provider),
+        notice: None,
     }
 }
 
@@ -307,7 +317,7 @@ mod tests {
                 enabled: true,
                 raw: " um hello ",
                 key: Some(" sk-greendale "),
-                want: CleanupStart::Request(ApiKey::new("sk-greendale").expect("key")),
+                want: CleanupStart::Request(Some(ApiKey::new("sk-greendale").expect("key"))),
             },
         ];
         for tc in cases {
@@ -318,6 +328,26 @@ mod tests {
                 tc.name
             );
         }
+    }
+
+    #[test]
+    fn a_provider_without_a_key_requests_without_one() {
+        let provider = CleanupProvider::AppleIntelligence;
+        assert_eq!(
+            start(provider, true, "um hello", None),
+            CleanupStart::Request(None)
+        );
+        assert_eq!(
+            start(provider, false, "um hello", None),
+            CleanupStart::Skip(CleanupOutcome::NotRun)
+        );
+        assert_eq!(
+            unavailable(provider),
+            CleanupOutcome::FellBack {
+                error: "Apple Intelligence unavailable".to_owned(),
+                notice: None,
+            }
+        );
     }
 
     #[test]

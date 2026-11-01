@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use onda_asr::AsrError;
 use onda_domain::cleanup::{
-    self, CleanupModel, CleanupOutcome, CleanupProvider, CleanupStart, CleanupStep,
+    self, CleanupModel, CleanupOutcome, CleanupProvider, CleanupStart, CleanupStep, OnDeviceStatus,
 };
 use onda_domain::joiner::join;
 use onda_domain::languages::Language;
@@ -235,29 +235,69 @@ pub(crate) struct CleanupJob {
 }
 
 /// Runs cleanup with its one guardrail retry (CLN-1..CLN-15). The key is
-/// read once and used for both requests (CLN-2).
+/// read once and used for both requests (CLN-2); a provider without one,
+/// such as the on-device model, is checked for availability instead.
 pub(crate) async fn clean_up(job: CleanupJob) -> Msg {
-    let secrets = job.secrets.clone();
+    let outcome = match ready(&job).await {
+        Err(outcome) => outcome,
+        Ok(key) => run(&job, key).await,
+    };
+    log_cleanup(&outcome);
+    Msg::Cleaned {
+        id: job.id,
+        outcome,
+    }
+}
+
+// the stored key, or the outcome when the provider cannot run; both checks
+// block, so they run off the actor
+async fn ready(job: &CleanupJob) -> Result<Option<String>, CleanupOutcome> {
     let provider = job.provider;
-    let key = match spawn_blocking(move || secrets.api_key(provider)).await {
-        Ok(Ok(key)) => key,
+    if provider.on_device() {
+        let transport = job.transport.clone();
+        let status = spawn_blocking(move || transport.on_device_status()).await;
+        return match status {
+            Ok(OnDeviceStatus::Available) => Ok(None),
+            Ok(status) => {
+                tracing::info!(
+                    ?status,
+                    "on-device model unavailable; using the raw transcript"
+                );
+                Err(cleanup::unavailable(provider))
+            }
+            Err(error) => {
+                tracing::error!(%error, "on-device status check failed");
+                Err(cleanup::unavailable(provider))
+            }
+        };
+    }
+    if !provider.uses_key() {
+        return Ok(None);
+    }
+    let secrets = job.secrets.clone();
+    match spawn_blocking(move || secrets.api_key(provider)).await {
+        Ok(Ok(key)) => Ok(key),
         Ok(Err(error)) => {
             tracing::warn!(%error, provider = provider.id(), "could not read the cleanup API key");
-            None
+            Ok(None)
         }
         Err(error) => {
             tracing::error!(%error, "key read failed");
-            None
+            Ok(None)
         }
-    };
-    let outcome = match cleanup::start(provider, true, &job.raw, key.as_deref()) {
+    }
+}
+
+async fn run(job: &CleanupJob, key: Option<String>) -> CleanupOutcome {
+    let provider = job.provider;
+    match cleanup::start(provider, true, &job.raw, key.as_deref()) {
         CleanupStart::Skip(outcome) => outcome,
         CleanupStart::Request(key) => {
             let _ = job.messages.send(Msg::Refining(job.id));
             let request = || {
                 cleanup::build_request(
                     provider,
-                    &key,
+                    key.as_ref(),
                     &job.model,
                     &job.raw,
                     job.app_name.as_deref(),
@@ -273,11 +313,6 @@ pub(crate) async fn clean_up(job: CleanupJob) -> Msg {
                 }
             }
         }
-    };
-    log_cleanup(&outcome);
-    Msg::Cleaned {
-        id: job.id,
-        outcome,
     }
 }
 

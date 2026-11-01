@@ -1,6 +1,6 @@
 //! The services cleanup can run through.
 
-use super::catalog::{self, CLEANUP_MODELS, CleanupModel};
+use super::catalog::{self, APPLE_MODELS, CLEANUP_MODELS, CleanupModel};
 use super::fireworks::{self, FIREWORKS_MODELS};
 use super::openrouter;
 
@@ -15,17 +15,69 @@ pub enum CleanupProvider {
     OpenRouter,
     /// Fireworks AI's serverless chat-completions API.
     Fireworks,
+    /// Apple Intelligence's on-device model, through the shell; offered
+    /// only when the Mac supports it.
+    AppleIntelligence,
+}
+
+/// Whether Apple Intelligence's on-device model can run now, as the OS
+/// reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OnDeviceStatus {
+    /// Ready to use.
+    Available,
+    /// This Mac cannot run Apple Intelligence, or the OS has no model API;
+    /// the provider is not offered.
+    DeviceNotEligible,
+    /// Apple Intelligence is turned off in System Settings.
+    NotEnabled,
+    /// The model is still downloading or otherwise not ready.
+    NotReady,
+}
+
+impl OnDeviceStatus {
+    /// What the model sheet says when the model cannot run; `None` when it
+    /// can.
+    pub fn message(self) -> Option<&'static str> {
+        match self {
+            Self::Available => None,
+            Self::DeviceNotEligible => Some("This Mac doesn't support Apple Intelligence."),
+            Self::NotEnabled => {
+                Some("Turn on Apple Intelligence in System Settings to use it for post-processing.")
+            }
+            Self::NotReady => {
+                Some("Apple Intelligence is still getting ready. Try again in a few minutes.")
+            }
+        }
+    }
+}
+
+/// Whether, and how, a provider lists its models.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelListing {
+    /// One fixed model; nothing to list.
+    None,
+    /// A public list.
+    Public,
+    /// A list that needs the API key, so it is read only while the model
+    /// sheet shows, which has already read the key.
+    WithKey,
 }
 
 impl CleanupProvider {
     /// Every provider, in picker order.
-    pub const ALL: [CleanupProvider; 2] = [CleanupProvider::OpenRouter, CleanupProvider::Fireworks];
+    pub const ALL: [CleanupProvider; 3] = [
+        CleanupProvider::OpenRouter,
+        CleanupProvider::Fireworks,
+        CleanupProvider::AppleIntelligence,
+    ];
 
     /// The stable id stored in `cleanupProvider`.
     pub const fn id(self) -> &'static str {
         match self {
             Self::OpenRouter => "openrouter",
             Self::Fireworks => "fireworks",
+            Self::AppleIntelligence => "apple-intelligence",
         }
     }
 
@@ -39,24 +91,39 @@ impl CleanupProvider {
         match self {
             Self::OpenRouter => "OpenRouter",
             Self::Fireworks => "Fireworks AI",
+            Self::AppleIntelligence => "Apple Intelligence",
         }
     }
 
-    /// The chat endpoint cleanup requests are posted to.
-    pub const fn chat_endpoint(self) -> &'static str {
+    /// The chat endpoint cleanup requests are posted to; `None` for the
+    /// on-device model.
+    pub const fn chat_endpoint(self) -> Option<&'static str> {
         match self {
-            Self::OpenRouter => openrouter::ENDPOINT,
-            Self::Fireworks => fireworks::ENDPOINT,
+            Self::OpenRouter => Some(openrouter::ENDPOINT),
+            Self::Fireworks => Some(fireworks::ENDPOINT),
+            Self::AppleIntelligence => None,
         }
     }
 
-    /// Whether listing the provider's models needs its API key. Without
-    /// one, the list is read only while the model sheet shows, which has
-    /// already read the key.
-    pub const fn lists_models_with_key(self) -> bool {
+    /// Whether requests need an API key from the credential store.
+    pub const fn uses_key(self) -> bool {
         match self {
-            Self::OpenRouter => false,
-            Self::Fireworks => true,
+            Self::OpenRouter | Self::Fireworks => true,
+            Self::AppleIntelligence => false,
+        }
+    }
+
+    /// Whether the model runs on this Mac rather than over the network.
+    pub const fn on_device(self) -> bool {
+        matches!(self, Self::AppleIntelligence)
+    }
+
+    /// How the provider's models are listed.
+    pub const fn model_listing(self) -> ModelListing {
+        match self {
+            Self::OpenRouter => ModelListing::Public,
+            Self::Fireworks => ModelListing::WithKey,
+            Self::AppleIntelligence => ModelListing::None,
         }
     }
 
@@ -65,6 +132,7 @@ impl CleanupProvider {
         match self {
             Self::OpenRouter => &CLEANUP_MODELS,
             Self::Fireworks => &FIREWORKS_MODELS,
+            Self::AppleIntelligence => &APPLE_MODELS,
         }
     }
 
@@ -78,6 +146,8 @@ impl CleanupProvider {
         match self {
             Self::OpenRouter => catalog::resolve_model(stored),
             Self::Fireworks => fireworks::resolve_model(stored),
+            // one model; any stored value means it
+            Self::AppleIntelligence => APPLE_MODELS[0].clone(),
         }
     }
 
@@ -106,14 +176,24 @@ mod tests {
         assert_eq!(provider.default_model(), &CLEANUP_MODELS[0]);
         assert!(provider.is_curated("~anthropic/claude-haiku-latest"));
         assert!(!provider.is_curated("openai/gpt-4o"));
-        assert!(
-            !provider.lists_models_with_key(),
-            "OpenRouter's list is public"
-        );
+        assert_eq!(provider.model_listing(), ModelListing::Public);
+        assert!(provider.uses_key());
         let fireworks = CleanupProvider::Fireworks;
         assert_eq!(fireworks.id(), "fireworks");
         assert_eq!(fireworks.display_name(), "Fireworks AI");
         assert_eq!(fireworks.default_model(), &FIREWORKS_MODELS[0]);
-        assert!(fireworks.lists_models_with_key());
+        assert_eq!(fireworks.model_listing(), ModelListing::WithKey);
+
+        let apple = CleanupProvider::AppleIntelligence;
+        assert_eq!(apple.id(), "apple-intelligence");
+        assert_eq!(apple.chat_endpoint(), None);
+        assert!(!apple.uses_key());
+        assert!(apple.on_device());
+        assert_eq!(apple.model_listing(), ModelListing::None);
+        assert_eq!(
+            apple.resolve_model(Some("anything")).slug,
+            "on-device",
+            "one fixed model"
+        );
     }
 }

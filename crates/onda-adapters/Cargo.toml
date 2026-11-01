@@ -17,12 +17,13 @@ onda-domain = { path = "../onda-domain" }
 onda-history = { path = "../onda-history" }
 onda-models = { path = "../onda-models" }
 onda-settings = { path = "../onda-settings" }
-tokio = { version = "1.54.1", features = ["rt"] }
+tokio = { version = "1.54.1", features = ["rt", "time"] }
 tracing = "0.1.44"
 uuid = { version = "1.29.0", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"
+tokio = { version = "1.54.1", features = ["macros", "rt", "time"] }
 
 [lints]
 workspace = true

@@ -157,7 +157,7 @@ pub fn run(args: &Args, paths: &DataPaths, models_dir: &Path) -> Result<()> {
         models: Arc::new(models),
         catalog,
         history: Arc::new(History::new(Arc::new(history), settings.clone())),
-        cleanup: Arc::new(CloudCleanup::new(CleanupClient::new()?)),
+        cleanup: Arc::new(CloudCleanup::new(CleanupClient::new()?, None)),
         secrets: secrets(),
         settings: Arc::new(settings_source),
         tray_term: "menu bar icon".into(),

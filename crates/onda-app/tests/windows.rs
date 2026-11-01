@@ -1231,7 +1231,8 @@ async fn cln_25_the_key_field_loads_and_saves_by_the_rules() {
         .expect("details")
         .dialog
         .expect("sheet")
-        .key;
+        .key
+        .expect("key field");
     assert_eq!(key.text, "sk-or-greendale");
     assert_eq!(key.revision, 1);
     assert!(!key.loading);
@@ -1248,6 +1249,7 @@ async fn cln_25_the_key_field_loads_and_saves_by_the_rules() {
             .dialog
             .expect("sheet")
             .key
+            .expect("key field")
             .revision,
         1,
         "typing never replaces the field"
@@ -1275,7 +1277,8 @@ async fn cln_24_a_failed_load_shows_inline_and_blank_never_deletes() {
         .expect("details")
         .dialog
         .expect("sheet")
-        .key;
+        .key
+        .expect("key field");
     assert_eq!(
         key.error.as_deref(),
         Some("Keychain read failed (OSStatus -25293).")
@@ -1302,6 +1305,7 @@ async fn cln_24_a_failed_load_shows_inline_and_blank_never_deletes() {
             .dialog
             .expect("sheet")
             .key
+            .expect("key field")
             .error,
         None
     );
@@ -1772,7 +1776,8 @@ async fn cln_25_typing_during_the_load_cancels_it() {
         .expect("details")
         .dialog
         .expect("sheet")
-        .key;
+        .key
+        .expect("key field");
     assert_eq!(key.revision, 0, "the late load never replaces the field");
     assert!(!key.loading);
     assert_eq!(h.count(|e| matches!(e, Event::ActivateApp)), 0);
@@ -1794,6 +1799,7 @@ async fn cln_25_a_failed_reload_blanks_the_field_and_saves_nothing() {
             .dialog
             .expect("sheet")
             .key
+            .expect("key field")
             .text,
         "sk-or-greendale"
     );
@@ -1808,7 +1814,8 @@ async fn cln_25_a_failed_reload_blanks_the_field_and_saves_nothing() {
         .expect("details")
         .dialog
         .expect("sheet")
-        .key;
+        .key
+        .expect("key field");
     assert_eq!(key.text, "", "the earlier key is never shown again");
     assert_eq!(key.revision, 2, "the field rebinds to the blank text");
     assert!(key.error.is_some());
@@ -1840,7 +1847,7 @@ async fn cln_25_a_reload_waits_for_the_save_in_flight() {
         post_processing(&h)
             .details
             .and_then(|details| details.dialog)
-            .is_some_and(|dialog| dialog.key.loading)
+            .is_some_and(|dialog| dialog.key.is_some_and(|key| key.loading))
     })
     .await;
     hold.release();
@@ -1850,7 +1857,8 @@ async fn cln_25_a_reload_waits_for_the_save_in_flight() {
         .expect("details")
         .dialog
         .expect("sheet")
-        .key;
+        .key
+        .expect("key field");
     assert_eq!(key.text, "sk-or-dean-pelton", "never the older key");
     assert!(!key.loading);
     assert_eq!(h.secrets.stored().as_deref(), Some("sk-or-dean-pelton"));
@@ -1870,7 +1878,8 @@ async fn cln_24_a_save_shows_the_trimmed_value() {
         .expect("details")
         .dialog
         .expect("sheet")
-        .key;
+        .key
+        .expect("key field");
     assert_eq!(key.text, "sk-or-annie");
     assert_eq!(key.revision, 2);
 }
@@ -1903,7 +1912,8 @@ async fn cln_25_the_key_loads_only_while_the_sheet_shows() {
         .expect("details")
         .dialog
         .expect("sheet")
-        .key;
+        .key
+        .expect("key field");
     assert_eq!(key.text, "sk-or-greendale");
     assert_eq!(h.count(|e| matches!(e, Event::ActivateApp)), 1);
 
@@ -2071,7 +2081,10 @@ async fn fireworks_lists_its_models_only_with_its_key() {
         [(fireworks, Some("sk-or-greendale".to_owned()))]
     );
     let dialog = sheet(&h);
-    assert_eq!(dialog.key.placeholder, "Fireworks AI API key");
+    assert_eq!(
+        dialog.key.map(|key| key.placeholder).as_deref(),
+        Some("Fireworks AI API key")
+    );
     assert_eq!(
         dialog.model_groups.last().map(|g| g.title.as_str()),
         Some("All Fireworks AI Models")
@@ -2132,6 +2145,75 @@ async fn picking_another_providers_model_switches_the_provider() {
     let details = post_processing(&h).details.expect("details");
     assert_eq!(details.provider_name, "Fireworks AI");
     assert_eq!(details.model_name, "DeepSeek V4.1 Flash");
+}
+
+#[tokio::test(start_paused = true)]
+async fn apple_intelligence_shows_only_where_it_can_run() {
+    use onda_domain::cleanup::{CleanupProvider, OnDeviceStatus};
+
+    let apple = CleanupProvider::AppleIntelligence;
+    let sheet = |h: &Harness| {
+        post_processing(h)
+            .details
+            .expect("details")
+            .dialog
+            .expect("sheet")
+    };
+    let sidebar =
+        |h: &Harness| -> Vec<String> { sheet(h).providers.into_iter().map(|p| p.id).collect() };
+
+    // a Mac that cannot run it never lists it
+    let h = Harness::with(|s| s.cleanup_enabled = true).await;
+    h.app.page_appeared(MainWindowSection::PostProcessing);
+    h.app.open_providers_dialog();
+    sleep(10).await;
+    assert_eq!(sidebar(&h), ["openrouter", "fireworks"]);
+
+    // turned off: listed, with the way to turn it on, and no key field
+    *lock(&h.cleanup.on_device) = Some(OnDeviceStatus::NotEnabled);
+    h.app.select_dialog_provider(apple);
+    sleep(10).await;
+    assert_eq!(
+        sidebar(&h),
+        ["openrouter", "fireworks", "apple-intelligence"]
+    );
+    let dialog = sheet(&h);
+    assert_eq!(dialog.key, None);
+    assert_eq!(dialog.refresh_models, None);
+    assert_eq!(
+        dialog.status_message.as_deref(),
+        Some("Turn on Apple Intelligence in System Settings to use it for post-processing.")
+    );
+    assert_eq!(
+        h.cleanup.list_calls.load(Ordering::SeqCst),
+        1,
+        "only OpenRouter's"
+    );
+
+    // picking its model makes it the provider in use
+    h.app.select_cleanup_model(apple, "on-device");
+    sleep(1).await;
+    let details = post_processing(&h).details.expect("details");
+    assert_eq!(details.provider_name, "Apple Intelligence");
+    assert_eq!(details.model_name, "On-Device Model");
+    assert_eq!(sheet(&h).selected_model.as_deref(), Some("on-device"));
+
+    // the test says why it cannot run, and reads no key
+    h.app.close_providers_dialog();
+    let reads = lock(&h.secrets.2).len();
+    h.app.test_cleanup();
+    sleep(10).await;
+    let error = post_processing(&h)
+        .details
+        .expect("details")
+        .test_error
+        .expect("an alert");
+    assert_eq!(
+        error.message,
+        "Turn on Apple Intelligence in System Settings to use it for post-processing."
+    );
+    assert_eq!(lock(&h.secrets.2).len(), reads, "no keychain read");
+    assert_eq!(h.cleanup.calls(), 0);
 }
 
 #[tokio::test(start_paused = true)]

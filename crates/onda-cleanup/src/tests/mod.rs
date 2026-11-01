@@ -31,7 +31,7 @@ fn cleanup_request(key: &str) -> CleanupRequest {
     let key = ApiKey::new(key).expect("test key");
     build_request(
         CleanupProvider::OpenRouter,
-        &key,
+        Some(&key),
         default_model(),
         TEST_SAMPLE,
         Some(APP),

@@ -9,6 +9,7 @@
 mod commands;
 mod events;
 mod logging;
+mod on_device;
 mod ports;
 mod system_speech;
 mod ui;
@@ -44,6 +45,7 @@ use tokio::runtime::Runtime;
 use updates::AppUpdater;
 
 pub use events::*;
+pub use on_device::*;
 pub use ports::*;
 pub use system_speech::*;
 pub use ui::*;
@@ -154,6 +156,10 @@ pub struct ShellPorts {
     /// the catalog (MOD-4).
     #[uniffi(default = None)]
     pub system_speech: Option<Arc<dyn SystemSpeechPort>>,
+    /// Apple Intelligence's on-device model; none leaves it out of the
+    /// cleanup providers.
+    #[uniffi(default = None)]
+    pub on_device: Option<Arc<dyn OnDeviceCleanupPort>>,
 }
 
 /// The running Onda core as seen by a shell. Commands return at once; the
@@ -292,7 +298,12 @@ impl OndaCore {
             models: Arc::new(models),
             catalog,
             history: Arc::new(History::new(Arc::new(history), settings.clone())),
-            cleanup: Arc::new(CloudCleanup::new(cleanup)),
+            cleanup: Arc::new(CloudCleanup::new(
+                cleanup,
+                ports.on_device.map(|port| {
+                    Arc::new(ShellOnDevice(port)) as Arc<dyn onda_app::ports::OnDeviceModel>
+                }),
+            )),
             secrets: Arc::new(Keychain::new(KeychainSecretStore::new())),
             settings: settings_source,
             tray_term: tray_term.clone(),

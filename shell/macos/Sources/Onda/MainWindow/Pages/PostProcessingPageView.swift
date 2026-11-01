@@ -138,7 +138,7 @@ private struct ProvidersSheet: View {
                     Label {
                         Text(provider.name)
                     } icon: {
-                        ProviderLogo(id: provider.id)
+                        ProviderLogo(id: provider.id, systemSymbol: provider.systemSymbol)
                     }
                     .tag(provider.id)
                 }
@@ -161,10 +161,12 @@ private struct ProvidersSheet: View {
 }
 
 /// A provider's mark from the bundle (assets/providers): `<id>-light.svg`
-/// or `<id>-dark.svg`, else `<id>.svg` for a mark that suits both. Brand
-/// marks are used as is, never tinted; no file draws nothing.
+/// or `<id>-dark.svg`, else `<id>.svg` for a mark that suits both, else
+/// the system symbol the core names. Brand marks are used as is, never
+/// tinted; with none of these nothing is drawn.
 private struct ProviderLogo: View {
     let id: String
+    let systemSymbol: String?
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -177,6 +179,8 @@ private struct ProviderLogo: View {
                 .resizable()
                 .scaledToFit()
                 .frame(width: 16, height: 16)
+        } else if let systemSymbol {
+            Image(systemName: systemSymbol)
         }
     }
 }
@@ -195,6 +199,7 @@ private struct ProviderPane: View {
 
     /// an ID-shaped query that no row has, offered as a model to use
     private var typedID: String? {
+        guard dialog.refreshModels != nil else { return nil }
         let id = trimmedQuery
         guard !id.isEmpty, !id.contains(where: \.isWhitespace) else { return nil }
         let listed = dialog.modelGroups.contains { group in
@@ -213,18 +218,30 @@ private struct ProviderPane: View {
     /// them, which stalls the sheet with a provider's full model list
     var body: some View {
         List {
-            Section {
-                PostProcessingApiKeyField(key: dialog.key, core: core)
+            if let key = dialog.key {
+                Section {
+                    PostProcessingApiKeyField(key: key, core: core)
+                }
+            }
+
+            if let status = dialog.statusMessage {
+                Section {
+                    Label(status, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Section {
-                HStack(spacing: 6) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundStyle(.secondary)
-                    TextField("", text: $query, prompt: Text(dialog.searchPlaceholder))
-                        .labelsHidden()
-                        .textFieldStyle(.plain)
-                        .onSubmit(useTypedID)
+                // a provider with one fixed model has nothing to search
+                if dialog.refreshModels != nil {
+                    HStack(spacing: 6) {
+                        Image(systemName: "magnifyingglass")
+                            .foregroundStyle(.secondary)
+                        TextField("", text: $query, prompt: Text(dialog.searchPlaceholder))
+                            .labelsHidden()
+                            .textFieldStyle(.plain)
+                            .onSubmit(useTypedID)
+                    }
                 }
 
                 if let id = typedID {

@@ -9,7 +9,9 @@ use std::sync::Arc;
 
 use jiff::Timestamp;
 use onda_asr::SpeechEngine;
-use onda_domain::cleanup::{ApiKey, CleanupError, CleanupModel, CleanupProvider, CleanupRequest};
+use onda_domain::cleanup::{
+    ApiKey, CleanupError, CleanupModel, CleanupProvider, CleanupRequest, OnDeviceStatus,
+};
 use onda_domain::history::{HistoryEntry, NewEntry, RecentTranscript};
 use onda_domain::hotkey::Shortcut;
 use onda_domain::languages::LanguageSetting;
@@ -164,6 +166,9 @@ pub trait SecretSource: Send + Sync {
 pub trait CleanupTransport: Send + Sync {
     /// Sends `request`.
     fn send(&self, request: CleanupRequest) -> BoxFuture<'static, Result<String, CleanupError>>;
+
+    /// Whether Apple Intelligence's on-device model can run now; read fresh.
+    fn on_device_status(&self) -> OnDeviceStatus;
 
     /// The models `provider` lists. `key` is the provider's stored key,
     /// read only for providers that list with it.

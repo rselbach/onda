@@ -129,9 +129,15 @@ The device list updates live (the core hears device changes itself).
 - Present `dialog` as a sheet while it is non-nil; "Done" (`doneTitle`) or
   dismissing the sheet → `closeProvidersDialog()`.
 - Sheet sidebar `dialog.providers` / `dialog.selectedProvider`:
-  `selectDialogProvider(id:)`.
-- Sheet API key secure field `dialog.key`, holding the key of the sheet's
-  selected provider (each provider has its own): show `text` when `revision`
+  `selectDialogProvider(id:)`. Each entry's logo is the bundled
+  `<id>-light.svg` / `<id>-dark.svg` or `<id>.svg` (assets/providers), else
+  its `systemSymbol`. The core leaves Apple Intelligence out on a Mac that
+  cannot run it.
+- `dialog.statusMessage`, when set, says why the provider cannot run now
+  (e.g. Apple Intelligence turned off); show it above the models.
+- Sheet API key secure field `dialog.key` (nil for a provider without a
+  key, such as Apple Intelligence), holding the key of the sheet's selected
+  provider (each provider has its own): show `text` when `revision`
   changes (never overwrite while typing); `loading`; red `error`. Every
   edit: `apiKeyEdited(text:)`. Return / end of editing: `apiKeyCommit()`.
   The core saves when the sheet closes, on page disappear, window close,
@@ -145,7 +151,8 @@ The device list updates live (the core hears device changes itself).
   shell. When its trimmed text has no spaces and matches no row's slug, a
   row showing that text over `useIdCaption` heads the list; clicking it
   (or Return) sends `selectCleanupModel(provider:slug:)` with the text. `refreshModels`
-  (nil when the provider cannot list) → `refreshCleanupModels()`. While
+  (nil for a provider with one fixed model, which also hides the search
+  field) → `refreshCleanupModels()`. While
   `modelsLoading`, show a spinner by it and a `loadingTitle` row with a
   spinner above the list; `modelsError` under the search field (a failed
   listing, or a request for the key from a provider that lists only with
@@ -241,6 +248,7 @@ close it.
 | `UpdaterPort` | `openUrl(url:)` (the DMG of an update this copy cannot install), `terminate()` (`NSApp.terminate`; the core already swapped the bundle and a relauncher waits for the exit). The core checks, downloads, verifies, and installs (UPD-1..UPD-8). `ShellPorts.updateHost` describes the running bundle (path, `CFBundleVersion`, macOS version, isolated run, Sparkle's saved `SUEnableAutomaticChecks`); nil for a dev build, which never updates (UPD-4) |
 | `MediaControlPort` (optional) | `nowPlaying()` → raw `NowPlaying` (`.failed(reason:)`, `.noTrack`, `.track(isPlaying:playbackRate:)`, each fact optional; the core decides what counts as playing), `pause`, `play`, `playPauseKey`; blocking, called one at a time; nil disables media pause (MEDIA-1, MEDIA-5) |
 | `SystemSpeechPort` (optional) | `details()` (catalog description, languages, license, attribution), `currentLocale()`, `prepare(locale:progress:)` (install assets, report download fractions to `SpeechProgress.report`), `transcribe(samples:locale:)` → final results; blocking, called one at a time from core threads, never the main thread; throws `SpeechError` (`UnsupportedLocale(displayName:)`, `Cancelled`, `Failed`); nil leaves System Speech out of the catalog (MOD-4, SYS-1..SYS-7) |
+| `OnDeviceCleanupPort` (optional) | `availability()` → `OnDeviceAvailability` (`Available`, `DeviceNotEligible`, `NotEnabled`, `NotReady`), read fresh and cheap; `respond(instructions:prompt:)` → the model's text at temperature 0 in a new session; blocking, called from core threads, never the main thread; throws `OnDeviceError.Failed(message:)`, never with the transcript; nil leaves Apple Intelligence out of the cleanup providers |
 
 `OndaCore.start(ports:dataDir:osLanguage:appVersion:trayTerm:privacyNaming:listener:)`;
 `trayTerm` is what copy calls the tray icon ("menu bar icon" on macOS, 09

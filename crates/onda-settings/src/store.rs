@@ -367,16 +367,21 @@ impl Settings {
     /// their successor, blank or corrupt values to the default, and any
     /// other slug is kept.
     pub fn cleanup_model(&self, provider: CleanupProvider) -> CleanupModel {
-        provider.resolve_model(self.string(model_key(provider)).as_deref())
+        let stored = model_key(provider).and_then(|key| self.string(key));
+        provider.resolve_model(stored.as_deref())
     }
 
-    /// Stores `provider`'s model slug.
+    /// Stores `provider`'s model slug; a provider with one fixed model
+    /// stores nothing.
     pub fn set_cleanup_model(
         &self,
         provider: CleanupProvider,
         model: &CleanupModel,
     ) -> Result<(), SettingsError> {
-        self.put(model_key(provider), Value::from(model.slug.as_ref()))
+        let Some(key) = model_key(provider) else {
+            return Ok(());
+        };
+        self.put(key, Value::from(model.slug.as_ref()))
     }
 
     /// `onboardingCompleted`. Default false.
@@ -535,10 +540,11 @@ impl Settings {
     }
 }
 
-fn model_key(provider: CleanupProvider) -> Key {
+fn model_key(provider: CleanupProvider) -> Option<Key> {
     match provider {
-        CleanupProvider::OpenRouter => Key::OpenRouterModel,
-        CleanupProvider::Fireworks => Key::FireworksModel,
+        CleanupProvider::OpenRouter => Some(Key::OpenRouterModel),
+        CleanupProvider::Fireworks => Some(Key::FireworksModel),
+        CleanupProvider::AppleIntelligence => None,
     }
 }
 

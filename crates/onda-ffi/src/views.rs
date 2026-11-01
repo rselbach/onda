@@ -623,10 +623,13 @@ pub struct ApiKeyFieldView {
 /// One provider entry in the sheet's sidebar.
 #[uniffi::remote(Record)]
 pub struct CleanupProviderOption {
-    /// Value for `select_dialog_provider`.
+    /// Value for `select_dialog_provider`; also names its bundled logo,
+    /// `<id>.svg` or `<id>-light.svg` and `<id>-dark.svg`.
     pub id: String,
     /// Display name.
     pub name: String,
+    /// An SF Symbol to show when the provider has no bundled logo.
+    pub system_symbol: Option<String>,
 }
 
 /// One model row in the sheet.
@@ -662,12 +665,16 @@ pub struct CleanupTestResult {
 pub struct ProvidersDialog {
     /// "Choose Model".
     pub title: String,
-    /// The sidebar, in order.
+    /// The sidebar, in order: every provider this Mac offers.
     pub providers: Vec<CleanupProviderOption>,
     /// The provider whose pane shows.
     pub selected_provider: String,
-    /// The provider's API key field.
-    pub key: ApiKeyFieldView,
+    /// The provider's API key field; absent for a provider that uses no
+    /// key.
+    pub key: Option<ApiKeyFieldView>,
+    /// Why the provider cannot run now, e.g. "Turn on Apple Intelligence in
+    /// System Settings…"; shown above its models.
+    pub status_message: Option<String>,
     /// "Models".
     pub models_label: String,
     /// The provider's models: curated, then the model in use when it is a
@@ -683,8 +690,8 @@ pub struct ProvidersDialog {
     pub search_placeholder: String,
     /// Caption on that row, under the typed ID.
     pub use_id_caption: String,
-    /// "Refresh Models"; absent when the provider cannot list its models,
-    /// disabled while a listing runs.
+    /// "Refresh Models"; absent for a provider with one fixed model, which
+    /// also hides the search field; disabled while a listing runs.
     pub refresh_models: Option<ButtonView>,
     /// A listing is running: show a spinner next to the refresh button and,
     /// with `loading_title`, a row above the list.

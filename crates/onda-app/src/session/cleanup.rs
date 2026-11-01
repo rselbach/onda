@@ -6,17 +6,19 @@
 //! issued after a save always reads what that save wrote.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use onda_domain::cleanup::{
-    ApiKey, CleanupError, CleanupModel, CleanupProvider, KeyBaseline, KeyWrite, TEST_SAMPLE,
-    build_request, custom_model_slug, key_write, test_result_line, test_said_line,
+    ApiKey, CleanupError, CleanupModel, CleanupProvider, KeyBaseline, KeyWrite, ModelListing,
+    OnDeviceStatus, TEST_SAMPLE, build_request, custom_model_slug, key_write, test_result_line,
+    test_said_line,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::spawn_blocking;
 
 use super::{Actor, Msg, Task, UiMsg, send_when};
 use crate::events::Event;
-use crate::seams::SettingChange;
+use crate::seams::{CleanupTransport, SettingChange};
 use crate::views::{
     ApiKeyFieldView, CleanupTestResult, MainWindowSection, PostProcessingInputs,
     PostProcessingPage, ProvidersDialogInputs, key_placeholder, models_error_text,
@@ -90,6 +92,9 @@ pub(super) struct CleanupPageState {
     listing: Option<(CleanupProvider, Task)>,
     list_generation: u64,
     list_error: Option<(CleanupProvider, String)>,
+    // Apple Intelligence, as last read; refreshed when the page or the
+    // sheet shows
+    on_device: OnDeviceStatus,
 }
 
 impl Default for CleanupPageState {
@@ -113,8 +118,34 @@ impl Default for CleanupPageState {
             listing: None,
             list_generation: 0,
             list_error: None,
+            on_device: OnDeviceStatus::DeviceNotEligible,
         }
     }
+}
+
+// what the test sends with: the stored key, none for a provider without
+// one, or why it cannot run
+async fn test_key(
+    provider: CleanupProvider,
+    transport: &Arc<dyn CleanupTransport>,
+    stored: Option<oneshot::Receiver<Result<Option<String>, String>>>,
+) -> Result<Option<ApiKey>, String> {
+    if provider.on_device() {
+        let transport = transport.clone();
+        let status = spawn_blocking(move || transport.on_device_status())
+            .await
+            .unwrap_or(OnDeviceStatus::DeviceNotEligible);
+        if let Some(message) = status.message() {
+            return Err(message.to_owned());
+        }
+    }
+    let Some(stored) = stored else {
+        return Ok(None);
+    };
+    let stored = stored.await.unwrap_or_else(lost)?;
+    ApiKey::new(stored.as_deref().unwrap_or_default())
+        .map(Some)
+        .map_err(|error| error.describe(provider))
 }
 
 // the value a write leaves stored
@@ -137,6 +168,7 @@ impl Actor {
     /// The page appeared: list the provider's models for their names,
     /// unless listing needs the key, which the page never reads (CLN-25).
     pub(super) fn post_processing_appeared(&mut self) {
+        self.refresh_on_device();
         if self.settings.cleanup_enabled {
             self.list_public_models_once();
         }
@@ -144,9 +176,24 @@ impl Actor {
 
     fn list_public_models_once(&mut self) {
         let provider = self.settings.cleanup_provider;
-        if !provider.lists_models_with_key() {
+        if provider.model_listing() == ModelListing::Public {
             self.list_models_once(provider);
         }
+    }
+
+    // a cheap OS read; the user can turn Apple Intelligence on or off at any
+    // time
+    fn refresh_on_device(&mut self) {
+        self.ui.cleanup.on_device = self.ports.cleanup.on_device_status();
+    }
+
+    // the sheet's key field exists only for providers that use a key
+    fn show_provider(&mut self, provider: CleanupProvider) {
+        self.ui.cleanup.dialog = Some(provider);
+        if provider.uses_key() {
+            self.load_api_key(provider);
+        }
+        self.list_models_once(provider);
     }
 
     /// The "Post-process transcripts" toggle (CLN-26). Turning it off hides
@@ -170,10 +217,8 @@ impl Actor {
         if !self.settings.cleanup_enabled || !visible || self.ui.cleanup.dialog.is_some() {
             return;
         }
-        let provider = self.settings.cleanup_provider;
-        self.ui.cleanup.dialog = Some(provider);
-        self.load_api_key(provider);
-        self.list_models_once(provider);
+        self.refresh_on_device();
+        self.show_provider(self.settings.cleanup_provider);
     }
 
     /// "Done", or anything that hides the sheet: saves the key field
@@ -192,9 +237,9 @@ impl Actor {
         }
         // the typed key belongs to the provider it was typed for
         self.save_api_key();
-        self.ui.cleanup.dialog = Some(provider);
-        self.load_api_key(provider);
-        self.list_models_once(provider);
+        self.cancel_key_load();
+        self.refresh_on_device();
+        self.show_provider(provider);
     }
 
     fn cancel_key_load(&mut self) {
@@ -307,7 +352,8 @@ impl Actor {
                 page.baseline = KeyBaseline::Known(value);
                 page.error = None;
                 // a new key may unlock, or change, what the provider lists
-                if provider.lists_models_with_key() && page.dialog == Some(provider) {
+                let with_key = provider.model_listing() == ModelListing::WithKey;
+                if with_key && page.dialog == Some(provider) {
                     self.list_cleanup_models(provider);
                 }
             }
@@ -355,6 +401,9 @@ impl Actor {
     // lists once per provider per run; a failed listing retries when asked
     // again
     fn list_models_once(&mut self, provider: CleanupProvider) {
+        if provider.model_listing() == ModelListing::None {
+            return;
+        }
         let page = &self.ui.cleanup;
         let busy = page.listing.as_ref().is_some_and(|(p, _)| *p == provider);
         if !page.listed.contains_key(&provider) && !busy {
@@ -372,7 +421,7 @@ impl Actor {
     // replaces a listing in flight
     fn list_cleanup_models(&mut self, provider: CleanupProvider) {
         // the key is read behind every save already issued (CLN-25)
-        let stored = provider.lists_models_with_key().then(|| {
+        let stored = (provider.model_listing() == ModelListing::WithKey).then(|| {
             let secrets = self.ports.secrets.clone();
             self.key_queue().run(move || secrets.api_key(provider))
         });
@@ -384,7 +433,7 @@ impl Actor {
         let task = self.spawn(async move {
             let key = match stored {
                 Some(stored) => match stored.await.unwrap_or_else(lost) {
-                    Ok(key) => key.and_then(|key| ApiKey::new(&key).ok()),
+                    Ok(key) => key.and_then(|key: String| ApiKey::new(&key).ok()),
                     Err(error) => {
                         tracing::warn!(%error, provider = provider.id(), "could not read the key to list models");
                         None
@@ -449,25 +498,29 @@ impl Actor {
             let saved = queue.run(move || saver.save_api_key(saved_for, &saving));
             (saved_for, value, saved)
         });
-        let stored = queue.run(move || secrets.api_key(provider));
+        let stored = provider
+            .uses_key()
+            .then(|| queue.run(move || secrets.api_key(provider)));
         let task = self.spawn(async move {
-            if let Some((provider, value, saved)) = saved {
+            if let Some((saved_for, value, saved)) = saved {
                 let result = saved.await.unwrap_or_else(lost);
                 let _ = messages.send(Msg::Ui(UiMsg::KeySaved {
-                    provider,
+                    provider: saved_for,
                     value,
                     result,
                 }));
             }
-            let stored = stored.await.unwrap_or_else(lost);
-            let result = match stored {
-                Ok(stored) => match ApiKey::new(stored.as_deref().unwrap_or_default()) {
-                    Ok(key) => transport
-                        .send(build_request(provider, &key, &model, TEST_SAMPLE, None))
-                        .await
-                        .map_err(|error| error.describe(provider)),
-                    Err(error) => Err(error.describe(provider)),
-                },
+            let result = match test_key(provider, &transport, stored).await {
+                Ok(key) => transport
+                    .send(build_request(
+                        provider,
+                        key.as_ref(),
+                        &model,
+                        TEST_SAMPLE,
+                        None,
+                    ))
+                    .await
+                    .map_err(|error| error.describe(provider)),
                 Err(error) => Err(error),
             };
             Msg::Ui(UiMsg::TestFinished { generation, result })
@@ -503,29 +556,44 @@ impl Actor {
     pub(super) fn post_processing_view(&self) -> PostProcessingPage {
         let page = &self.ui.cleanup;
         let listed = |provider| page.listed.get(&provider).map_or(&[][..], Vec::as_slice);
-        let key = page.dialog.map(|provider| ApiKeyFieldView {
-            placeholder: key_placeholder(provider),
-            text: page.text.clone(),
-            revision: page.revision,
-            loading: page.loading,
-            error: page.error.clone(),
-        });
-        let provider = self.settings.cleanup_provider;
-        let dialog = page
+        let key = page
             .dialog
-            .zip(key.as_ref())
-            .map(|(shown, key)| ProvidersDialogInputs {
-                provider: shown,
-                selected: (shown == provider).then_some(&self.settings.cleanup_model),
-                listed_models: listed(shown),
-                models_loading: page.listing.as_ref().is_some_and(|(p, _)| *p == shown),
-                models_error: page
-                    .list_error
-                    .as_ref()
-                    .filter(|(p, _)| *p == shown)
-                    .map(|(_, error)| error.as_str()),
-                key,
+            .filter(|provider| provider.uses_key())
+            .map(|provider| ApiKeyFieldView {
+                placeholder: key_placeholder(provider),
+                text: page.text.clone(),
+                revision: page.revision,
+                loading: page.loading,
+                error: page.error.clone(),
             });
+        let provider = self.settings.cleanup_provider;
+        // Apple Intelligence is offered only on a Mac that can run it,
+        // unless it is already in use
+        let offered: Vec<CleanupProvider> = CleanupProvider::ALL
+            .into_iter()
+            .filter(|p| {
+                !p.on_device()
+                    || page.on_device != OnDeviceStatus::DeviceNotEligible
+                    || *p == provider
+            })
+            .collect();
+        let dialog = page.dialog.map(|shown| ProvidersDialogInputs {
+            provider: shown,
+            offered: &offered,
+            status_message: shown
+                .on_device()
+                .then(|| page.on_device.message())
+                .flatten(),
+            selected: (shown == provider).then_some(&self.settings.cleanup_model),
+            listed_models: listed(shown),
+            models_loading: page.listing.as_ref().is_some_and(|(p, _)| *p == shown),
+            models_error: page
+                .list_error
+                .as_ref()
+                .filter(|(p, _)| *p == shown)
+                .map(|(_, error)| error.as_str()),
+            key: key.as_ref(),
+        });
         post_processing_page(PostProcessingInputs {
             enabled: self.settings.cleanup_enabled,
             provider,

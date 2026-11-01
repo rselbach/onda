@@ -48,14 +48,16 @@ pub struct ModelsPage {
     pub next_page_token: Option<String>,
 }
 
-/// The request for one page of `provider`'s models. A provider that needs
-/// a key to list and has none is [`CleanupError::MissingKey`].
+/// The request for one page of `provider`'s models; `None` for a provider
+/// with nothing to list. A provider that needs a key to list and has none
+/// is [`CleanupError::MissingKey`].
 pub fn models_request(
     provider: CleanupProvider,
     key: Option<&ApiKey>,
     page_token: Option<&str>,
-) -> Result<ModelsRequest, CleanupError> {
+) -> Result<Option<ModelsRequest>, CleanupError> {
     let request = match provider {
+        CleanupProvider::AppleIntelligence => return Ok(None),
         CleanupProvider::OpenRouter => ModelsRequest {
             url: openrouter::MODELS_ENDPOINT.to_owned(),
             headers: Vec::new(),
@@ -68,7 +70,7 @@ pub fn models_request(
             }
         }
     };
-    Ok(request)
+    Ok(Some(request))
 }
 
 /// Reads one page of `provider`'s listing.
@@ -87,6 +89,7 @@ pub fn parse_models_page(
     let (models, next_page_token) = match provider {
         CleanupProvider::OpenRouter => (openrouter::parse_models(&json)?, None),
         CleanupProvider::Fireworks => fireworks::parse_models(&json)?,
+        CleanupProvider::AppleIntelligence => (Vec::new(), None),
     };
     Ok(ModelsPage {
         models,
@@ -111,8 +114,9 @@ mod tests {
 
     #[test]
     fn requests_per_provider() {
-        let openrouter =
-            models_request(CleanupProvider::OpenRouter, None, Some("ignored")).expect("request");
+        let openrouter = models_request(CleanupProvider::OpenRouter, None, Some("ignored"))
+            .expect("request")
+            .expect("lists");
         assert_eq!(openrouter.url, "https://openrouter.ai/api/v1/models");
         assert!(openrouter.headers.is_empty(), "OpenRouter's list is public");
 
@@ -122,8 +126,9 @@ mod tests {
             "Fireworks lists only with a key"
         );
         let key = ApiKey::new("fw-troy-barnes").expect("key");
-        let fireworks =
-            models_request(CleanupProvider::Fireworks, Some(&key), Some("p2")).expect("request");
+        let fireworks = models_request(CleanupProvider::Fireworks, Some(&key), Some("p2"))
+            .expect("request")
+            .expect("lists");
         assert!(
             fireworks.url.ends_with("&pageToken=p2"),
             "{}",
@@ -136,6 +141,11 @@ mod tests {
         assert!(
             !format!("{fireworks:?}").contains("troy"),
             "Debug never prints the key"
+        );
+        assert_eq!(
+            models_request(CleanupProvider::AppleIntelligence, None, None),
+            Ok(None),
+            "one fixed model"
         );
     }
 

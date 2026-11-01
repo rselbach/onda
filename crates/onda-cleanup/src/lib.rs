@@ -148,7 +148,9 @@ impl CleanupClient {
         let mut models = Vec::new();
         let mut token: Option<String> = None;
         for _ in 0..MAX_MODEL_PAGES {
-            let request = models_request(provider, key, token.as_deref())?;
+            let Some(request) = models_request(provider, key, token.as_deref())? else {
+                break;
+            };
             let (status, body) = tokio::time::timeout(REQUEST_TIMEOUT, self.fetch(&request))
                 .await
                 .unwrap_or_else(|_elapsed| Err(CleanupError::Transport(TIMED_OUT.to_owned())))?;
@@ -188,13 +190,18 @@ impl CleanupClient {
         request: &CleanupRequest,
         body: Vec<u8>,
     ) -> Result<(u16, Vec<u8>), CleanupError> {
+        let Some(url) = self
+            .endpoint
+            .as_deref()
+            .or(request.provider.chat_endpoint())
+        else {
+            return Err(CleanupError::Transport(
+                "This provider is not reached over HTTP.".to_owned(),
+            ));
+        };
         let response = self
             .http
-            .post(
-                self.endpoint
-                    .as_deref()
-                    .unwrap_or(request.provider.chat_endpoint()),
-            )
+            .post(url)
             .headers(header_map(&request.headers)?)
             .body(body)
             .send()

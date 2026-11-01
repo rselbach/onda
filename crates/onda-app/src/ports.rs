@@ -6,6 +6,7 @@
 
 use std::path::Path;
 
+use onda_domain::cleanup::OnDeviceStatus;
 use onda_domain::hotkey::{GlobeKeyAction, ModifierSet, Shortcut};
 use onda_domain::messages::{LoginItemRegistryStatus, NotificationAuthorization, UserMessage};
 use onda_domain::models::SystemSpeechInfo;
@@ -282,6 +283,20 @@ pub enum SystemSpeechError {
         /// What went wrong, for logs.
         detail: String,
     },
+}
+
+/// Apple Intelligence's on-device language model, supplied by the shell.
+///
+/// `respond` blocks the calling thread until the model answers; the core
+/// calls it only from blocking-pool threads, never the session actor.
+pub trait OnDeviceModel: Send + Sync {
+    /// Whether the model can run now. Cheap; read fresh each time.
+    fn status(&self) -> OnDeviceStatus;
+
+    /// Answers `prompt` in a new session with `instructions`, at
+    /// temperature 0. An error is the OS's description, never the
+    /// transcript.
+    fn respond(&self, instructions: &str, prompt: &str) -> Result<String, String>;
 }
 
 /// The platform speech recognizer, when the OS has one (SYS-1..SYS-7).

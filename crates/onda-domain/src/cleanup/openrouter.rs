@@ -142,6 +142,34 @@ pub struct RequestBody(Body);
 enum Body {
     OpenRouter(OpenRouterBody),
     Fireworks(fireworks::Body),
+    OnDevice(OnDevicePrompt),
+}
+
+/// What the on-device model gets: the system prompt as the session's
+/// instructions, and the user message as its prompt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OnDevicePrompt {
+    /// The session instructions, [`SYSTEM_PROMPT`].
+    pub instructions: String,
+    /// The fenced transcript (CLN-6).
+    pub prompt: String,
+}
+
+impl CleanupRequest {
+    /// The on-device model's prompt, when this request is for it rather
+    /// than for an HTTP endpoint.
+    pub fn on_device_prompt(&self) -> Option<&OnDevicePrompt> {
+        match &self.body.0 {
+            Body::OnDevice(prompt) => Some(prompt),
+            Body::OpenRouter(_) | Body::Fireworks(_) => None,
+        }
+    }
+}
+
+/// The on-device model's reply as cleaned text: trimmed, with echoed
+/// `<transcript>` tags dropped (CLN-10).
+pub fn on_device_content(content: &str) -> String {
+    unwrap_transcript_tags(content)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -194,39 +222,41 @@ impl fmt::Debug for CleanupRequest {
 
 /// Builds the request that cleans `transcript` (untrimmed) with
 /// `provider`'s `model`, naming the target app when known (CLN-4..CLN-6).
+/// `key` is required by providers that [use one](CleanupProvider::uses_key)
+/// and ignored by the rest.
 pub fn build_request(
     provider: CleanupProvider,
-    key: &ApiKey,
+    key: Option<&ApiKey>,
     model: &CleanupModel,
     transcript: &str,
     app_name: Option<&str>,
 ) -> CleanupRequest {
-    let mut headers = vec![
-        ("Content-Type", "application/json".to_owned()),
-        ("Authorization", format!("Bearer {}", key.expose())),
-    ];
-    let messages = [
-        ChatMessage {
-            role: "system",
-            content: SYSTEM_PROMPT.to_owned(),
-        },
-        ChatMessage {
-            role: "user",
-            content: user_message(transcript, app_name),
-        },
-    ];
+    let prompt = user_message(transcript, app_name);
+    let messages = || {
+        [
+            ChatMessage {
+                role: "system",
+                content: SYSTEM_PROMPT.to_owned(),
+            },
+            ChatMessage {
+                role: "user",
+                content: prompt.clone(),
+            },
+        ]
+    };
     let model_slug = model.slug.clone().into_owned();
-    let body = match provider {
+    let (headers, body) = match provider {
         CleanupProvider::OpenRouter => {
+            let mut headers = http_headers(key);
             // OpenRouter's app attribution
             headers.push(("X-Title", "Onda".to_owned()));
             headers.push((
                 "HTTP-Referer",
                 "https://rselbach.github.io/onda/".to_owned(),
             ));
-            Body::OpenRouter(OpenRouterBody {
+            let body = Body::OpenRouter(OpenRouterBody {
                 model: model_slug,
-                messages,
+                messages: messages(),
                 stream: false,
                 temperature: 0,
                 reasoning: model.reasoning_effort.map(|effort| Reasoning {
@@ -236,21 +266,40 @@ pub fn build_request(
                     sort: "latency",
                     zdr: true,
                 },
-            })
+            });
+            (headers, body)
         }
-        CleanupProvider::Fireworks => Body::Fireworks(fireworks::Body {
-            model: model_slug,
-            messages,
-            stream: false,
-            temperature: 0,
-            reasoning_effort: model.reasoning_effort.map(ReasoningEffort::as_str),
-        }),
+        CleanupProvider::Fireworks => {
+            let body = Body::Fireworks(fireworks::Body {
+                model: model_slug,
+                messages: messages(),
+                stream: false,
+                temperature: 0,
+                reasoning_effort: model.reasoning_effort.map(ReasoningEffort::as_str),
+            });
+            (http_headers(key), body)
+        }
+        CleanupProvider::AppleIntelligence => {
+            let body = Body::OnDevice(OnDevicePrompt {
+                instructions: SYSTEM_PROMPT.to_owned(),
+                prompt: prompt.clone(),
+            });
+            (Vec::new(), body)
+        }
     };
     CleanupRequest {
         provider,
         headers,
         body: RequestBody(body),
     }
+}
+
+fn http_headers(key: Option<&ApiKey>) -> Vec<(&'static str, String)> {
+    let mut headers = vec![("Content-Type", "application/json".to_owned())];
+    if let Some(key) = key {
+        headers.push(("Authorization", format!("Bearer {}", key.expose())));
+    }
+    headers
 }
 
 /// The user message: the transcript fenced in `<transcript>` tags, preceded
@@ -425,7 +474,7 @@ mod tests {
     fn debug_output_never_leaks_the_key_cln_8() {
         let request = build_request(
             CleanupProvider::OpenRouter,
-            &key(),
+            Some(&key()),
             default_model(),
             "hello",
             None,
@@ -442,7 +491,7 @@ mod tests {
         let model = &CLEANUP_MODELS[1];
         let request = build_request(
             CleanupProvider::OpenRouter,
-            &key(),
+            Some(&key()),
             model,
             "señor chang",
             None,
@@ -478,14 +527,14 @@ mod tests {
     fn fireworks_requests_carry_no_openrouter_fields() {
         let request = build_request(
             CleanupProvider::Fireworks,
-            &key(),
+            Some(&key()),
             &FIREWORKS_MODELS[0],
             "pop pop",
             Some("Mail"),
         );
         assert_eq!(
             request.provider.chat_endpoint(),
-            crate::cleanup::fireworks::ENDPOINT
+            Some(crate::cleanup::fireworks::ENDPOINT)
         );
         let want_headers = vec![
             ("Content-Type", "application/json".to_owned()),
@@ -507,16 +556,53 @@ mod tests {
 
         let custom =
             crate::cleanup::fireworks::resolve_model(Some("accounts/fireworks/models/kimi-k3"));
-        let request = build_request(CleanupProvider::Fireworks, &key(), &custom, "hi", None);
+        let request = build_request(
+            CleanupProvider::Fireworks,
+            Some(&key()),
+            &custom,
+            "hi",
+            None,
+        );
         let body = serde_json::to_value(&request.body).expect("serialize body");
         assert_eq!(body.get("reasoning_effort"), None, "{body}");
+    }
+
+    #[test]
+    fn on_device_requests_carry_the_prompt_and_no_key() {
+        let model = CleanupProvider::AppleIntelligence.default_model();
+        let request = build_request(
+            CleanupProvider::AppleIntelligence,
+            None,
+            model,
+            "um hi troy",
+            Some("Notes"),
+        );
+        assert!(request.headers.is_empty(), "nothing to authenticate");
+        assert_eq!(
+            request.on_device_prompt(),
+            Some(&OnDevicePrompt {
+                instructions: SYSTEM_PROMPT.to_owned(),
+                prompt: "Dictating into: Notes\n\n<transcript>\num hi troy\n</transcript>"
+                    .to_owned(),
+            })
+        );
+        assert_eq!(
+            on_device_content("  <transcript>\nHi Troy.\n</transcript>\n"),
+            "Hi Troy."
+        );
     }
 
     #[test]
     fn models_outside_the_catalog_send_no_reasoning_setting() {
         // a model with mandatory reasoning rejects effort "none"
         let model = CleanupModel::custom("openai/gpt-6.1-terra-pro");
-        let request = build_request(CleanupProvider::OpenRouter, &key(), &model, "pop pop", None);
+        let request = build_request(
+            CleanupProvider::OpenRouter,
+            Some(&key()),
+            &model,
+            "pop pop",
+            None,
+        );
         let body = serde_json::to_value(&request.body).expect("serialize body");
         assert_eq!(body.get("reasoning"), None, "{body}");
         assert_eq!(body["model"], "openai/gpt-6.1-terra-pro");

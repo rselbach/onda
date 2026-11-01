@@ -2,7 +2,9 @@
 
 use std::fmt;
 
-use onda_domain::cleanup::{CleanupError, CleanupModel, CleanupProvider, TEST_FAILED_TITLE};
+use onda_domain::cleanup::{
+    CleanupError, CleanupModel, CleanupProvider, ModelListing, TEST_FAILED_TITLE,
+};
 
 use super::{AlertView, ButtonView, ToggleView};
 
@@ -15,6 +17,11 @@ fn caption(provider: CleanupProvider) -> String {
                                         transcript. The API key is stored in your system keychain, \
                                         not in preferences. Falls back to the raw transcript if the \
                                         request fails."
+            .to_owned(),
+        CleanupProvider::AppleIntelligence => "Post-processing runs on this Mac with Apple \
+                                               Intelligence; your transcript never leaves it. \
+                                               Falls back to the raw transcript if the model \
+                                               is unavailable or the request fails."
             .to_owned(),
         CleanupProvider::Fireworks => "Cloud post-processing sends your transcript to Fireworks AI \
                                        for processing. Fireworks says it doesn't retain prompts or \
@@ -72,10 +79,13 @@ impl fmt::Debug for ApiKeyFieldView {
 /// One provider entry in the sheet's sidebar.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CleanupProviderOption {
-    /// Value for `select_dialog_provider`.
+    /// Value for `select_dialog_provider`; also names its bundled logo,
+    /// `<id>.svg` or `<id>-light.svg` and `<id>-dark.svg`.
     pub id: String,
     /// Display name.
     pub name: String,
+    /// An SF Symbol to show when the provider has no bundled logo.
+    pub system_symbol: Option<String>,
 }
 
 /// One model row in the sheet.
@@ -102,12 +112,16 @@ pub struct CleanupModelGroup {
 pub struct ProvidersDialog {
     /// "Choose Model".
     pub title: String,
-    /// The sidebar, in order.
+    /// The sidebar, in order: every provider this Mac offers.
     pub providers: Vec<CleanupProviderOption>,
     /// The provider whose pane shows.
     pub selected_provider: String,
-    /// The provider's API key field.
-    pub key: ApiKeyFieldView,
+    /// The provider's API key field; absent for a provider that uses no
+    /// key.
+    pub key: Option<ApiKeyFieldView>,
+    /// Why the provider cannot run now, e.g. "Turn on Apple Intelligence in
+    /// System Settings…"; shown above its models.
+    pub status_message: Option<String>,
     /// "Models".
     pub models_label: String,
     /// The provider's models: curated, then the model in use when it is a
@@ -123,8 +137,8 @@ pub struct ProvidersDialog {
     pub search_placeholder: String,
     /// Caption on that row, under the typed ID.
     pub use_id_caption: String,
-    /// "Refresh Models"; absent when the provider cannot list its models,
-    /// disabled while a listing runs.
+    /// "Refresh Models"; absent for a provider with one fixed model, which
+    /// also hides the search field; disabled while a listing runs.
     pub refresh_models: Option<ButtonView>,
     /// A listing is running: show a spinner next to the refresh button and,
     /// with `loading_title`, a row above the list.
@@ -206,6 +220,10 @@ pub struct PostProcessingInputs<'a> {
 pub struct ProvidersDialogInputs<'a> {
     /// The provider whose pane shows.
     pub provider: CleanupProvider,
+    /// The providers the sidebar lists, in order.
+    pub offered: &'a [CleanupProvider],
+    /// Why the provider cannot run now.
+    pub status_message: Option<&'a str>,
     /// The model in use, when it belongs to this provider.
     pub selected: Option<&'a CleanupModel>,
     /// The models it listed; empty until a listing finishes.
@@ -214,8 +232,8 @@ pub struct ProvidersDialogInputs<'a> {
     pub models_loading: bool,
     /// The last listing error.
     pub models_error: Option<&'a str>,
-    /// The key field.
-    pub key: &'a ApiKeyFieldView,
+    /// The key field, for a provider that uses a key.
+    pub key: Option<&'a ApiKeyFieldView>,
 }
 
 fn option(model: &CleanupModel) -> CleanupModelOption {
@@ -270,21 +288,28 @@ fn providers_dialog(inputs: &ProvidersDialogInputs<'_>) -> ProvidersDialog {
     let provider = inputs.provider;
     ProvidersDialog {
         title: "Choose Model".to_owned(),
-        providers: CleanupProvider::ALL
+        providers: inputs
+            .offered
             .iter()
             .map(|provider| CleanupProviderOption {
                 id: provider.id().to_owned(),
                 name: provider.display_name().to_owned(),
+                // Apple's mark ships with the OS as a symbol
+                system_symbol: provider
+                    .on_device()
+                    .then(|| "apple.intelligence".to_owned()),
             })
             .collect(),
         selected_provider: provider.id().to_owned(),
-        key: inputs.key.clone(),
+        key: inputs.key.cloned(),
+        status_message: inputs.status_message.map(str::to_owned),
         models_label: "Models".to_owned(),
         model_groups: model_groups(inputs),
         selected_model: inputs.selected.map(|model| model.slug.clone().into_owned()),
         search_placeholder: "Search or enter a model ID".to_owned(),
         use_id_caption: "Use as model ID".to_owned(),
-        refresh_models: Some(ButtonView::new("Refresh Models", !inputs.models_loading)),
+        refresh_models: (provider.model_listing() != ModelListing::None)
+            .then(|| ButtonView::new("Refresh Models", !inputs.models_loading)),
         models_loading: inputs.models_loading,
         loading_title: "Loading models…".to_owned(),
         models_error: inputs.models_error.map(str::to_owned),
@@ -350,11 +375,13 @@ mod tests {
     ) -> ProvidersDialogInputs<'a> {
         ProvidersDialogInputs {
             provider: CleanupProvider::OpenRouter,
+            offered: &CleanupProvider::ALL,
+            status_message: None,
             selected,
             listed_models: listed,
             models_loading: false,
             models_error: None,
-            key,
+            key: Some(key),
         }
     }
 
@@ -448,7 +475,10 @@ mod tests {
         );
         assert_eq!(dialog.title, "Choose Model");
         assert_eq!(dialog.selected_provider, "openrouter");
-        assert_eq!(dialog.key.placeholder, "OpenRouter API key");
+        assert_eq!(
+            dialog.key.map(|key| key.placeholder).as_deref(),
+            Some("OpenRouter API key")
+        );
         assert_eq!(dialog.search_placeholder, "Search or enter a model ID");
         assert_eq!(dialog.use_id_caption, "Use as model ID");
         assert_eq!(dialog.done_title, "Done");
@@ -462,6 +492,32 @@ mod tests {
             .map(|g| g.title.as_str())
             .collect();
         assert_eq!(titles, ["Recommended", "All OpenRouter Models"]);
+    }
+
+    #[test]
+    fn the_on_device_pane_has_no_key_list_or_refresh() {
+        let model = CleanupProvider::AppleIntelligence.default_model();
+        let dialog = providers_dialog(&ProvidersDialogInputs {
+            provider: CleanupProvider::AppleIntelligence,
+            offered: &CleanupProvider::ALL,
+            status_message: Some("Turn on Apple Intelligence."),
+            selected: Some(model),
+            listed_models: &[],
+            models_loading: false,
+            models_error: None,
+            key: None,
+        });
+        assert_eq!(dialog.key, None);
+        assert_eq!(dialog.refresh_models, None, "nothing to list or search");
+        assert_eq!(
+            dialog.status_message.as_deref(),
+            Some("Turn on Apple Intelligence.")
+        );
+        assert_eq!(
+            titles_and_slugs(&dialog),
+            [("Recommended", vec!["on-device"])]
+        );
+        assert_eq!(dialog.selected_model.as_deref(), Some("on-device"));
     }
 
     #[test]

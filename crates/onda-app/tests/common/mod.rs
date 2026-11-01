@@ -33,7 +33,8 @@ use onda_app::views::UpdaterState;
 use onda_app::{App, Event, EventSink, HotkeyEvent, Ports};
 use onda_asr::{AsrError, LoadProgress, SpeechEngine};
 use onda_domain::cleanup::{
-    ApiKey, CleanupError, CleanupModel, CleanupProvider, CleanupRequest, default_model,
+    ApiKey, CleanupError, CleanupModel, CleanupProvider, CleanupRequest, ModelListing,
+    OnDeviceStatus, default_model,
 };
 use onda_domain::history::{HistoryEntry, NewEntry, RecentTranscript, plan_retention};
 use onda_domain::hotkey::{GlobeKeyAction, HotkeyView, ModifierSet, Shortcut};
@@ -824,6 +825,8 @@ pub struct FakeCleanup {
     pub list_calls: AtomicU64,
     /// The provider and key of every listing, in order.
     pub list_requests: Mutex<Vec<(CleanupProvider, Option<String>)>>,
+    /// What `on_device_status` reports; not eligible by default.
+    pub on_device: Mutex<Option<OnDeviceStatus>>,
 }
 
 impl FakeCleanup {
@@ -850,6 +853,10 @@ impl FakeCleanup {
 }
 
 impl CleanupTransport for FakeCleanup {
+    fn on_device_status(&self) -> OnDeviceStatus {
+        lock(&self.on_device).unwrap_or(OnDeviceStatus::DeviceNotEligible)
+    }
+
     fn send(&self, request: CleanupRequest) -> BoxFuture<'static, Result<String, CleanupError>> {
         let body = serde_json::to_value(&request.body).unwrap_or_default();
         lock(&self.requests).push(body);
@@ -873,7 +880,7 @@ impl CleanupTransport for FakeCleanup {
     ) -> BoxFuture<'static, Result<Vec<CleanupModel>, CleanupError>> {
         self.list_calls.fetch_add(1, Ordering::SeqCst);
         let key = key.map(|key| key.expose().to_owned());
-        let missing = provider.lists_models_with_key() && key.is_none();
+        let missing = provider.model_listing() == ModelListing::WithKey && key.is_none();
         lock(&self.list_requests).push((provider, key));
         let result = match missing {
             true => Err(CleanupError::MissingKey),
