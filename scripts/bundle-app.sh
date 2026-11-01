@@ -165,8 +165,9 @@ main() {
     echo "no ${DEVELOPER_ID} identity; signing ad hoc" >&2
   fi
   sign "${identity}" "${profile}"
+  # ad hoc signatures print it commented out: "# designated => cdhash ..."
   codesign --display --requirements - "${APP}" 2>&1 \
-    | grep '^designated' >&2
+    | grep -E '^(# )?designated' >&2
   echo "built ${APP} (${profile})"
 }
 
