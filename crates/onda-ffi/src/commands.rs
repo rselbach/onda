@@ -12,6 +12,7 @@ use onda_domain::migration::NoticeChoice;
 use onda_domain::models::ModelId;
 use onda_domain::setup::{PermissionFix, SetupAction};
 use onda_domain::types::{ActivationMode, HistoryRetention, OutputMode};
+use onda_domain::updates::UpdateAction;
 use uuid::Uuid;
 
 use crate::OndaCore;
@@ -113,14 +114,10 @@ impl OndaCore {
         self.with_app(App::redownload_model);
     }
 
-    /// "Check for Updates…" (UPD-1).
-    pub fn check_for_updates(&self) {
-        self.with_app(App::check_for_updates);
-    }
-
-    /// The updater's state changed; the core re-reads it.
-    pub fn updater_changed(&self) {
-        self.with_app(App::updater_changed);
+    /// The update item or button: check, restart to update, or download
+    /// (UPD-1, UPD-6, UPD-7).
+    pub fn update_action(&self, action: UpdateAction) {
+        self.with_app(|app| app.update_action(action));
     }
 
     // --- Getting Started and General ---

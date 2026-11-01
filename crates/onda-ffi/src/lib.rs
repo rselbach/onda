@@ -12,6 +12,7 @@ mod logging;
 mod ports;
 mod system_speech;
 mod ui;
+mod updates;
 mod views;
 
 use std::fmt;
@@ -40,6 +41,7 @@ use onda_history::HistoryStore;
 use onda_models::ModelManager;
 use onda_settings::{KeychainSecretStore, Settings};
 use tokio::runtime::Runtime;
+use updates::AppUpdater;
 
 pub use events::*;
 pub use ports::*;
@@ -139,8 +141,12 @@ pub struct ShellPorts {
     pub files: Arc<dyn FilesPort>,
     /// The login-item registry.
     pub login_item: Arc<dyn LoginItemPort>,
-    /// The updater.
+    /// What the updater needs from the shell.
     pub updater: Arc<dyn UpdaterPort>,
+    /// The running bundle; none for a dev build, which never updates
+    /// (UPD-4).
+    #[uniffi(default = None)]
+    pub update_host: Option<UpdateHost>,
     /// Now-playing control; none disables media pause (MEDIA-1).
     #[uniffi(default = None)]
     pub media: Option<Arc<dyn MediaControlPort>>,
@@ -258,9 +264,16 @@ impl OndaCore {
             hotkeys: ports.hotkeys,
             notifier: ports.notifier,
             login_item: ports.login_item,
-            updater: ports.updater,
             files: ports.files.clone(),
         });
+        let updater = AppUpdater::start(
+            ports.update_host,
+            ports.updater,
+            app.clone(),
+            paths.root(),
+            &app_version,
+            runtime.handle(),
+        );
         let tray_term: Arc<str> = tray_term.into();
         let core_ports = Ports {
             text_output: shell.clone(),
@@ -273,7 +286,7 @@ impl OndaCore {
             hotkeys: shell.clone(),
             notifier: shell.clone(),
             login_item: shell.clone(),
-            updater: shell.clone(),
+            updater: Arc::new(updater),
             files: shell,
             audio: microphone.clone(),
             models: Arc::new(models),

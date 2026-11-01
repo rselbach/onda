@@ -78,14 +78,25 @@ struct GeneralPageView: View {
 
             Section {
                 toggle(page.automaticUpdates) { core.setAutomaticUpdateChecks(on: $0) }
-                Button(page.checkForUpdates.title) {
-                    core.checkForUpdates()
+                HStack {
+                    if let caption = page.updateCaption {
+                        MainWindowCaption(text: caption.text, warning: caption.tone == .warning)
+                    }
+                    Spacer()
+                    Button(page.update.title) {
+                        core.updateAction(action: page.update.action)
+                    }
+                    .disabled(!page.update.enabled)
                 }
-                .disabled(!page.checkForUpdates.enabled)
             } header: {
                 Text("Updates")
             } footer: {
-                Text(page.versionFooter)
+                VStack(alignment: .leading) {
+                    Text(page.versionFooter)
+                    if let last = page.lastUpdateCheck {
+                        Text("Last checked \(last.formatted(date: .abbreviated, time: .shortened))")
+                    }
+                }
             }
         }
         .formStyle(.grouped)

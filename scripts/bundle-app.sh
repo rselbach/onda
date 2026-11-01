@@ -76,16 +76,14 @@ compile_icon() {
   iconutil -c icns "${iconset}" -o "${resources}/AppIcon.icns"
 }
 
-# Sparkle (UPD-1) and the media helper's dylib and script (MEDIA-1); the
-# executable finds both frameworks through @executable_path/../Frameworks
+# the media helper's dylib and script (MEDIA-1); the executable finds the
+# dylib through @executable_path/../Frameworks
 embed_frameworks() {
   local bin_dir="$1"
   local contents="${APP}/Contents"
   local adapter_script="${bin_dir}/MediaRemoteAdapter_MediaRemoteAdapter.bundle"
   adapter_script+="/Contents/Resources/run.pl"
   mkdir -p "${contents}/Frameworks" "${contents}/Resources/MediaRemoteAdapter"
-  ditto "${bin_dir}/Sparkle.framework" \
-    "${contents}/Frameworks/Sparkle.framework"
   cp "${bin_dir}/libMediaRemoteAdapter.dylib" "${contents}/Frameworks/"
   cp "${adapter_script}" "${contents}/Resources/MediaRemoteAdapter/run.pl"
 }
@@ -125,17 +123,7 @@ sign() {
     flags+=(--timestamp=none)
   fi
 
-  # REL-2: nested code first, innermost first, then the executable, then
-  # the bundle. Sparkle's helpers follow Sparkle's own signing order; the
-  # downloader keeps its entitlements.
-  local sparkle="${APP}/Contents/Frameworks/Sparkle.framework"
-  local sparkle_version="${sparkle}/Versions/B"
-  codesign "${flags[@]}" "${sparkle_version}/XPCServices/Installer.xpc"
-  codesign "${flags[@]}" --preserve-metadata=entitlements \
-    "${sparkle_version}/XPCServices/Downloader.xpc"
-  codesign "${flags[@]}" "${sparkle_version}/Autoupdate"
-  codesign "${flags[@]}" "${sparkle_version}/Updater.app"
-  codesign "${flags[@]}" "${sparkle}"
+  # REL-2: nested code first, then the executable, then the bundle
   codesign "${flags[@]}" \
     "${APP}/Contents/Frameworks/libMediaRemoteAdapter.dylib"
   codesign "${flags[@]}" --entitlements "${ENTITLEMENTS}" \

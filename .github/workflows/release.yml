@@ -1,7 +1,13 @@
 name: Release
 
 # Builds, signs, notarizes, and publishes a release for a v* tag
-# (REL-3, REL-4, REL-6, UPD-3).
+# (REL-3, REL-4, REL-6, UPD-3, UPD-5).
+#
+# GitHub Releases hold the versioned ZIP (what the in-app updater installs)
+# and DMG, both packaged from the same stapled Onda.app. GitHub Pages holds
+# two feeds, deployed together only after the release's assets download and
+# verify: update.json, the signed feed current Onda reads, and appcast.xml,
+# the Sparkle appcast that builds from before the switch still read.
 #
 # Repository secrets (names match the github-deployment-secrets helper):
 #   MACOS_CERTIFICATE_P12_BASE64  Developer ID Application certificate and
@@ -10,8 +16,11 @@ name: Release
 #   APPLE_ID                      Apple Account that notarizes
 #   APPLE_TEAM_ID                 Developer team ID
 #   APPLE_APP_SPECIFIC_PASSWORD   app-specific password of that account
-#   SPARKLE_EDDSA_PRIVATE_KEY     EdDSA key matching SUPublicEDKey in
-#                                 shell/macos/Info.plist; signs the update
+#   SPARKLE_EDDSA_PRIVATE_KEY     base64 Ed25519 seed (generate_keys -x)
+#                                 whose public key is SUPublicEDKey in
+#                                 shell/macos/Info.plist and
+#                                 onda_update::PUBLIC_KEY; signs update.json
+#                                 and the legacy appcast's DMG
 #   DEEPSEEK_API_TOKEN            release notes (rselbach/actions/pi-release-notes)
 #
 # GitHub Pages must use "GitHub Actions" as its source.
@@ -88,8 +97,8 @@ jobs:
           output-file: build/release-notes.md
           additional-context: >-
             Keep notes user-facing and concise. Do not include installation
-            instructions; the signed DMG is attached to the GitHub release and
-            the Sparkle appcast is updated separately.
+            instructions; the signed DMG and ZIP are attached to the GitHub
+            release and the in-app update feed is updated separately.
 
       - name: Import signing certificate
         env:
@@ -113,7 +122,7 @@ jobs:
           security list-keychains -d user -s "${keychain_path}" login.keychain-db
 
       # bundle-app.sh signs with the imported Developer ID identity
-      - name: Build, sign, notarize, and staple DMG
+      - name: Build, sign, notarize, and staple the ZIP and DMG
         env:
           VERSION: ${{ steps.version.outputs.version }}
           BUILD: ${{ github.run_number }}
@@ -122,19 +131,22 @@ jobs:
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
         run: scripts/release.sh
 
-      # sign_update comes from the Sparkle artifact SwiftPM resolved (and
-      # checksum-verified) for the build, so it matches the embedded framework
-      - name: Sign update and generate appcast.xml
+      # the feed signer shares the app's verifier (crates/onda-update), and
+      # signs Sparkle's format too, so no Sparkle tooling is needed
+      - name: Build the update tool
+        run: cargo build --locked --release -p onda-update --bin onda-update-tool
+
+      - name: Sign the legacy Sparkle appcast
         env:
           VERSION: ${{ steps.version.outputs.version }}
           BUILD: ${{ github.run_number }}
-          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_EDDSA_PRIVATE_KEY }}
+          SIGNING_KEY: ${{ secrets.SPARKLE_EDDSA_PRIVATE_KEY }}
         run: |
           dmg="build/Onda-${VERSION}.dmg"
-          sign_update="shell/macos/.build/artifacts/sparkle/Sparkle/bin/sign_update"
-          signature="$("${sign_update}" --ed-key-file - "${dmg}" <<<"${SPARKLE_PRIVATE_KEY}")"
+          tool="target/release/onda-update-tool"
+          signature="$("${tool}" sparkle-signature "${dmg}" <<<"${SIGNING_KEY}")"
           if [[ ! "${signature}" =~ ^sparkle:edSignature=\".+\"\ length=\"[0-9]+\"$ ]]; then
-            echo "::error::unexpected sign_update output"
+            echo "::error::unexpected sparkle-signature output"
             exit 1
           fi
 
@@ -164,16 +176,60 @@ jobs:
           EOF
           xmllint --noout _site/appcast.xml
 
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: _site
+      - name: Sign the update feed
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          BUILD: ${{ github.run_number }}
+          SIGNING_KEY: ${{ secrets.SPARKLE_EDDSA_PRIVATE_KEY }}
+        run: |
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
+          zip="Onda-${VERSION}-macos-arm64.zip"
+          dmg="Onda-${VERSION}.dmg"
+          minimum_os="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' \
+            shell/macos/Info.plist)"
+          mkdir -p _site
+          target/release/onda-update-tool sign-feed \
+            --version "${VERSION}" --build "${BUILD}" \
+            --minimum-os "${minimum_os}" \
+            --published-at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+            --notes-url "https://github.com/${GITHUB_REPOSITORY}/releases/tag/${GITHUB_REF_NAME}" \
+            --zip "build/${zip}" --zip-url "${base}/${zip}" \
+            --dmg "build/${dmg}" --dmg-url "${base}/${dmg}" \
+            --out _site/update.json <<<"${SIGNING_KEY}"
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: build/Onda-${{ steps.version.outputs.version }}.dmg
+          # a rerun must not change bytes an installed client already trusts
+          overwrite_files: false
+          fail_on_unmatched_files: true
+          files: |
+            build/Onda-${{ steps.version.outputs.version }}-macos-arm64.zip
+            build/Onda-${{ steps.version.outputs.version }}.dmg
           body_path: ${{ steps.release_notes.outputs.body-path }}
+
+      # the feeds go live only once the published assets are the signed ones,
+      # fetched through the app's own transport and URL policy
+      - name: Verify the published assets
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          BUILD: ${{ github.run_number }}
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if target/release/onda-update-tool verify-feed _site/update.json \
+              --version "${VERSION}" --build "${BUILD}" --download; then
+              exit 0
+            fi
+            echo "verification attempt ${attempt} failed; retrying" >&2
+            sleep 15
+          done
+          echo "::error::the published assets do not match the signed feed"
+          exit 1
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
 
       - name: Delete temporary keychain
         if: always()
@@ -183,8 +239,9 @@ jobs:
             echo "::warning::failed to delete ${keychain_path}"
           fi
 
-  # the appcast goes live only after the release (and its DMG) exists
-  deploy-appcast:
+  # one Pages deployment publishes update.json and appcast.xml together,
+  # after the release's assets verified
+  deploy-feeds:
     needs: build
     runs-on: ubuntu-latest
     environment:

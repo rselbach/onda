@@ -13,9 +13,7 @@ let package = Package(
     dependencies: [
         // MEDIA-1: now-playing control through a perl helper (Jabber's
         // pinned revision; only the dylib and its run.pl are used)
-        .package(url: "https://github.com/ejbills/mediaremote-adapter", revision: "78aae86c03adab11a7b352211cc82381737cf854"),
-        // UPD-1..UPD-4
-        .package(url: "https://github.com/sparkle-project/Sparkle.git", from: "2.8.0")
+        .package(url: "https://github.com/ejbills/mediaremote-adapter", revision: "78aae86c03adab11a7b352211cc82381737cf854")
     ],
     targets: [
         // built by scripts/build-ffi.sh
@@ -48,12 +46,11 @@ let package = Package(
             name: "Onda",
             dependencies: [
                 "OndaCore",
-                .product(name: "MediaRemoteAdapter", package: "mediaremote-adapter"),
-                .product(name: "Sparkle", package: "Sparkle")
+                .product(name: "MediaRemoteAdapter", package: "mediaremote-adapter")
             ],
             path: "Sources/Onda",
-            // the bundle embeds Sparkle and the adapter dylib in
-            // Contents/Frameworks (scripts/bundle-app.sh)
+            // the bundle embeds the adapter dylib in Contents/Frameworks
+            // (scripts/bundle-app.sh)
             linkerSettings: [
                 .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])
             ]

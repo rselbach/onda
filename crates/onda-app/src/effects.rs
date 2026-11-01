@@ -50,6 +50,8 @@ pub(crate) enum Effect {
     OpenLoginItems,
     /// A user-initiated update check (UPD-1).
     CheckForUpdates,
+    /// Open the download of an update Onda cannot install (UPD-7).
+    OpenUpdateDownload,
     /// Turn automatic update checks on or off.
     SetAutomaticUpdates(bool),
     /// A background message: a notification when authorized, else (or when
@@ -146,6 +148,7 @@ fn run(ports: &EffectPorts, effect: Effect, fallback: &(dyn Fn(UserMessage) + Se
         Effect::OpenKeyboardSettings => ports.hotkeys.open_keyboard_settings(),
         Effect::OpenLoginItems => ports.login_item.open_settings(),
         Effect::CheckForUpdates => ports.updater.check_now(),
+        Effect::OpenUpdateDownload => ports.updater.open_download(),
         Effect::SetAutomaticUpdates(enabled) => ports.updater.set_automatic_checks(enabled),
         Effect::Notify(message) => {
             let authorization = ports.notifier.authorization();

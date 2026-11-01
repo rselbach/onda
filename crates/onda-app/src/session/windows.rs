@@ -13,6 +13,7 @@ use onda_domain::migration::{Migration, NoticeChoice};
 use onda_domain::models::ModelId;
 use onda_domain::setup::{PermissionFix, SetupAction, base_model_to_download};
 use onda_domain::types::{ActivationMode, HistoryRetention, MicrophonePermission, OutputMode};
+use onda_domain::updates::UpdateAction;
 use uuid::Uuid;
 
 use super::cleanup::CleanupPageState;
@@ -43,7 +44,9 @@ pub(crate) enum UiMsg {
     MenuWillOpen,
     SelectLanguageFromMenu(LanguageSetting),
     RedownloadModel,
-    CheckForUpdates,
+    UpdateAction(UpdateAction),
+    /// The updater answered a restart: `true` while Onda quits to relaunch.
+    RestartAnswered(bool),
     UpdaterChanged,
     InputDevicesChanged,
     // Getting Started and General (WIN-5, WIN-8..WIN-14)
@@ -253,7 +256,8 @@ impl Actor {
                 self.refresh_settings();
                 self.redownload_model();
             }
-            UiMsg::CheckForUpdates => self.effects.send(Effect::CheckForUpdates),
+            UiMsg::UpdateAction(action) => self.update_action(action),
+            UiMsg::RestartAnswered(relaunching) => self.restart_answered(relaunching),
             UiMsg::UpdaterChanged => self.refresh_updater(),
             UiMsg::InputDevicesChanged => {
                 if self.ui.is_visible(MainWindowSection::General) {
@@ -496,12 +500,40 @@ impl Actor {
     pub(super) fn refresh_updater(&self) {
         let updater = self.ports.updater.clone();
         tokio::spawn(blocking_send(self.messages.clone(), move || {
-            Msg::Ui(UiMsg::Updater(UpdaterState {
-                can_check: updater.can_check(),
-                automatic: updater.automatic_checks(),
-                last_check: updater.last_check(),
-            }))
+            Msg::Ui(UiMsg::Updater(updater.state()))
         }));
+    }
+
+    /// The update control in the menu or on General (UPD-1, UPD-6, UPD-7).
+    /// The restart never interrupts a dictation (UPD-8): it is refused while
+    /// one runs, and once accepted no dictation starts until the updater
+    /// declines or fails (`restarting`). The updater itself refuses a
+    /// restart unless an update is ready, so a stale menu does no harm.
+    fn update_action(&mut self, action: UpdateAction) {
+        match action {
+            UpdateAction::Check => self.effects.send(Effect::CheckForUpdates),
+            UpdateAction::Download => self.effects.send(Effect::OpenUpdateDownload),
+            UpdateAction::Restart if self.dictating() => {
+                tracing::info!("the update restart waits for dictation to finish");
+            }
+            UpdateAction::Restart if self.restarting => {}
+            UpdateAction::Restart => {
+                self.restarting = true;
+                let updater = self.ports.updater.clone();
+                tokio::spawn(blocking_send(self.messages.clone(), move || {
+                    Msg::Ui(UiMsg::RestartAnswered(updater.restart_to_update()))
+                }));
+            }
+        }
+    }
+
+    fn restart_answered(&mut self, relaunching: bool) {
+        if relaunching {
+            tracing::info!("Onda is quitting to finish the update");
+            return;
+        }
+        self.restarting = false;
+        self.refresh_updater();
     }
 
     fn refresh_devices(&self) {
@@ -688,7 +720,9 @@ impl Actor {
             sounds: self.settings.sounds,
             login,
             login_error: general.login_error.as_ref(),
-            updater: general.updater,
+            updater: &general.updater,
+            dictating: self.dictating(),
+            restarting: self.restarting,
             version: &self.ports.app_version,
         })
     }

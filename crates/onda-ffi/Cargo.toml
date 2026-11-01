@@ -22,6 +22,7 @@ onda-domain = { path = "../onda-domain" }
 onda-history = { path = "../onda-history" }
 onda-models = { path = "../onda-models" }
 onda-settings = { path = "../onda-settings" }
+onda-update = { path = "../onda-update" }
 tokio = { version = "1.54.1", features = ["rt-multi-thread"] }
 tracing = "0.1.44"
 tracing-oslog = "0.3.0"

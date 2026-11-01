@@ -22,6 +22,11 @@ pub const LIBRARIES: &[(&str, &str, &str)] = &[
     ),
     ("cpal", "Apache-2.0", "https://github.com/RustAudio/cpal"),
     (
+        "ed25519-dalek",
+        "BSD-3-Clause",
+        "https://github.com/dalek-cryptography/curve25519-dalek",
+    ),
+    (
         "FluidAudio",
         "Apache-2.0",
         "https://github.com/FluidInference/FluidAudio",
@@ -82,7 +87,6 @@ pub const LIBRARIES: &[(&str, &str, &str)] = &[
         "MIT or Apache-2.0",
         "https://github.com/RustCrypto/hashes",
     ),
-    ("Sparkle", "MIT", "https://sparkle-project.org/"),
     (
         "tempfile",
         "MIT or Apache-2.0",
@@ -219,6 +223,7 @@ mod tests {
             ("aws-lc-rs", "ISC and (Apache-2.0 or ISC)"),
             ("aws-lc-sys", "ISC, Apache-2.0, MIT, and BSD-3-Clause"),
             ("cpal", "Apache-2.0"),
+            ("ed25519-dalek", "BSD-3-Clause"),
             ("FluidAudio", "Apache-2.0"),
             ("jiff", "MIT or Unlicense"),
             ("keyring", "MIT or Apache-2.0"),
@@ -232,7 +237,6 @@ mod tests {
             ("serde", "MIT or Apache-2.0"),
             ("serde_json", "MIT or Apache-2.0"),
             ("sha2", "MIT or Apache-2.0"),
-            ("Sparkle", "MIT"),
             ("tempfile", "MIT or Apache-2.0"),
             ("tokio", "MIT"),
             ("tracing", "MIT"),

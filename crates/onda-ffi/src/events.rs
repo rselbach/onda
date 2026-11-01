@@ -19,6 +19,7 @@ use onda_domain::overlay::{
 };
 use onda_domain::status_menu::{self, DictationMenuAction, StatusMenu};
 use onda_domain::tray;
+use onda_domain::updates::UpdateControl;
 
 /// Receives core events in emission order (ARCH-5), on a core thread.
 #[uniffi::export(with_foreign)]
@@ -314,7 +315,7 @@ pub struct LanguageSubmenu {
 }
 
 /// The status menu, top to bottom. Separators sit before
-/// `language`, `open_app`, `check_for_updates`, and `quit`.
+/// `language`, `open_app`, `update`, and `quit`.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct MenuState {
     /// Disabled header (UI-7).
@@ -341,8 +342,8 @@ pub struct MenuState {
     pub open_app: MenuEntry,
     /// "Settings…".
     pub settings: MenuEntry,
-    /// "Check for Updates…".
-    pub check_for_updates: MenuEntry,
+    /// Check for updates, restart to update, or download.
+    pub update: UpdateControl,
     /// "Quit Onda".
     pub quit: MenuEntry,
 }
@@ -532,7 +533,7 @@ impl From<StatusMenu> for MenuState {
             },
             open_app: entry(menu.open_app),
             settings: entry(menu.settings),
-            check_for_updates: entry(menu.check_for_updates),
+            update: menu.update,
             quit: entry(menu.quit),
         }
     }

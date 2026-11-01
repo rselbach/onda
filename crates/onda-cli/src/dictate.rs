@@ -20,7 +20,7 @@ use std::path::Path;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use onda_adapters::{
@@ -32,6 +32,7 @@ use onda_app::ports::{
     PrivacyPane, SoundPlayer, Target, TextOutput, Updater,
 };
 use onda_app::seams::{ModelStore, SecretSource, SettingsSource};
+use onda_app::views::UpdaterState;
 use onda_app::{App, Event, EventSink, HotkeyEvent, Ports};
 use onda_asr::SpeechEngine;
 use onda_asr_coreml::ParakeetEngine;
@@ -507,21 +508,19 @@ impl LoginItem for Terminal {
 }
 
 impl Updater for Terminal {
-    fn can_check(&self) -> bool {
-        false
+    fn state(&self) -> UpdaterState {
+        UpdaterState::default()
     }
 
     fn check_now(&self) {}
 
-    fn automatic_checks(&self) -> bool {
+    fn set_automatic_checks(&self, _: bool) {}
+
+    fn restart_to_update(&self) -> bool {
         false
     }
 
-    fn set_automatic_checks(&self, _: bool) {}
-
-    fn last_check(&self) -> Option<SystemTime> {
-        None
-    }
+    fn open_download(&self) {}
 }
 
 impl Files for Terminal {

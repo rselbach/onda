@@ -5,11 +5,10 @@
 use std::fmt;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::SystemTime;
 
 use onda_app::ports::{
     Cue, FieldText, Files, HotkeySource, InsertOutcome, LoginItem, MediaControl, Notifier,
-    NowPlaying, Permissions, Power, PrivacyPane, SoundPlayer, Target, TextOutput, Updater,
+    NowPlaying, Permissions, Power, PrivacyPane, SoundPlayer, Target, TextOutput,
 };
 use onda_domain::hotkey::{GlobeKeyAction, ModifierSet, Shortcut};
 use onda_domain::messages::{LoginItemRegistryStatus, NotificationAuthorization};
@@ -352,25 +351,33 @@ pub trait LoginItemPort: Send + Sync {
     fn open_settings(&self);
 }
 
-/// The shell-owned updater (UPD-1..UPD-4). Call
-/// [`OndaCore::updater_changed`](crate::OndaCore::updater_changed) when its
-/// state changes.
+/// What the core's updater needs from the native shell (UPD-6, UPD-7). The
+/// core checks, downloads, verifies, and installs.
 #[uniffi::export(with_foreign)]
 pub trait UpdaterPort: Send + Sync {
-    /// "Check for Updates…" is enabled.
-    fn can_check(&self) -> bool;
+    /// Opens `url` in the default browser.
+    fn open_url(&self, url: String);
 
-    /// Starts a user-initiated check.
-    fn check_now(&self);
+    /// Quits normally. The update is already in place, and a relauncher
+    /// opens it once this process exits.
+    fn terminate(&self);
+}
 
-    /// "Check for updates automatically".
-    fn automatic_checks(&self) -> bool;
-
-    /// Turns automatic checks on or off.
-    fn set_automatic_checks(&self, enabled: bool);
-
-    /// When the updater last checked.
-    fn last_check(&self) -> Option<SystemTime>;
+/// The running app bundle, for the updater (UPD-4).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct UpdateHost {
+    /// Absolute path of the running `.app`.
+    pub bundle_path: String,
+    /// `CFBundleVersion`.
+    pub build: String,
+    /// The running macOS, e.g. "26.1".
+    pub os_version: String,
+    /// An `ONDA_DATA_DIR` verification run: no background checks, and a
+    /// relaunch keeps the run's data folder.
+    pub isolated: bool,
+    /// Sparkle's saved automatic-check choice, used until Onda saves its
+    /// own.
+    pub legacy_automatic_checks: Option<bool>,
 }
 
 /// The shell's ports behind `onda-app`'s traits.
@@ -382,7 +389,6 @@ pub(crate) struct Shell {
     pub(crate) hotkeys: Arc<dyn HotkeyPort>,
     pub(crate) notifier: Arc<dyn NotifierPort>,
     pub(crate) login_item: Arc<dyn LoginItemPort>,
-    pub(crate) updater: Arc<dyn UpdaterPort>,
     pub(crate) files: Arc<dyn FilesPort>,
 }
 
@@ -542,28 +548,6 @@ impl LoginItem for Shell {
 
     fn open_settings(&self) {
         self.login_item.open_settings();
-    }
-}
-
-impl Updater for Shell {
-    fn can_check(&self) -> bool {
-        self.updater.can_check()
-    }
-
-    fn check_now(&self) {
-        self.updater.check_now();
-    }
-
-    fn automatic_checks(&self) -> bool {
-        self.updater.automatic_checks()
-    }
-
-    fn set_automatic_checks(&self, enabled: bool) {
-        self.updater.set_automatic_checks(enabled);
-    }
-
-    fn last_check(&self) -> Option<SystemTime> {
-        self.updater.last_check()
     }
 }
 

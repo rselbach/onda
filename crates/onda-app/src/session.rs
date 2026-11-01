@@ -51,6 +51,7 @@ use onda_domain::status_menu::{
 use onda_domain::tray::{AppStatus, TrayView, tray_view};
 use onda_domain::types::{MicrophonePermission, ModelState, SessionPhase};
 use onda_domain::typing::requires_accessibility;
+use onda_domain::updates::update_control;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::{AbortHandle, spawn_blocking};
 use tokio::time::Instant;
@@ -377,6 +378,9 @@ pub(crate) struct Actor {
     permissions: PermissionSnapshot,
     accessibility_prompted: bool,
     failed_audio: Option<Arc<[f32]>>,
+    // a restart to update was accepted and has not been declined: no
+    // dictation may start (UPD-8)
+    restarting: bool,
     last_transcript: Option<String>,
     recent: Vec<RecentTranscript>,
     cancel_registered: bool,
@@ -449,6 +453,7 @@ impl Actor {
             },
             accessibility_prompted: false,
             failed_audio: None,
+            restarting: false,
             last_transcript: None,
             recent: Vec::new(),
             cancel_registered: false,
@@ -627,6 +632,11 @@ impl Actor {
         }
     }
 
+    /// A session is starting, recording, or transcribing (UPD-8).
+    fn dictating(&self) -> bool {
+        !matches!(self.phase, Phase::Idle)
+    }
+
     fn menu_toggle(&mut self) {
         // UI-9, DICT-21: menu starts are not provisional and stops have no tail
         match self.phase {
@@ -640,6 +650,10 @@ impl Actor {
     // --- starting (DICT-1..DICT-6, HOT-28..HOT-30, DICT-23) ---
 
     fn request_start(&mut self, kind: StartKind) {
+        if self.restarting {
+            tracing::info!("no dictation while Onda restarts to update");
+            return;
+        }
         if self.model_state != ModelState::Ready {
             // guidance shares the notice's 1.5 s rate limit (DICT-2)
             if self.notify(match self.declined() {
@@ -1510,6 +1524,8 @@ impl Actor {
 
     fn ui_ready(&mut self) {
         self.refresh_permissions();
+        // the menu's update item follows the updater from the first render
+        self.refresh_updater();
         self.deliver_held_hotkey_failure();
         if let Some(warning) = self.ports.settings.reset_invalid_language() {
             // LANG-3: the code now reads `auto` and is stored that way
@@ -1865,7 +1881,10 @@ impl Actor {
                 && !self.catalog.is_built_in(settings.selected_model),
             current_language_name: language_menu::subtitle(settings.language).to_owned(),
             languages,
-            can_check_for_updates: self.ui.general.updater.can_check,
+            update: update_control(
+                &self.ui.general.updater.status,
+                self.dictating() || self.restarting,
+            ),
         })
     }
 

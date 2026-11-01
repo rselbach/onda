@@ -38,6 +38,7 @@ use onda_domain::migration::NoticeChoice;
 use onda_domain::privacy_naming::PrivacyNaming;
 use onda_domain::setup::{PermissionFix, SetupAction};
 use onda_domain::types::{ActivationMode, HistoryRetention, OutputMode};
+use onda_domain::updates::UpdateAction;
 use ports::{
     Files, HotkeySource, LoginItem, MediaControl, Notifier, Permissions, Power, SoundPlayer,
     TextOutput, Updater,
@@ -398,13 +399,13 @@ impl App {
         self.ui(UiMsg::RedownloadModel);
     }
 
-    /// "Check for Updates…" in the menu or on General (UPD-1).
-    pub fn check_for_updates(&self) {
-        self.ui(UiMsg::CheckForUpdates);
+    /// The update item in the menu or the update button on General: check,
+    /// restart to update, or download (UPD-1, UPD-6, UPD-7).
+    pub fn update_action(&self, action: UpdateAction) {
+        self.ui(UiMsg::UpdateAction(action));
     }
 
-    /// The updater's state changed (it became able to check, or finished a
-    /// check); views re-read it.
+    /// The updater's state changed; views re-read it.
     pub fn updater_changed(&self) {
         self.ui(UiMsg::UpdaterChanged);
     }

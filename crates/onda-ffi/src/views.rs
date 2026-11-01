@@ -25,6 +25,38 @@ use onda_domain::onboarding::OnboardingStep;
 use onda_domain::routing::NoteActionKind;
 use onda_domain::setup::{PermissionFix, SetupAction, SetupStepId, SetupStepStatus};
 use onda_domain::types::{ActivationMode, HistoryRetention, OutputMode};
+use onda_domain::updates::{UpdateAction, UpdateCaption, UpdateControl};
+
+/// What the update control does when chosen; pass to `update_action`.
+#[uniffi::remote(Enum)]
+pub enum UpdateAction {
+    /// Check for updates now.
+    Check,
+    /// Quit, install the staged update, and relaunch.
+    Restart,
+    /// Open the release download in the browser.
+    Download,
+}
+
+/// The line under the update control on General.
+#[uniffi::remote(Record)]
+pub struct UpdateCaption {
+    /// Text.
+    pub text: String,
+    /// Orange for a failure, else secondary.
+    pub tone: CaptionTone,
+}
+
+/// The update item in the status menu and the button on General.
+#[uniffi::remote(Record)]
+pub struct UpdateControl {
+    /// Title.
+    pub title: String,
+    /// Clickable.
+    pub enabled: bool,
+    /// What choosing it does.
+    pub action: UpdateAction,
+}
 
 /// Where a transcript goes.
 #[uniffi::remote(Enum)]
@@ -411,8 +443,10 @@ pub struct GeneralPage {
     pub launch_at_login_caption: Option<LoginCaptionView>,
     /// "Check for updates automatically".
     pub automatic_updates: ToggleView,
-    /// "Check for Updates…".
-    pub check_for_updates: ButtonView,
+    /// "Check for Updates…", "Restart to Update", or "Download Onda …".
+    pub update: UpdateControl,
+    /// What the updater is doing, under the update control.
+    pub update_caption: Option<UpdateCaption>,
     /// "Current version: <version>".
     pub version_footer: String,
     /// When the updater last checked; the shell localizes it.

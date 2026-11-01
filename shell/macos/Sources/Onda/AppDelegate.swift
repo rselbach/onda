@@ -25,7 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             "Permissions at launch: microphone \(String(describing: permissions.microphone()), privacy: .public), accessibility \(permissions.accessibilityTrusted(), privacy: .public)"
         )
         // an ONDA_DATA_DIR verification run never checks for updates on its own
-        let updater = Updater(isolated: ProcessInfo.processInfo.environment["ONDA_DATA_DIR"]?.isEmpty == false)
+        let isolated = ProcessInfo.processInfo.environment["ONDA_DATA_DIR"]?.isEmpty == false
         let ports = ShellPorts(
             textOutput: TextOutput(),
             permissions: permissions,
@@ -35,7 +35,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             notifier: notifier,
             files: Files(),
             loginItem: LoginItem(),
-            updater: updater,
+            updater: Updater(),
+            updateHost: Updater.host(isolated: isolated),
             media: MediaControl(),
             systemSpeech: SystemSpeech()
         )
@@ -59,7 +60,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         self.core = core
-        updater.onChange = { core.updaterChanged() }
         Log.app.info("Onda started with data in \(dataDir.path, privacy: .public)")
 
         NSApp.mainMenu = AppMenu.make(core: core)

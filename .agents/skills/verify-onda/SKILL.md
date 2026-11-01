@@ -39,10 +39,10 @@ Isolation is by data directory, not bundle id. The Microphone and
 Accessibility grants (System Settings calls Accessibility "Device Control
 and Data Access" on macOS 27) belong to `com.rselbach.onda` and its
 Developer ID designated requirement; a unique id per run would lose them. Consequences:
-the `com.rselbach.onda` defaults domain (main window frame, Sparkle
-bookkeeping), Keychain items, TCC, and login items are shared with the
-user's real Onda. Sparkle's background checks are off whenever
-`ONDA_DATA_DIR` is set.
+the `com.rselbach.onda` defaults domain (main window frame), Keychain
+items, TCC, and login items are shared with the user's real Onda. The
+updater keeps its state in the run's data directory and makes no
+background checks whenever `ONDA_DATA_DIR` is set.
 
 ## Launch
 

@@ -5,12 +5,13 @@
 //! shell can delay a step but never deadlock the state machine (ARCH-6).
 
 use std::path::Path;
-use std::time::SystemTime;
 
 use onda_domain::hotkey::{GlobeKeyAction, ModifierSet, Shortcut};
 use onda_domain::messages::{LoginItemRegistryStatus, NotificationAuthorization, UserMessage};
 use onda_domain::models::SystemSpeechInfo;
 use onda_domain::types::MicrophonePermission;
+
+use crate::views::UpdaterState;
 
 /// The app that had keyboard focus when a session started (DICT-3).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -233,23 +234,27 @@ pub trait LoginItem: Send + Sync {
     fn open_settings(&self);
 }
 
-/// The shell-owned updater (UPD-1..UPD-4). The core only displays its state
-/// and forwards the user's choices.
+/// The updater (UPD-1..UPD-8). The core only displays its state and
+/// forwards the user's choices; it keeps the restart from interrupting a
+/// dictation (UPD-8).
 pub trait Updater: Send + Sync {
-    /// The updater can check now (UPD-1).
-    fn can_check(&self) -> bool;
+    /// The current state.
+    fn state(&self) -> UpdaterState;
 
     /// Starts a user-initiated check (UPD-1).
     fn check_now(&self);
 
-    /// "Check for updates automatically".
-    fn automatic_checks(&self) -> bool;
-
     /// Turns automatic checks on or off.
     fn set_automatic_checks(&self, enabled: bool);
 
-    /// When the updater last checked, if ever.
-    fn last_check(&self) -> Option<SystemTime>;
+    /// Installs the staged update and relaunches (UPD-6). Blocks until Onda
+    /// is quitting to relaunch (`true`) or the restart did not happen
+    /// (`false`: nothing was ready, a newer update is downloading instead,
+    /// or the install failed). The core calls it off the actor.
+    fn restart_to_update(&self) -> bool;
+
+    /// Opens the download of an update this copy cannot install (UPD-7).
+    fn open_download(&self);
 }
 
 /// File manager services.

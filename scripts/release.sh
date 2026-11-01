@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 #
-# Builds a release Onda.app with scripts/bundle-app.sh, packages it as a
-# compressed, signed DMG with an /Applications symlink, then notarizes,
-# staples, and verifies it (REL-3). Writes build/Onda-<version>.dmg.
+# Builds a release Onda.app with scripts/bundle-app.sh, notarizes and
+# staples the app, then packages that same stapled bundle twice (REL-3,
+# UPD-5): as the ZIP the in-app updater installs and as a compressed,
+# signed, notarized, and stapled DMG with an /Applications symlink. Both are
+# verified the way a user's Mac and the updater check them. Writes
+# build/Onda-<version>-macos-arm64.zip and build/Onda-<version>.dmg.
 #
 # Version and build number come from --version/--build, else VERSION/BUILD in
 # the environment, else shell/macos/Info.plist. Notarization authenticates
@@ -21,6 +24,7 @@ readonly ROOT
 readonly BUILD_DIR="${ROOT}/build"
 readonly APP="${BUILD_DIR}/Onda.app"
 readonly SOURCE_PLIST="${ROOT}/shell/macos/Info.plist"
+readonly UPDATE_REQUIREMENT="${ROOT}/crates/onda-update/update-requirement.txt"
 readonly VOLUME_NAME="Onda"
 STAGING=""
 MOUNT_POINT=""
@@ -54,7 +58,7 @@ plist_value() {
 }
 
 require_tools() {
-  local tools=(cargo swift xcodebuild codesign hdiutil spctl xcrun)
+  local tools=(cargo swift xcodebuild codesign hdiutil spctl xcrun ditto)
   local tool
   for tool in "${tools[@]}"; do
     if ! command -v "${tool}" >/dev/null; then
@@ -107,8 +111,10 @@ create_dmg() {
   codesign --verify --strict --verbose=2 "${dmg}"
 }
 
+# submits $1 (a ZIP or DMG) and staples the ticket to $2
 notarize() {
-  local dmg="$1"
+  local submission="$1"
+  local target="$2"
   local auth=(--keychain-profile "${NOTARY_PROFILE:-onda-notary}")
   if uses_apple_id; then
     auth=(--apple-id "${APPLE_ID}" --team-id "${APPLE_TEAM_ID}"
@@ -117,7 +123,7 @@ notarize() {
 
   # the submission's status decides, not notarytool's exit code
   local result="${STAGING}/notary.json"
-  if ! xcrun notarytool submit "${dmg}" "${auth[@]}" --wait \
+  if ! xcrun notarytool submit "${submission}" "${auth[@]}" --wait \
     --output-format json >"${result}"; then
     echo "notarytool submit failed" >&2
   fi
@@ -134,7 +140,55 @@ notarize() {
     xcrun notarytool log "${id}" "${auth[@]}" >&2 || true
     exit 1
   fi
-  xcrun stapler staple "${dmg}"
+  xcrun stapler staple "${target}"
+  xcrun stapler validate "${target}"
+}
+
+# the notary service takes a ZIP of the app; the ticket is stapled to the
+# app itself so the update ZIP carries it
+notarize_app() {
+  local submission="${STAGING}/Onda-notarize.zip"
+  ditto -c -k --keepParent "${APP}" "${submission}"
+  notarize "${submission}" "${APP}"
+  rm -f "${submission}"
+}
+
+create_zip() {
+  local zip="$1"
+  rm -f "${zip}"
+  ditto -c -k --sequesterRsrc --keepParent "${APP}" "${zip}"
+}
+
+# unpacks the ZIP the way the updater does and checks what it checks
+verify_zip() {
+  local zip="$1"
+  local version="$2"
+  local build="$3"
+  local notarized="$4"
+  local unpacked="${STAGING}/zip"
+  mkdir -p "${unpacked}"
+  ditto -x -k "${zip}" "${unpacked}"
+  local app="${unpacked}/Onda.app"
+  if [[ ! -d "${app}" ]]; then
+    die "ZIP has no Onda.app"
+  fi
+  local plist="${app}/Contents/Info.plist"
+  local got_version
+  local got_build
+  got_version="$(plutil -extract CFBundleShortVersionString raw -o - "${plist}")"
+  got_build="$(plutil -extract CFBundleVersion raw -o - "${plist}")"
+  if [[ "${got_version}" != "${version}" || "${got_build}" != "${build}" ]]; then
+    die "ZIP holds ${got_version} (${got_build}), not ${version} (${build})"
+  fi
+  codesign --verify --deep --strict --verbose=2 "${app}"
+  if [[ "${notarized}" == "true" ]]; then
+    local requirement
+    requirement="$(<"${UPDATE_REQUIREMENT}")"
+    codesign --verify --deep --strict -R="${requirement}" "${app}"
+    xcrun stapler validate "${app}"
+    spctl --assess --type execute --verbose=2 "${app}"
+  fi
+  rm -rf "${unpacked}"
 }
 
 # mounts the DMG read-only and checks what a user would get from it;
@@ -203,7 +257,8 @@ main() {
   if [[ ! "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
     die "version '${version}' is not X.Y.Z"
   fi
-  # Sparkle compares CFBundleVersion to order updates
+  # the update feed (and the legacy Sparkle appcast) order releases by
+  # CFBundleVersion
   if [[ ! "${build}" =~ ^[0-9]+$ ]]; then
     die "build '${build}' is not a number"
   fi
@@ -226,15 +281,24 @@ main() {
     die "notarization needs a Developer ID signature; app has '${identity}'"
   fi
 
-  local dmg="${BUILD_DIR}/Onda-${version}.dmg"
-  create_dmg "${dmg}" "${identity}"
   if [[ "${notarize_dmg}" == "true" ]]; then
-    notarize "${dmg}"
+    notarize_app
   else
     echo "skipping notarization" >&2
   fi
+
+  # both archives hold the same (stapled) bundle
+  local zip="${BUILD_DIR}/Onda-${version}-macos-arm64.zip"
+  create_zip "${zip}"
+  verify_zip "${zip}" "${version}" "${build}" "${notarize_dmg}"
+
+  local dmg="${BUILD_DIR}/Onda-${version}.dmg"
+  create_dmg "${dmg}" "${identity}"
+  if [[ "${notarize_dmg}" == "true" ]]; then
+    notarize "${dmg}" "${dmg}"
+  fi
   verify_dmg "${dmg}" "${notarize_dmg}"
-  echo "built ${dmg} (${version} build ${build})"
+  echo "built ${zip} and ${dmg} (${version} build ${build})"
 }
 
 main "$@"

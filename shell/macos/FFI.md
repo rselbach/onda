@@ -52,7 +52,7 @@ The Swift shell renders complete view models from `CoreEvent` and calls
 | Retry Loading Model / Re-download Model | `menu.retryModelLoad`, `redownloadModel` | `retryModelLoad()`, `redownloadModel()` |
 | Language ▸ | `menu.language` (subtitle, checked items, `otherTitle`) | `selectLanguageFromMenu(code:)`, `chooseOtherLanguage()` |
 | Open Onda / Settings… (⌘,) | `menu.openApp`, `menu.settings` | `openApp()`, `openSettings()` |
-| Check for Updates… | `menu.checkForUpdates` | `checkForUpdates()` |
+| Check for Updates… / Restart to Update / Download Onda … | `menu.update` (title, enabled, `action`) | `updateAction(action:)` |
 | Quit (⌘Q) | `menu.quit` | `NSApp.terminate`; `shutdown()` in `applicationWillTerminate` |
 | App menu "Settings…" (⌘,) | — | `openSettings()` |
 
@@ -84,7 +84,7 @@ Sidebar order and sections come from `MainWindowSection`. Each page:
 | `pauseMedia` + `pauseMediaCaption` | `setPauseMedia(on:)` |
 | `sounds` | `setSounds(on:)` |
 | `launchAtLogin` + `launchAtLoginCaption` (tone, optional button) | `setLaunchAtLogin(on:)`, `openLoginItems()` |
-| `automaticUpdates`, `checkForUpdates`, `versionFooter` | `setAutomaticUpdateChecks(on:)`, `checkForUpdates()` |
+| `automaticUpdates`, `update` (title, enabled, `action`) + `updateCaption` (tone), `versionFooter`, `lastUpdateCheck` | `setAutomaticUpdateChecks(on:)`, `updateAction(action:)` |
 
 The device list updates live (the core hears device changes itself).
 
@@ -217,7 +217,7 @@ close it.
 | `NotifierPort` | authorization, post, `requestAuthorization()` (the core decides when, ONB-12) |
 | `FilesPort` | `excludeFromBackup`, `revealFile`, `openFile` |
 | `LoginItemPort` | `status()` (nil when unbundled), `setEnabled`, `openSettings()` (`SMAppService`) |
-| `UpdaterPort` | `canCheck`, `checkNow`, automatic flag, `lastCheck`; call `updaterChanged()` when its state changes (Sparkle; skipped for dev builds, UPD-4) |
+| `UpdaterPort` | `openUrl(url:)` (the DMG of an update this copy cannot install), `terminate()` (`NSApp.terminate`; the core already swapped the bundle and a relauncher waits for the exit). The core checks, downloads, verifies, and installs (UPD-1..UPD-8). `ShellPorts.updateHost` describes the running bundle (path, `CFBundleVersion`, macOS version, isolated run, Sparkle's saved `SUEnableAutomaticChecks`); nil for a dev build, which never updates (UPD-4) |
 | `MediaControlPort` (optional) | `nowPlaying()` → raw `NowPlaying` (`.failed(reason:)`, `.noTrack`, `.track(isPlaying:playbackRate:)`, each fact optional; the core decides what counts as playing), `pause`, `play`, `playPauseKey`; blocking, called one at a time; nil disables media pause (MEDIA-1, MEDIA-5) |
 | `SystemSpeechPort` (optional) | `details()` (catalog description, languages, license, attribution), `currentLocale()`, `prepare(locale:progress:)` (install assets, report download fractions to `SpeechProgress.report`), `transcribe(samples:locale:)` → final results; blocking, called one at a time from core threads, never the main thread; throws `SpeechError` (`UnsupportedLocale(displayName:)`, `Cancelled`, `Failed`); nil leaves System Speech out of the catalog (MOD-4, SYS-1..SYS-7) |
 

@@ -38,8 +38,6 @@
     <string>Onda uses your microphone to capture audio for local speech-to-text transcription. Audio is processed entirely on your device and never leaves your Mac.</string>
     <key>NSSpeechRecognitionUsageDescription</key>
     <string>Onda uses Apple's built-in speech recognition to transcribe your audio on-device when the System Speech model is selected.</string>
-    <key>SUFeedURL</key>
-    <string>https://rselbach.github.io/onda/appcast.xml</string>
     <key>SUPublicEDKey</key>
     <string>2obyIySbPw8xSuXQwzSw2sCbOixUww08jk95se82unc=</string>
 </dict>

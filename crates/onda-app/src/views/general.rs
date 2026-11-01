@@ -1,4 +1,4 @@
-//! The General page (WIN-8..WIN-15, LOGIN-1..LOGIN-3, UPD-1).
+//! The General page (WIN-8..WIN-15, LOGIN-1..LOGIN-3, UPD-1, UPD-8).
 
 use std::cmp::Ordering;
 use std::time::SystemTime;
@@ -9,8 +9,11 @@ use onda_domain::messages::{
 use onda_domain::privacy_naming::PrivacyNaming;
 use onda_domain::setup::{accessibility_row, microphone_row};
 use onda_domain::types::{MicrophonePermission, OutputMode};
+use onda_domain::updates::{
+    UpdateCaption, UpdateControl, UpdateStatus, update_caption, update_control,
+};
 
-use super::{ButtonView, PermissionRowView, ToggleView};
+use super::{PermissionRowView, ToggleView};
 use crate::seams::InputDeviceInfo;
 
 /// The picker entry for following the OS default input (WIN-9).
@@ -23,11 +26,11 @@ const UNAVAILABLE_WARNING: &str =
 /// The platform whose input setting "System Default" follows (WIN-9).
 const PLATFORM_NAME: &str = "macOS";
 
-/// The updater's state, read from the shell's port (UPD-1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// The updater's state, read from its port (UPD-1).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct UpdaterState {
-    /// "Check for Updates…" is enabled.
-    pub can_check: bool,
+    /// What the updater is doing.
+    pub status: UpdateStatus,
     /// "Check for updates automatically".
     pub automatic: bool,
     /// When the updater last checked.
@@ -60,7 +63,11 @@ pub struct GeneralInputs<'a> {
     /// The last failed toggle, kept until the next success (LOGIN-2).
     pub login_error: Option<&'a LoginItemError>,
     /// The updater's state.
-    pub updater: UpdaterState,
+    pub updater: &'a UpdaterState,
+    /// A session records or transcribes, so the restart waits (UPD-8).
+    pub dictating: bool,
+    /// A restart was accepted and is in progress (UPD-8).
+    pub restarting: bool,
     /// The app version, e.g. "1.2.0".
     pub version: &'a str,
 }
@@ -146,8 +153,10 @@ pub struct GeneralPage {
     pub launch_at_login_caption: Option<LoginCaptionView>,
     /// "Check for updates automatically".
     pub automatic_updates: ToggleView,
-    /// "Check for Updates…".
-    pub check_for_updates: ButtonView,
+    /// "Check for Updates…", "Restart to Update", or "Download Onda …".
+    pub update: UpdateControl,
+    /// What the updater is doing, under the update control.
+    pub update_caption: Option<UpdateCaption>,
     /// "Current version: <version>".
     pub version_footer: String,
     /// When the updater last checked; the shell localizes it.
@@ -205,9 +214,13 @@ pub fn general_page(inputs: GeneralInputs<'_>) -> GeneralPage {
         automatic_updates: ToggleView::new(
             "Check for updates automatically",
             inputs.updater.automatic,
-            true,
+            inputs.updater.status != UpdateStatus::Disabled,
         ),
-        check_for_updates: ButtonView::new("Check for Updates…", inputs.updater.can_check),
+        update: update_control(
+            &inputs.updater.status,
+            inputs.dictating || inputs.restarting,
+        ),
+        update_caption: update_caption(&inputs.updater.status, inputs.dictating),
         version_footer: format!("Current version: {}", inputs.version),
         last_update_check: inputs.updater.last_check,
     }

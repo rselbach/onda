@@ -7,6 +7,7 @@ use crate::privacy_naming::PrivacyNaming;
 use crate::setup::MissingPermission;
 use crate::tray::{AppStatus, percent};
 use crate::types::{ModelState, OutputMode, SessionPhase};
+use crate::updates::UpdateControl;
 
 /// A saved transcript offered under "Recent Transcripts" (HIS-28). Built by
 /// the history code: newest first, at most 5, previews already cut.
@@ -73,8 +74,8 @@ pub struct StatusMenuInput<'a> {
     pub current_language_name: String,
     /// Recent languages (LANG-8, LANG-9).
     pub languages: Vec<LanguageMenuItem>,
-    /// The updater can check now (UPD-1).
-    pub can_check_for_updates: bool,
+    /// The update item (UPD-1, UPD-6, UPD-7).
+    pub update: UpdateControl,
 }
 
 /// A plain menu item.
@@ -156,7 +157,7 @@ pub struct LanguageMenu {
 
 /// The status menu, top to bottom. Optional items are
 /// `None` when hidden. Separators sit before the language menu, before
-/// `open_app`, before `check_for_updates`, and before `quit`.
+/// `open_app`, before `update`, and before `quit`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StatusMenu {
     /// Disabled header (UI-7).
@@ -183,8 +184,8 @@ pub struct StatusMenu {
     pub open_app: MenuItem,
     /// Opens the main window on General (UI-11); shortcut ⌘, on macOS.
     pub settings: MenuItem,
-    /// Follows the updater's can-check flag (UI-10).
-    pub check_for_updates: MenuItem,
+    /// Check, restart, or download, following the updater (UI-10).
+    pub update: UpdateControl,
     /// Quits; shortcut ⌘Q on macOS.
     pub quit: MenuItem,
 }
@@ -246,10 +247,7 @@ impl StatusMenu {
             },
             open_app: MenuItem::enabled("Open Onda"),
             settings: MenuItem::enabled("Settings…"),
-            check_for_updates: MenuItem {
-                title: "Check for Updates…",
-                enabled: input.can_check_for_updates,
-            },
+            update: input.update,
             quit: MenuItem::enabled("Quit Onda"),
         }
     }
@@ -293,6 +291,7 @@ fn dictation_item(phase: SessionPhase) -> DictationItem {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::updates::{UpdateStatus, update_control};
 
     const READY: ModelState = ModelState::Ready;
 
@@ -321,7 +320,7 @@ mod tests {
             selected_model_on_disk: false,
             current_language_name: "English".to_owned(),
             languages: vec![],
-            can_check_for_updates: true,
+            update: update_control(&UpdateStatus::Idle, false),
         }
     }
 
@@ -866,35 +865,39 @@ mod tests {
     fn ui_10_ui_11_static_items_and_updates() {
         struct Case {
             name: &'static str,
-            can_check: bool,
-            want: bool,
+            status: UpdateStatus,
+            want_title: &'static str,
+            want_enabled: bool,
         }
         let cases = [
             Case {
                 name: "updater can check",
-                can_check: true,
-                want: true,
+                status: UpdateStatus::UpToDate,
+                want_title: "Check for Updates…",
+                want_enabled: true,
             },
             Case {
                 name: "updater busy",
-                can_check: false,
-                want: false,
+                status: UpdateStatus::Checking,
+                want_title: "Checking for Updates…",
+                want_enabled: false,
+            },
+            Case {
+                name: "update ready",
+                status: UpdateStatus::Ready {
+                    version: "2.0.0".to_owned(),
+                },
+                want_title: "Restart to Update",
+                want_enabled: true,
             },
         ];
         for tc in cases {
             let got = StatusMenu::resolve(StatusMenuInput {
-                can_check_for_updates: tc.can_check,
+                update: update_control(&tc.status, false),
                 ..input(&READY)
             });
-            assert_eq!(
-                got.check_for_updates,
-                MenuItem {
-                    title: "Check for Updates…",
-                    enabled: tc.want
-                },
-                "{}",
-                tc.name
-            );
+            assert_eq!(got.update.title, tc.want_title, "{}", tc.name);
+            assert_eq!(got.update.enabled, tc.want_enabled, "{}", tc.name);
             assert_eq!(
                 got.open_app,
                 MenuItem {

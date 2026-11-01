@@ -31,3 +31,4 @@ pub mod status_menu;
 pub mod tray;
 pub mod types;
 pub mod typing;
+pub mod updates;

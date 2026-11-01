@@ -20,7 +20,12 @@ it opens. See shell/macos/FFI.md.
 - `menu-open`: "Open Onda" opens Getting Started; "Settings…" opens General
   (UI-11).
 - `menu-fix-permissions`: shown only when a permission is missing (UI-8).
-- `menu-updates`: "Check for Updates…" (disabled until Sparkle starts).
+- `menu-updates`: the update item: "Check for Updates…", "Checking for
+  Updates…" and "Downloading Update…" (disabled), "Restart to Update"
+  (disabled while dictating, UPD-8), "Restarting…" (disabled; no
+  dictation starts until Onda quits or the restart is abandoned), or
+  "Download Onda <version>…" for a copy that cannot replace itself. A
+  failed check while an update is staged keeps "Restart to Update".
 
 ## How to get to it (user POV)
 
@@ -45,10 +50,13 @@ Click the Onda icon in the menu bar.
 
 ## Gotchas
 
-- `ONDA_DATA_DIR` only stops Sparkle's background checks. "Check for
-  Updates…" is enabled a moment after launch and pressing it fetches the
-  real appcast and can offer to install a release over the run. Do not press
-  it unless the update UI is the subject, and then never accept an install.
+- `ONDA_DATA_DIR` only stops background update checks. "Check for
+  Updates…" is enabled at launch and pressing it fetches the real
+  `update.json`; a newer release downloads and stages beside the run's copy
+  in `/tmp/onda-verify-runs/<run-id>/`, never over the user's install. Do
+  not press it unless the update UI is the subject, and never press
+  "Restart to Update" during a run: it quits the run and relaunches the
+  copy (with the run's `ONDA_DATA_DIR`) outside the driver's control.
 - The header text right after launch can still be `Preparing Speech Model…`;
   run `wait-ready` first.
 - `Paste Last Transcript` types into the frontmost app; focus the run's

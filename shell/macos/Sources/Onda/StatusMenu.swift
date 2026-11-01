@@ -84,9 +84,8 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         menu.addItem(settings)
 
         menu.addItem(.separator())
-        menu.addItem(item(state.checkForUpdates.title, enabled: state.checkForUpdates.enabled) {
-            $0.checkForUpdates()
-        })
+        let update = state.update
+        menu.addItem(item(update.title, enabled: update.enabled) { $0.updateAction(action: update.action) })
 
         menu.addItem(.separator())
         menu.addItem(quitItem(title: state.quit.title))

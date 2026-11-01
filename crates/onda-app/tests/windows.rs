@@ -6,7 +6,7 @@ mod common;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use common::{EngineCall, Harness, download, lock, sleep};
+use common::{EngineCall, Harness, download, eventually, lock, sleep};
 use jiff::{Timestamp, ToSpan};
 use onda_app::seams::DownloadUpdateKind;
 use onda_app::views::{
@@ -24,6 +24,7 @@ use onda_domain::onboarding::{OnboardingFlags, OnboardingStep};
 use onda_domain::setup::PermissionFix;
 use onda_domain::tray::TrayIcon;
 use onda_domain::types::{HistoryRetention, MicrophonePermission};
+use onda_domain::updates::{UpdateAction, UpdateStatus};
 use uuid::Uuid;
 
 const V2: ModelId = ModelId::ParakeetTdtV2;
@@ -855,9 +856,13 @@ async fn status_menu_has_every_item_with_its_rules() {
         1.hours(),
     )];
     *lock(&h.permissions.microphone) = MicrophonePermission::Denied;
-    h.system.can_check.store(true, Ordering::SeqCst);
+    lock(&h.system.updater).status = UpdateStatus::UpToDate;
     h.app.ui_ready();
     sleep(10).await;
+    assert!(
+        h.menu().update.enabled,
+        "read at launch, before the menu opens"
+    );
     h.app.menu_will_open();
     sleep(10).await;
     let menu = h.menu();
@@ -879,13 +884,131 @@ async fn status_menu_has_every_item_with_its_rules() {
     assert_eq!(menu.language.other_title, "Other Language…");
     assert_eq!(menu.open_app.title, "Open Onda");
     assert_eq!(menu.settings.title, "Settings…");
-    assert!(menu.check_for_updates.enabled, "follows the updater");
+    assert!(menu.update.enabled, "follows the updater");
+    assert_eq!(menu.update.title, "Check for Updates…");
     assert_eq!(menu.quit.title, "Quit Onda");
     assert_eq!(menu.redownload_model, None);
 
-    h.app.check_for_updates();
+    h.app.update_action(menu.update.action);
     sleep(10).await;
     assert_eq!(h.log.with("updater:"), vec!["updater:check"]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn upd_8_the_update_restart_waits_for_dictation() {
+    let h = Harness::new().await;
+    lock(&h.system.updater).status = UpdateStatus::Ready {
+        version: "2.0.0".to_owned(),
+    };
+    h.app.updater_changed();
+    sleep(10).await;
+    let ready = h.menu().update;
+    assert_eq!(ready.title, "Restart to Update");
+    assert!(ready.enabled);
+
+    h.app.toggle_dictation_from_menu();
+    sleep(100).await;
+    assert!(!h.menu().update.enabled, "disabled while recording");
+    h.app.update_action(UpdateAction::Restart);
+    sleep(10).await;
+    assert!(
+        h.log.with("updater:").is_empty(),
+        "no restart while recording"
+    );
+
+    h.app.cancel_dictation();
+    sleep(100).await;
+    assert!(h.idle());
+    assert!(h.menu().update.enabled);
+    h.app.update_action(UpdateAction::Restart);
+    h.app.update_action(UpdateAction::Download);
+    sleep(10).await;
+    assert_eq!(
+        h.log.with("updater:"),
+        vec!["updater:restart", "updater:download"]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn upd_8_an_accepted_restart_blocks_dictation_until_it_is_declined() {
+    let h = Harness::new().await;
+    lock(&h.system.updater).status = UpdateStatus::Ready {
+        version: "2.0.0".to_owned(),
+    };
+    h.app.updater_changed();
+    sleep(10).await;
+    let (answer, answered) = std::sync::mpsc::channel();
+    *lock(&h.system.restart_answer) = Some(answered);
+
+    // the paused clock stands still while the fake blocks, so this part
+    // polls in real time
+    h.app.update_action(UpdateAction::Restart);
+    eventually("the restart starts", || {
+        h.log.with("updater:") == ["updater:restart"]
+    })
+    .await;
+    eventually("the control disables", || !h.menu().update.enabled).await;
+
+    // the install is still running: neither the menu nor the hotkey starts
+    // a capture
+    h.app.toggle_dictation_from_menu();
+    catch_up(&h, 1).await;
+    assert_eq!(h.audio.starts.load(Ordering::SeqCst), 0);
+    h.press();
+    catch_up(&h, 2).await;
+    assert_eq!(h.audio.starts.load(Ordering::SeqCst), 0);
+    h.release();
+    h.app.update_action(UpdateAction::Restart);
+    catch_up(&h, 3).await;
+    assert!(h.idle());
+    assert_eq!(
+        h.log.count("updater:restart"),
+        1,
+        "a second restart is ignored while one runs"
+    );
+
+    // the install failed: dictation works again
+    answer.send(false).unwrap();
+    eventually("the restart ends", || h.menu().update.enabled).await;
+    h.app.toggle_dictation_from_menu();
+    sleep(100).await;
+    assert_eq!(h.audio.starts.load(Ordering::SeqCst), 1);
+    assert!(!h.idle());
+    h.app.update_action(UpdateAction::Restart);
+    sleep(10).await;
+    assert_eq!(h.log.count("updater:restart"), 1, "refused while dictating");
+}
+
+#[tokio::test(start_paused = true)]
+async fn upd_8_a_restart_that_relaunches_keeps_dictation_blocked() {
+    let h = Harness::new().await;
+    lock(&h.system.updater).status = UpdateStatus::Ready {
+        version: "2.0.0".to_owned(),
+    };
+    h.app.updater_changed();
+    sleep(10).await;
+    h.app.update_action(UpdateAction::Restart);
+    sleep(10).await;
+    h.app.toggle_dictation_from_menu();
+    sleep(100).await;
+    h.press();
+    sleep(1_000).await;
+    h.release();
+    sleep(100).await;
+    assert_eq!(h.log.with("updater:"), vec!["updater:restart"]);
+    assert_eq!(h.audio.starts.load(Ordering::SeqCst), 0);
+}
+
+/// Waits in real time until the actor has handled everything sent before
+/// this call (it handles messages in order, and the `n`th check marks the
+/// spot), then gives any start it began time to reach the microphone.
+async fn catch_up(h: &Harness, n: usize) {
+    h.app.update_action(UpdateAction::Check);
+    eventually("the actor catches up", || h.log.count("updater:check") == n).await;
+    for _ in 0..200 {
+        tokio::task::yield_now().await;
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
 }
 
 #[tokio::test(start_paused = true)]
@@ -1018,7 +1141,12 @@ async fn login_1_to_3_launch_at_login_state_and_errors() {
     assert!(!page.launch_at_login.on);
     assert!(page.launch_at_login.enabled);
     assert_eq!(page.version_footer, "Current version: 1.2.3");
-    assert!(!page.check_for_updates.enabled, "the updater cannot check");
+    assert!(!page.update.enabled, "the updater is off in this build");
+    assert!(!page.automatic_updates.enabled);
+    assert_eq!(
+        page.update_caption.map(|caption| caption.text).as_deref(),
+        Some("Updates are off in development builds.")
+    );
 
     *lock(&h.system.login_error) = Some("Operation not permitted".to_owned());
     h.app.set_launch_at_login(true);

@@ -16,7 +16,6 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 use jiff::Timestamp;
 use onda_app::ports::{
@@ -30,6 +29,7 @@ use onda_app::seams::{
     SettingsSource,
 };
 use onda_app::system_speech::SystemSpeechEngine;
+use onda_app::views::UpdaterState;
 use onda_app::{App, Event, EventSink, HotkeyEvent, Ports};
 use onda_asr::{AsrError, LoadProgress, SpeechEngine};
 use onda_domain::cleanup::{CleanupError, CleanupRequest, default_model};
@@ -47,6 +47,7 @@ use onda_domain::privacy_naming::PrivacyNaming;
 use onda_domain::status_menu::StatusMenu;
 use onda_domain::tray::TrayView;
 use onda_domain::types::{ActivationMode, HistoryRetention, MicrophonePermission, OutputMode};
+use onda_domain::updates::UpdateStatus;
 use uuid::Uuid;
 
 pub fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -345,8 +346,10 @@ pub struct FakeSystem {
     pub log: Arc<Log>,
     pub login: Mutex<Option<LoginItemRegistryStatus>>,
     pub login_error: Mutex<Option<String>>,
-    pub can_check: AtomicBool,
-    pub automatic: AtomicBool,
+    pub updater: Mutex<UpdaterState>,
+    /// When set, `restart_to_update` blocks until a test sends its answer;
+    /// otherwise it answers `true` at once.
+    pub restart_answer: Mutex<Option<std::sync::mpsc::Receiver<bool>>>,
     pub files_error: Mutex<Option<String>>,
 }
 
@@ -373,25 +376,27 @@ impl LoginItem for FakeSystem {
 }
 
 impl Updater for FakeSystem {
-    fn can_check(&self) -> bool {
-        self.can_check.load(Ordering::SeqCst)
+    fn state(&self) -> UpdaterState {
+        lock(&self.updater).clone()
     }
 
     fn check_now(&self) {
         self.log.push("updater:check");
     }
 
-    fn automatic_checks(&self) -> bool {
-        self.automatic.load(Ordering::SeqCst)
-    }
-
     fn set_automatic_checks(&self, enabled: bool) {
         self.log.push(format!("updater:automatic {enabled}"));
-        self.automatic.store(enabled, Ordering::SeqCst);
+        lock(&self.updater).automatic = enabled;
     }
 
-    fn last_check(&self) -> Option<SystemTime> {
-        None
+    fn restart_to_update(&self) -> bool {
+        self.log.push("updater:restart");
+        let answer = lock(&self.restart_answer).take();
+        answer.is_none_or(|answer| answer.recv().unwrap_or(false))
+    }
+
+    fn open_download(&self) {
+        self.log.push("updater:download");
     }
 }
 
@@ -1140,8 +1145,12 @@ impl Harness {
             log: log.clone(),
             login: Mutex::new(Some(LoginItemRegistryStatus::NotRegistered)),
             login_error: Mutex::default(),
-            can_check: AtomicBool::new(false),
-            automatic: AtomicBool::new(true),
+            updater: Mutex::new(UpdaterState {
+                status: UpdateStatus::Disabled,
+                automatic: true,
+                last_check: None,
+            }),
+            restart_answer: Mutex::default(),
             files_error: Mutex::default(),
         });
         let catalog = Catalog::new(system_speech.as_ref().map(|speech| speech.info()));
