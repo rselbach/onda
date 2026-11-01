@@ -36,6 +36,7 @@ struct Snapshot {
     post_processing_enabled: bool,
     cleanup_provider: CleanupProvider,
     openrouter_model: String,
+    fireworks_model: String,
     onboarding_completed: bool,
     did_show_first_run_setup: bool,
     last_model_migration_notice_key: String,
@@ -63,6 +64,10 @@ fn snapshot(settings: &Settings) -> Snapshot {
             .cleanup_model(CleanupProvider::OpenRouter)
             .slug
             .into_owned(),
+        fireworks_model: settings
+            .cleanup_model(CleanupProvider::Fireworks)
+            .slug
+            .into_owned(),
         onboarding_completed: settings.onboarding_completed(),
         did_show_first_run_setup: settings.did_show_first_run_setup(),
         last_model_migration_notice_key: settings.last_model_migration_notice_key(),
@@ -88,6 +93,7 @@ fn defaults() -> Snapshot {
         post_processing_enabled: false,
         cleanup_provider: CleanupProvider::OpenRouter,
         openrouter_model: "~openai/gpt-luna-latest".to_owned(),
+        fireworks_model: "accounts/fireworks/models/deepseek-v4p1-flash".to_owned(),
         onboarding_completed: false,
         did_show_first_run_setup: false,
         last_model_migration_notice_key: String::new(),
@@ -182,6 +188,7 @@ fn key_names_match_prd_09() {
         "postProcessingEnabled",
         "cleanupProvider",
         "openRouterModel",
+        "fireworksModel",
         "onboardingCompleted",
         "didShowFirstRunSetup",
         "lastModelMigrationNoticeKey",
@@ -237,10 +244,16 @@ fn every_setter_round_trips_through_the_file() {
     settings.set_replacement_rules(&rules).expect("set");
     settings.set_post_processing_enabled(true).expect("set");
     settings
-        .set_cleanup_provider(CleanupProvider::OpenRouter)
+        .set_cleanup_provider(CleanupProvider::Fireworks)
         .expect("set");
     settings
         .set_cleanup_model(CleanupProvider::OpenRouter, &CLEANUP_MODELS[1])
+        .expect("set");
+    settings
+        .set_cleanup_model(
+            CleanupProvider::Fireworks,
+            &CleanupProvider::Fireworks.resolve_model(Some("accounts/fireworks/models/kimi-k3")),
+        )
         .expect("set");
     settings.complete_onboarding().expect("set");
     settings
@@ -265,8 +278,9 @@ fn every_setter_round_trips_through_the_file() {
         history_retention: HistoryRetention::Forever,
         replacement_rules: rules,
         post_processing_enabled: true,
-        cleanup_provider: CleanupProvider::OpenRouter,
+        cleanup_provider: CleanupProvider::Fireworks,
         openrouter_model: "~anthropic/claude-haiku-latest".to_owned(),
+        fireworks_model: "accounts/fireworks/models/kimi-k3".to_owned(),
         onboarding_completed: true,
         did_show_first_run_setup: true,
         last_model_migration_notice_key: "parakeet-old->parakeet-ultra".to_owned(),

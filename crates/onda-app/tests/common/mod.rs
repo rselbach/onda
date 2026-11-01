@@ -33,7 +33,7 @@ use onda_app::views::UpdaterState;
 use onda_app::{App, Event, EventSink, HotkeyEvent, Ports};
 use onda_asr::{AsrError, LoadProgress, SpeechEngine};
 use onda_domain::cleanup::{
-    CleanupError, CleanupModel, CleanupProvider, CleanupRequest, default_model,
+    ApiKey, CleanupError, CleanupModel, CleanupProvider, CleanupRequest, default_model,
 };
 use onda_domain::history::{HistoryEntry, NewEntry, RecentTranscript, plan_retention};
 use onda_domain::hotkey::{GlobeKeyAction, HotkeyView, ModifierSet, Shortcut};
@@ -822,6 +822,8 @@ pub struct FakeCleanup {
     /// What `list_models` answers; an empty list by default.
     pub listed: Mutex<Option<Result<Vec<CleanupModel>, CleanupError>>>,
     pub list_calls: AtomicU64,
+    /// The provider and key of every listing, in order.
+    pub list_requests: Mutex<Vec<(CleanupProvider, Option<String>)>>,
 }
 
 impl FakeCleanup {
@@ -866,10 +868,17 @@ impl CleanupTransport for FakeCleanup {
 
     fn list_models(
         &self,
-        _provider: CleanupProvider,
+        provider: CleanupProvider,
+        key: Option<ApiKey>,
     ) -> BoxFuture<'static, Result<Vec<CleanupModel>, CleanupError>> {
         self.list_calls.fetch_add(1, Ordering::SeqCst);
-        let result = lock(&self.listed).clone().unwrap_or(Ok(Vec::new()));
+        let key = key.map(|key| key.expose().to_owned());
+        let missing = provider.lists_models_with_key() && key.is_none();
+        lock(&self.list_requests).push((provider, key));
+        let result = match missing {
+            true => Err(CleanupError::MissingKey),
+            false => lock(&self.listed).clone().unwrap_or(Ok(Vec::new())),
+        };
         Box::pin(async move { result })
     }
 }

@@ -147,7 +147,9 @@ The device list updates live (the core hears device changes itself).
   (or Return) sends `selectCleanupModel(provider:slug:)` with the text. `refreshModels`
   (nil when the provider cannot list) → `refreshCleanupModels()`. While
   `modelsLoading`, show a spinner by it and a `loadingTitle` row with a
-  spinner above the list; red `modelsError`. The list can hold hundreds of
+  spinner above the list; `modelsError` under the search field (a failed
+  listing, or a request for the key from a provider that lists only with
+  one). The list can hold hundreds of
   rows: render it lazily (a `List`, not a `Form`).
 - `testButton` + spinner while `testRunning`: `testCleanup()`.
   `testResult` (`said`, `result`, selectable); `testError` alert →

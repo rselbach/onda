@@ -538,6 +538,7 @@ impl Settings {
 fn model_key(provider: CleanupProvider) -> Key {
     match provider {
         CleanupProvider::OpenRouter => Key::OpenRouterModel,
+        CleanupProvider::Fireworks => Key::FireworksModel,
     }
 }
 

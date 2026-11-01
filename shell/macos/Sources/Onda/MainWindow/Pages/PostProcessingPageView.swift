@@ -160,9 +160,9 @@ private struct ProvidersSheet: View {
     }
 }
 
-/// A provider's mark, `<id>-light.svg` or `<id>-dark.svg` from the bundle
-/// (assets/providers). The brand's own light and dark versions are used
-/// as is, never tinted; a missing file draws nothing.
+/// A provider's mark from the bundle (assets/providers): `<id>-light.svg`
+/// or `<id>-dark.svg`, else `<id>.svg` for a mark that suits both. Brand
+/// marks are used as is, never tinted; no file draws nothing.
 private struct ProviderLogo: View {
     let id: String
 
@@ -170,8 +170,9 @@ private struct ProviderLogo: View {
 
     var body: some View {
         let variant = colorScheme == .dark ? "dark" : "light"
-        if let url = Bundle.main.url(forResource: "\(id)-\(variant)", withExtension: "svg"),
-           let image = NSImage(contentsOf: url) {
+        let url = Bundle.main.url(forResource: "\(id)-\(variant)", withExtension: "svg")
+            ?? Bundle.main.url(forResource: id, withExtension: "svg")
+        if let url, let image = NSImage(contentsOf: url) {
             Image(nsImage: image)
                 .resizable()
                 .scaledToFit()

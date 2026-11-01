@@ -1,4 +1,5 @@
-//! OpenRouter HTTP client for transcript cleanup and model listing.
+//! HTTP client for transcript cleanup and model listing, for every
+//! cleanup provider.
 //!
 //! A thin transport: [`onda_domain::cleanup::build_request`] describes the
 //! request and [`onda_domain::cleanup::parse_response`] reads the reply. This
@@ -7,7 +8,8 @@
 //! (CLN-9).
 
 use onda_domain::cleanup::{
-    CleanupError, CleanupModel, CleanupRequest, REQUEST_TIMEOUT, parse_models_response,
+    ApiKey, CleanupError, CleanupModel, CleanupProvider, CleanupRequest, MAX_MODEL_PAGES,
+    ModelsRequest, REQUEST_TIMEOUT, finish_models, models_request, parse_models_page,
     parse_response,
 };
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue};
@@ -21,7 +23,7 @@ mod tests;
 /// Transport message when a request runs past [`REQUEST_TIMEOUT`].
 const TIMED_OUT: &str = "The request timed out.";
 
-/// Sends cleanup requests to OpenRouter.
+/// Sends cleanup requests and lists models.
 ///
 /// Cheap to clone; clones share one connection pool.
 #[derive(Debug, Clone)]
@@ -77,6 +79,7 @@ impl CleanupClient {
             Err(error) => return Err(CleanupError::Transport(error.to_string())),
         };
         let model = model_slug(&body);
+        let provider = request.provider.id();
         let exchanged = tokio::time::timeout(REQUEST_TIMEOUT, self.exchange(request, body))
             .await
             .unwrap_or_else(|_elapsed| Err(CleanupError::Transport(TIMED_OUT.to_owned())));
@@ -84,15 +87,15 @@ impl CleanupClient {
         let (status, body) = match exchanged {
             Ok(response) => response,
             Err(error) => {
-                tracing::warn!(model, latency_ms, %error, "OpenRouter cleanup request failed");
+                tracing::warn!(provider, model, latency_ms, %error, "cleanup request failed");
                 return Err(error);
             }
         };
         let result = parse_response(status, &body);
         match &result {
-            Ok(_) => tracing::info!(model, status, latency_ms, "OpenRouter cleanup finished"),
+            Ok(_) => tracing::info!(provider, model, status, latency_ms, "cleanup finished"),
             Err(error) => {
-                tracing::warn!(model, status, latency_ms, %error, "OpenRouter cleanup failed");
+                tracing::warn!(provider, model, status, latency_ms, %error, "cleanup failed");
             }
         }
         result
@@ -106,29 +109,78 @@ impl CleanupClient {
         cancel: &CancellationToken,
     ) -> Result<Result<String, CleanupError>, Cancelled> {
         let Some(result) = cancel.run_until_cancelled(self.send(request)).await else {
-            tracing::debug!("OpenRouter cleanup request cancelled");
+            tracing::debug!("cleanup request cancelled");
             return Err(Cancelled);
         };
         Ok(result)
     }
 
-    /// Fetches the models `url` lists, capped at [`REQUEST_TIMEOUT`].
-    pub async fn list_models(&self, url: &str) -> Result<Vec<CleanupModel>, CleanupError> {
-        let url = self.endpoint.as_deref().unwrap_or(url);
-        let fetched = tokio::time::timeout(REQUEST_TIMEOUT, async {
-            let response = self.http.get(url).send().await.map_err(transport_error)?;
-            let status = response.status().as_u16();
-            let body = response.bytes().await.map_err(transport_error)?;
-            Ok((status, body))
-        })
-        .await
-        .unwrap_or_else(|_elapsed| Err(CleanupError::Transport(TIMED_OUT.to_owned())));
-        let result = fetched.and_then(|(status, body)| parse_models_response(status, &body));
+    /// Fetches every page of `provider`'s models, each page capped at
+    /// [`REQUEST_TIMEOUT`], at most [`MAX_MODEL_PAGES`] pages. `key` is
+    /// sent only to providers that list with it.
+    pub async fn list_models(
+        &self,
+        provider: CleanupProvider,
+        key: Option<&ApiKey>,
+    ) -> Result<Vec<CleanupModel>, CleanupError> {
+        let result = self.list_pages(provider, key).await;
+        let provider_id = provider.id();
         match &result {
-            Ok(models) => tracing::info!(count = models.len(), "listed cleanup models"),
-            Err(error) => tracing::warn!(%error, "could not list cleanup models"),
+            Ok(models) => {
+                tracing::info!(
+                    provider = provider_id,
+                    count = models.len(),
+                    "listed cleanup models"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(provider = provider_id, %error, "could not list cleanup models");
+            }
         }
         result
+    }
+
+    async fn list_pages(
+        &self,
+        provider: CleanupProvider,
+        key: Option<&ApiKey>,
+    ) -> Result<Vec<CleanupModel>, CleanupError> {
+        let mut models = Vec::new();
+        let mut token: Option<String> = None;
+        for _ in 0..MAX_MODEL_PAGES {
+            let request = models_request(provider, key, token.as_deref())?;
+            let (status, body) = tokio::time::timeout(REQUEST_TIMEOUT, self.fetch(&request))
+                .await
+                .unwrap_or_else(|_elapsed| Err(CleanupError::Transport(TIMED_OUT.to_owned())))?;
+            let page = parse_models_page(provider, status, &body)?;
+            models.extend(page.models);
+            token = page.next_page_token;
+            if token.is_none() {
+                break;
+            }
+        }
+        Ok(finish_models(models))
+    }
+
+    async fn fetch(&self, request: &ModelsRequest) -> Result<(u16, Vec<u8>), CleanupError> {
+        // tests swap the origin and path but keep the page's query
+        let url = match &self.endpoint {
+            Some(endpoint) => match request.url.split_once('?') {
+                Some((_, query)) => format!("{endpoint}?{query}"),
+                None => endpoint.clone(),
+            },
+            None => request.url.clone(),
+        };
+        let response = self
+            .http
+            .get(url)
+            .headers(header_map(&request.headers)?)
+            .send()
+            .await
+            .map_err(transport_error)?;
+        let status = response.status().as_u16();
+        let body = response.bytes().await.map_err(transport_error)?;
+        Ok((status, body.to_vec()))
     }
 
     async fn exchange(
@@ -138,8 +190,12 @@ impl CleanupClient {
     ) -> Result<(u16, Vec<u8>), CleanupError> {
         let response = self
             .http
-            .post(self.endpoint.as_deref().unwrap_or(request.endpoint))
-            .headers(header_map(request)?)
+            .post(
+                self.endpoint
+                    .as_deref()
+                    .unwrap_or(request.provider.chat_endpoint()),
+            )
+            .headers(header_map(&request.headers)?)
             .body(body)
             .send()
             .await
@@ -151,9 +207,9 @@ impl CleanupClient {
 }
 
 // errors name the header, never its value
-fn header_map(request: &CleanupRequest) -> Result<HeaderMap, CleanupError> {
-    let mut headers = HeaderMap::with_capacity(request.headers.len());
-    for (name, value) in &request.headers {
+fn header_map(pairs: &[(&'static str, String)]) -> Result<HeaderMap, CleanupError> {
+    let mut headers = HeaderMap::with_capacity(pairs.len());
+    for (name, value) in pairs {
         let invalid = |error: &dyn std::error::Error| {
             CleanupError::Transport(format!("Invalid {name} header: {error}"))
         };

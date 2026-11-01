@@ -22,7 +22,7 @@ use std::thread;
 use std::time::Duration;
 
 use onda_adapters::{
-    DataPaths, DownloadListener, History, Keychain, Microphone, Models, OpenRouter,
+    CloudCleanup, DataPaths, DownloadListener, History, Keychain, Microphone, Models,
     SettingsAdapter, forward_audio_events, forward_download_events,
 };
 use onda_app::seams::SettingsSource;
@@ -255,7 +255,7 @@ impl OndaCore {
 
         let history = HistoryStore::new(paths.history_dir(), HistoryFiles(ports.files.clone()));
         let cleanup = CleanupClient::new()
-            .map_err(|error| failed("Could not create the OpenRouter client", error))?;
+            .map_err(|error| failed("Could not create the cleanup client", error))?;
         let shell = Arc::new(Shell {
             text: ports.text_output,
             permissions: ports.permissions.clone(),
@@ -292,7 +292,7 @@ impl OndaCore {
             models: Arc::new(models),
             catalog,
             history: Arc::new(History::new(Arc::new(history), settings.clone())),
-            cleanup: Arc::new(OpenRouter::new(cleanup)),
+            cleanup: Arc::new(CloudCleanup::new(cleanup)),
             secrets: Arc::new(Keychain::new(KeychainSecretStore::new())),
             settings: settings_source,
             tray_term: tray_term.clone(),

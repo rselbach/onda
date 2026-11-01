@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use onda_domain::cleanup::{CleanupModel, CleanupProvider, TEST_FAILED_TITLE};
+use onda_domain::cleanup::{CleanupError, CleanupModel, CleanupProvider, TEST_FAILED_TITLE};
 
 use super::{AlertView, ButtonView, ToggleView};
 
@@ -16,6 +16,22 @@ fn caption(provider: CleanupProvider) -> String {
                                         not in preferences. Falls back to the raw transcript if the \
                                         request fails."
             .to_owned(),
+        CleanupProvider::Fireworks => "Cloud post-processing sends your transcript to Fireworks AI \
+                                       for processing. Fireworks says it doesn't retain prompts or \
+                                       outputs from its serverless models. The API key is stored \
+                                       in your system keychain, not in preferences. Falls back to \
+                                       the raw transcript if the request fails."
+            .to_owned(),
+    }
+}
+
+/// Why the model list is missing, as shown in the sheet. A provider that
+/// lists only with a key asks for one instead of reporting an error.
+pub fn models_error_text(provider: CleanupProvider, error: &CleanupError) -> String {
+    let name = provider.display_name();
+    match error {
+        CleanupError::MissingKey => format!("Enter your {name} API key to see its models."),
+        _ => format!("Couldn't load {name} models: {}", error.describe(provider)),
     }
 }
 
@@ -115,7 +131,8 @@ pub struct ProvidersDialog {
     pub models_loading: bool,
     /// "Loading models…".
     pub loading_title: String,
-    /// Why the last listing failed, in red under the list.
+    /// Why the list is missing, under the search field: a failed listing
+    /// or, for a provider that lists only with a key, a request for one.
     pub models_error: Option<String>,
     /// "Done"; sends `close_providers_dialog`.
     pub done_title: String,
@@ -267,14 +284,10 @@ fn providers_dialog(inputs: &ProvidersDialogInputs<'_>) -> ProvidersDialog {
         selected_model: inputs.selected.map(|model| model.slug.clone().into_owned()),
         search_placeholder: "Search or enter a model ID".to_owned(),
         use_id_caption: "Use as model ID".to_owned(),
-        refresh_models: provider
-            .models_endpoint()
-            .map(|_| ButtonView::new("Refresh Models", !inputs.models_loading)),
+        refresh_models: Some(ButtonView::new("Refresh Models", !inputs.models_loading)),
         models_loading: inputs.models_loading,
         loading_title: "Loading models…".to_owned(),
-        models_error: inputs
-            .models_error
-            .map(|error| format!("Couldn't load {} models: {error}", provider.display_name())),
+        models_error: inputs.models_error.map(str::to_owned),
         done_title: "Done".to_owned(),
     }
 }
@@ -456,7 +469,7 @@ mod tests {
         let key = key();
         let dialog = providers_dialog(&ProvidersDialogInputs {
             models_loading: true,
-            models_error: Some("OpenRouter returned HTTP 503."),
+            models_error: Some("Couldn't load OpenRouter models: OpenRouter returned HTTP 503."),
             ..dialog_inputs(None, &[], &key)
         });
         assert_eq!(
@@ -466,6 +479,24 @@ mod tests {
         assert_eq!(dialog.refresh_models.map(|b| b.enabled), Some(false));
         assert_eq!(dialog.loading_title, "Loading models…");
         assert_eq!(dialog.selected_model, None);
+    }
+
+    #[test]
+    fn models_error_text_asks_for_a_missing_key() {
+        assert_eq!(
+            models_error_text(CleanupProvider::Fireworks, &CleanupError::MissingKey),
+            "Enter your Fireworks AI API key to see its models."
+        );
+        assert_eq!(
+            models_error_text(
+                CleanupProvider::OpenRouter,
+                &CleanupError::Http {
+                    status: 503,
+                    message: None
+                }
+            ),
+            "Couldn't load OpenRouter models: OpenRouter returned HTTP 503."
+        );
     }
 
     #[test]

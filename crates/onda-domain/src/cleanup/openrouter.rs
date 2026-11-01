@@ -1,10 +1,11 @@
-//! OpenRouter chat-completions request and response shapes (CLN-4..CLN-11).
+//! Chat-completions request and response shapes (CLN-4..CLN-11), with
+//! OpenRouter's body and model list. Fireworks AI's body lives in
+//! [`super::fireworks`]; both reply in OpenAI's shape.
 //!
 //! The HTTP client lives outside the domain; it sends what
 //! [`build_request`] describes and hands `(status, body)` to
 //! [`parse_response`].
 
-use std::collections::HashSet;
 use std::fmt;
 use std::time::Duration;
 
@@ -12,8 +13,10 @@ use serde::Serialize;
 use serde_json::Value;
 use unicode_segmentation::UnicodeSegmentation;
 
-use super::catalog::CleanupModel;
+use super::catalog::{CleanupModel, ReasoningEffort};
+use super::fireworks;
 use super::prompt::SYSTEM_PROMPT;
+use super::provider::CleanupProvider;
 
 /// Chat-completions endpoint (CLN-4).
 pub const ENDPOINT: &str = "https://openrouter.ai/api/v1/chat/completions";
@@ -60,8 +63,10 @@ impl fmt::Debug for ApiKey {
 
 /// Why a cleanup request produced no content (CLN-11).
 ///
-/// `Display` gives the exact user-facing message; none of them contain the
-/// API key (CLN-8). Cancellation is not an error (CLN-9) and has no variant.
+/// [`CleanupError::describe`] gives the user-facing message, naming the
+/// provider; `Display` is the same message without the name. None of them
+/// contain the API key (CLN-8). Cancellation is not an error (CLN-9) and
+/// has no variant.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CleanupError {
     /// No key is stored, or it is blank.
@@ -71,7 +76,7 @@ pub enum CleanupError {
     Http {
         /// HTTP status code.
         status: u16,
-        /// OpenRouter's error message, if the body had one.
+        /// The provider's error message, if the body had one.
         message: Option<String>,
     },
     /// The body was not JSON, had the wrong shape, or lacked
@@ -83,35 +88,44 @@ pub enum CleanupError {
     Transport(String),
 }
 
+impl CleanupError {
+    /// The user-facing message, e.g. "OpenRouter returned HTTP 429."
+    /// (CLN-11).
+    pub fn describe(&self, provider: CleanupProvider) -> String {
+        format!("{} {self}", provider.display_name())
+    }
+}
+
 impl fmt::Display for CleanupError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::MissingKey => f.write_str("OpenRouter API key is not set."),
+            Self::MissingKey => f.write_str("API key is not set."),
             Self::Http {
                 status,
                 message: Some(message),
-            } => write!(f, "OpenRouter returned HTTP {status}: {message}"),
+            } => write!(f, "returned HTTP {status}: {message}"),
             Self::Http {
                 status,
                 message: None,
-            } => write!(f, "OpenRouter returned HTTP {status}."),
-            Self::Malformed => f.write_str("OpenRouter response could not be parsed."),
-            Self::Empty => f.write_str("OpenRouter returned an empty response."),
-            Self::Transport(error) => write!(f, "OpenRouter request failed: {error}"),
+            } => write!(f, "returned HTTP {status}."),
+            Self::Malformed => f.write_str("response could not be parsed."),
+            Self::Empty => f.write_str("returned an empty response."),
+            Self::Transport(error) => write!(f, "request failed: {error}"),
         }
     }
 }
 
 impl std::error::Error for CleanupError {}
 
-/// One cleanup request, ready for an HTTP client: `POST` to `endpoint`
-/// with [`REQUEST_TIMEOUT`], these headers, and `body` serialized as JSON.
+/// One cleanup request, ready for an HTTP client: `POST` to the
+/// provider's chat endpoint with [`REQUEST_TIMEOUT`], these headers, and
+/// `body` serialized as JSON.
 ///
 /// `Debug` redacts the `Authorization` header (CLN-8).
 #[derive(Clone, PartialEq)]
 pub struct CleanupRequest {
-    /// Where to post the request.
-    pub endpoint: &'static str,
+    /// Who serves the request; its chat endpoint is the target.
+    pub provider: CleanupProvider,
     /// Header name/value pairs (CLN-4).
     pub headers: Vec<(&'static str, String)>,
     /// Body; serialize it with `serde_json` (CLN-5).
@@ -120,7 +134,18 @@ pub struct CleanupRequest {
 
 /// The chat-completions body (CLN-5). Opaque; only serialized.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct RequestBody {
+#[serde(transparent)]
+pub struct RequestBody(Body);
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+enum Body {
+    OpenRouter(OpenRouterBody),
+    Fireworks(fireworks::Body),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct OpenRouterBody {
     model: String,
     messages: [ChatMessage; 2],
     stream: bool,
@@ -131,7 +156,7 @@ pub struct RequestBody {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
-struct ChatMessage {
+pub(super) struct ChatMessage {
     role: &'static str,
     content: String,
 }
@@ -160,56 +185,71 @@ impl fmt::Debug for CleanupRequest {
             })
             .collect();
         f.debug_struct("CleanupRequest")
-            .field("endpoint", &self.endpoint)
+            .field("provider", &self.provider)
             .field("headers", &headers)
             .field("body", &self.body)
             .finish()
     }
 }
 
-/// Builds the request that cleans `transcript` (untrimmed) with `model`,
-/// naming the target app when known (CLN-4..CLN-6).
+/// Builds the request that cleans `transcript` (untrimmed) with
+/// `provider`'s `model`, naming the target app when known (CLN-4..CLN-6).
 pub fn build_request(
+    provider: CleanupProvider,
     key: &ApiKey,
     model: &CleanupModel,
     transcript: &str,
     app_name: Option<&str>,
 ) -> CleanupRequest {
-    let headers = vec![
+    let mut headers = vec![
         ("Content-Type", "application/json".to_owned()),
         ("Authorization", format!("Bearer {}", key.expose())),
-        ("X-Title", "Onda".to_owned()),
-        (
-            "HTTP-Referer",
-            "https://rselbach.github.io/onda/".to_owned(),
-        ),
     ];
-    let body = RequestBody {
-        model: model.slug.clone().into_owned(),
-        messages: [
-            ChatMessage {
-                role: "system",
-                content: SYSTEM_PROMPT.to_owned(),
-            },
-            ChatMessage {
-                role: "user",
-                content: user_message(transcript, app_name),
-            },
-        ],
-        stream: false,
-        temperature: 0,
-        reasoning: model.reasoning_effort.map(|effort| Reasoning {
-            effort: effort.as_str(),
-        }),
-        provider: ProviderPreferences {
-            sort: "latency",
-            zdr: true,
+    let messages = [
+        ChatMessage {
+            role: "system",
+            content: SYSTEM_PROMPT.to_owned(),
         },
+        ChatMessage {
+            role: "user",
+            content: user_message(transcript, app_name),
+        },
+    ];
+    let model_slug = model.slug.clone().into_owned();
+    let body = match provider {
+        CleanupProvider::OpenRouter => {
+            // OpenRouter's app attribution
+            headers.push(("X-Title", "Onda".to_owned()));
+            headers.push((
+                "HTTP-Referer",
+                "https://rselbach.github.io/onda/".to_owned(),
+            ));
+            Body::OpenRouter(OpenRouterBody {
+                model: model_slug,
+                messages,
+                stream: false,
+                temperature: 0,
+                reasoning: model.reasoning_effort.map(|effort| Reasoning {
+                    effort: effort.as_str(),
+                }),
+                provider: ProviderPreferences {
+                    sort: "latency",
+                    zdr: true,
+                },
+            })
+        }
+        CleanupProvider::Fireworks => Body::Fireworks(fireworks::Body {
+            model: model_slug,
+            messages,
+            stream: false,
+            temperature: 0,
+            reasoning_effort: model.reasoning_effort.map(ReasoningEffort::as_str),
+        }),
     };
     CleanupRequest {
-        endpoint: ENDPOINT,
+        provider,
         headers,
-        body,
+        body: RequestBody(body),
     }
 }
 
@@ -255,28 +295,20 @@ pub fn parse_response(status: u16, body: &[u8]) -> Result<String, CleanupError> 
     Ok(unwrap_transcript_tags(content))
 }
 
-/// Turns a [`MODELS_ENDPOINT`] response into the models that write text,
-/// sorted by name. Entries without an id are skipped; a missing name falls
-/// back to the id.
-pub fn parse_models_response(status: u16, body: &[u8]) -> Result<Vec<CleanupModel>, CleanupError> {
-    if !(200..300).contains(&status) {
-        return Err(CleanupError::Http {
-            status,
-            message: error_message(body),
-        });
-    }
-    let json: Value = serde_json::from_slice(body).map_err(|_| CleanupError::Malformed)?;
+/// The models in a [`MODELS_ENDPOINT`] response that write text and serve
+/// chat completions. Entries without an id are skipped; a missing name
+/// falls back to the id.
+pub(super) fn parse_models(json: &Value) -> Result<Vec<CleanupModel>, CleanupError> {
     let entries = json
         .get("data")
         .and_then(Value::as_array)
         .ok_or(CleanupError::Malformed)?;
-    let mut seen = HashSet::new();
-    let mut models: Vec<CleanupModel> = entries
+    let models = entries
         .iter()
         .filter(|entry| writes_text(entry) && serves_chat(entry))
         .filter_map(|entry| {
             let id = entry.get("id").and_then(Value::as_str)?.trim();
-            if id.is_empty() || !seen.insert(id) {
+            if id.is_empty() {
                 return None;
             }
             let name = entry
@@ -288,7 +320,6 @@ pub fn parse_models_response(status: u16, body: &[u8]) -> Result<Vec<CleanupMode
             Some(CleanupModel::listed(id, name))
         })
         .collect();
-    models.sort_by_cached_key(|model| model.display_name.to_lowercase());
     Ok(models)
 }
 
@@ -324,7 +355,7 @@ fn unwrap_transcript_tags(content: &str) -> String {
         .to_owned()
 }
 
-fn error_message(body: &[u8]) -> Option<String> {
+pub(super) fn error_message(body: &[u8]) -> Option<String> {
     let json: Value = serde_json::from_slice(body).ok()?;
     let message = json.get("error")?.get("message")?.as_str()?;
     Some(
@@ -341,6 +372,8 @@ mod tests {
 
     use super::*;
     use crate::cleanup::catalog::{CLEANUP_MODELS, default_model};
+    use crate::cleanup::fireworks::FIREWORKS_MODELS;
+    use crate::cleanup::listing::{finish_models, parse_models_page};
 
     const KEY: &str = "sk-test-greendale-abc";
 
@@ -390,7 +423,13 @@ mod tests {
 
     #[test]
     fn debug_output_never_leaks_the_key_cln_8() {
-        let request = build_request(&key(), default_model(), "hello", None);
+        let request = build_request(
+            CleanupProvider::OpenRouter,
+            &key(),
+            default_model(),
+            "hello",
+            None,
+        );
         let printed = format!("{:?} {:?}", key(), request);
         assert!(
             !printed.contains(KEY),
@@ -401,8 +440,14 @@ mod tests {
     #[test]
     fn build_request_shape_cln_4_cln_5() {
         let model = &CLEANUP_MODELS[1];
-        let request = build_request(&key(), model, "señor chang", None);
-        assert_eq!(request.endpoint, ENDPOINT, "endpoint");
+        let request = build_request(
+            CleanupProvider::OpenRouter,
+            &key(),
+            model,
+            "señor chang",
+            None,
+        );
+        assert_eq!(request.provider, CleanupProvider::OpenRouter, "provider");
         let want_headers = vec![
             ("Content-Type", "application/json".to_owned()),
             ("Authorization", format!("Bearer {KEY}")),
@@ -430,10 +475,48 @@ mod tests {
     }
 
     #[test]
+    fn fireworks_requests_carry_no_openrouter_fields() {
+        let request = build_request(
+            CleanupProvider::Fireworks,
+            &key(),
+            &FIREWORKS_MODELS[0],
+            "pop pop",
+            Some("Mail"),
+        );
+        assert_eq!(
+            request.provider.chat_endpoint(),
+            crate::cleanup::fireworks::ENDPOINT
+        );
+        let want_headers = vec![
+            ("Content-Type", "application/json".to_owned()),
+            ("Authorization", format!("Bearer {KEY}")),
+        ];
+        assert_eq!(request.headers, want_headers, "headers");
+        let body = serde_json::to_value(&request.body).expect("serialize body");
+        let want_body = json!({
+            "model": "accounts/fireworks/models/deepseek-v4p1-flash",
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": "Dictating into: Mail\n\n<transcript>\npop pop\n</transcript>"},
+            ],
+            "stream": false,
+            "temperature": 0,
+            "reasoning_effort": "none",
+        });
+        assert_eq!(body, want_body);
+
+        let custom =
+            crate::cleanup::fireworks::resolve_model(Some("accounts/fireworks/models/kimi-k3"));
+        let request = build_request(CleanupProvider::Fireworks, &key(), &custom, "hi", None);
+        let body = serde_json::to_value(&request.body).expect("serialize body");
+        assert_eq!(body.get("reasoning_effort"), None, "{body}");
+    }
+
+    #[test]
     fn models_outside_the_catalog_send_no_reasoning_setting() {
         // a model with mandatory reasoning rejects effort "none"
         let model = CleanupModel::custom("openai/gpt-6.1-terra-pro");
-        let request = build_request(&key(), &model, "pop pop", None);
+        let request = build_request(CleanupProvider::OpenRouter, &key(), &model, "pop pop", None);
         let body = serde_json::to_value(&request.body).expect("serialize body");
         assert_eq!(body.get("reasoning"), None, "{body}");
         assert_eq!(body["model"], "openai/gpt-6.1-terra-pro");
@@ -656,7 +739,10 @@ mod tests {
             {"id": "  "},
         ]})
         .to_string();
-        let got = parse_models_response(200, body.as_bytes()).expect("models");
+        let page =
+            parse_models_page(CleanupProvider::OpenRouter, 200, body.as_bytes()).expect("models");
+        assert_eq!(page.next_page_token, None, "OpenRouter lists in one page");
+        let got = finish_models(page.models);
         let got: Vec<(&str, &str)> = got
             .iter()
             .map(|m| (m.slug.as_ref(), m.display_name.as_ref()))
@@ -702,7 +788,7 @@ mod tests {
             },
         ];
         for tc in cases {
-            let got = parse_models_response(tc.status, tc.body.as_bytes());
+            let got = parse_models_page(CleanupProvider::OpenRouter, tc.status, tc.body.as_bytes());
             assert_eq!(got, Err(tc.want), "{}", tc.name);
         }
     }
@@ -753,7 +839,17 @@ mod tests {
             },
         ];
         for tc in cases {
-            assert_eq!(tc.error.to_string(), tc.want, "{}", tc.name);
+            assert_eq!(
+                tc.error.describe(CleanupProvider::OpenRouter),
+                tc.want,
+                "{}",
+                tc.name
+            );
         }
+        assert_eq!(
+            CleanupError::MissingKey.describe(CleanupProvider::Fireworks),
+            "Fireworks AI API key is not set.",
+            "the message names the provider"
+        );
     }
 }

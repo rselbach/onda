@@ -37,6 +37,8 @@ pub enum Key {
     CleanupProvider,
     /// `openRouterModel`: cleanup model slug (CLN-21).
     OpenRouterModel,
+    /// `fireworksModel`: Fireworks AI cleanup model slug.
+    FireworksModel,
     /// `onboardingCompleted` (SET-4).
     OnboardingCompleted,
     /// `didShowFirstRunSetup` (SET-4).
@@ -49,7 +51,7 @@ pub enum Key {
 
 impl Key {
     /// Every key.
-    pub const ALL: [Key; 20] = [
+    pub const ALL: [Key; 21] = [
         Key::SelectedModel,
         Key::SelectedLanguage,
         Key::RecentLanguages,
@@ -66,6 +68,7 @@ impl Key {
         Key::PostProcessingEnabled,
         Key::CleanupProvider,
         Key::OpenRouterModel,
+        Key::FireworksModel,
         Key::OnboardingCompleted,
         Key::DidShowFirstRunSetup,
         Key::LastModelMigrationNoticeKey,
@@ -91,6 +94,7 @@ impl Key {
             Key::PostProcessingEnabled => "postProcessingEnabled",
             Key::CleanupProvider => "cleanupProvider",
             Key::OpenRouterModel => "openRouterModel",
+            Key::FireworksModel => "fireworksModel",
             Key::OnboardingCompleted => "onboardingCompleted",
             Key::DidShowFirstRunSetup => "didShowFirstRunSetup",
             Key::LastModelMigrationNoticeKey => "lastModelMigrationNoticeKey",

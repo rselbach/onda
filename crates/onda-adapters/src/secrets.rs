@@ -2,7 +2,7 @@
 
 use onda_app::seams::{BoxFuture, CleanupTransport, SecretSource};
 use onda_cleanup::CleanupClient;
-use onda_domain::cleanup::{CleanupError, CleanupModel, CleanupProvider, CleanupRequest};
+use onda_domain::cleanup::{ApiKey, CleanupError, CleanupModel, CleanupProvider, CleanupRequest};
 use onda_settings::SecretStore;
 
 /// [`SecretSource`] over any [`SecretStore`] (the Keychain in the app).
@@ -30,17 +30,17 @@ impl<S: SecretStore + Send + Sync> SecretSource for Keychain<S> {
     }
 }
 
-/// [`CleanupTransport`] over the OpenRouter client.
-pub struct OpenRouter(CleanupClient);
+/// [`CleanupTransport`] over the cleanup HTTP client, for every provider.
+pub struct CloudCleanup(CleanupClient);
 
-impl OpenRouter {
+impl CloudCleanup {
     /// Wraps `client`.
     pub fn new(client: CleanupClient) -> Self {
         Self(client)
     }
 }
 
-impl CleanupTransport for OpenRouter {
+impl CleanupTransport for CloudCleanup {
     fn send(&self, request: CleanupRequest) -> BoxFuture<'static, Result<String, CleanupError>> {
         let client = self.0.clone();
         Box::pin(async move { client.send(&request).await })
@@ -49,13 +49,9 @@ impl CleanupTransport for OpenRouter {
     fn list_models(
         &self,
         provider: CleanupProvider,
+        key: Option<ApiKey>,
     ) -> BoxFuture<'static, Result<Vec<CleanupModel>, CleanupError>> {
         let client = self.0.clone();
-        Box::pin(async move {
-            match provider.models_endpoint() {
-                Some(url) => client.list_models(url).await,
-                None => Ok(Vec::new()),
-            }
-        })
+        Box::pin(async move { client.list_models(provider, key.as_ref()).await })
     }
 }

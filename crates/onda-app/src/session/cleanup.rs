@@ -19,7 +19,8 @@ use crate::events::Event;
 use crate::seams::SettingChange;
 use crate::views::{
     ApiKeyFieldView, CleanupTestResult, MainWindowSection, PostProcessingInputs,
-    PostProcessingPage, ProvidersDialogInputs, key_placeholder, post_processing_page,
+    PostProcessingPage, ProvidersDialogInputs, key_placeholder, models_error_text,
+    post_processing_page,
 };
 
 // a credential-store call waiting its turn
@@ -133,10 +134,18 @@ impl Actor {
             .clone()
     }
 
-    /// The page appeared: list the provider's models for their names.
+    /// The page appeared: list the provider's models for their names,
+    /// unless listing needs the key, which the page never reads (CLN-25).
     pub(super) fn post_processing_appeared(&mut self) {
         if self.settings.cleanup_enabled {
-            self.list_models_once(self.settings.cleanup_provider);
+            self.list_public_models_once();
+        }
+    }
+
+    fn list_public_models_once(&mut self) {
+        let provider = self.settings.cleanup_provider;
+        if !provider.lists_models_with_key() {
+            self.list_models_once(provider);
         }
     }
 
@@ -146,7 +155,7 @@ impl Actor {
         self.apply_setting(SettingChange::CleanupEnabled(on));
         match on {
             true if self.ui.is_visible(MainWindowSection::PostProcessing) => {
-                self.list_models_once(self.settings.cleanup_provider);
+                self.list_public_models_once();
             }
             true => {}
             false => self.close_providers_dialog(),
@@ -297,6 +306,10 @@ impl Actor {
                 }
                 page.baseline = KeyBaseline::Known(value);
                 page.error = None;
+                // a new key may unlock, or change, what the provider lists
+                if provider.lists_models_with_key() && page.dialog == Some(provider) {
+                    self.list_cleanup_models(provider);
+                }
             }
             Err(error) => {
                 tracing::error!(%error, provider = provider.id(), "could not save a cleanup API key");
@@ -358,16 +371,28 @@ impl Actor {
 
     // replaces a listing in flight
     fn list_cleanup_models(&mut self, provider: CleanupProvider) {
-        if provider.models_endpoint().is_none() {
-            return;
-        }
+        // the key is read behind every save already issued (CLN-25)
+        let stored = provider.lists_models_with_key().then(|| {
+            let secrets = self.ports.secrets.clone();
+            self.key_queue().run(move || secrets.api_key(provider))
+        });
         let transport = self.ports.cleanup.clone();
         let page = &mut self.ui.cleanup;
         page.list_generation += 1;
         page.list_error = None;
         let generation = page.list_generation;
         let task = self.spawn(async move {
-            let result = transport.list_models(provider).await;
+            let key = match stored {
+                Some(stored) => match stored.await.unwrap_or_else(lost) {
+                    Ok(key) => key.and_then(|key| ApiKey::new(&key).ok()),
+                    Err(error) => {
+                        tracing::warn!(%error, provider = provider.id(), "could not read the key to list models");
+                        None
+                    }
+                },
+                None => None,
+            };
+            let result = transport.list_models(provider, key).await;
             Msg::Ui(UiMsg::ModelsListed {
                 generation,
                 provider,
@@ -392,7 +417,7 @@ impl Actor {
             Ok(models) => {
                 page.listed.insert(provider, models);
             }
-            Err(error) => page.list_error = Some((provider, error.to_string())),
+            Err(error) => page.list_error = Some((provider, models_error_text(provider, &error))),
         }
     }
 
@@ -438,10 +463,10 @@ impl Actor {
             let result = match stored {
                 Ok(stored) => match ApiKey::new(stored.as_deref().unwrap_or_default()) {
                     Ok(key) => transport
-                        .send(build_request(&key, &model, TEST_SAMPLE, None))
+                        .send(build_request(provider, &key, &model, TEST_SAMPLE, None))
                         .await
-                        .map_err(|error| error.to_string()),
-                    Err(error) => Err(error.to_string()),
+                        .map_err(|error| error.describe(provider)),
+                    Err(error) => Err(error.describe(provider)),
                 },
                 Err(error) => Err(error),
             };

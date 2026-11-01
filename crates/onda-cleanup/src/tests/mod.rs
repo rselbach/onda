@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use onda_domain::cleanup::{
-    ApiKey, CleanupError, CleanupRequest, REQUEST_TIMEOUT, SYSTEM_PROMPT, TEST_SAMPLE,
-    build_request, default_model,
+    ApiKey, CleanupError, CleanupProvider, CleanupRequest, REQUEST_TIMEOUT, SYSTEM_PROMPT,
+    TEST_SAMPLE, build_request, default_model,
 };
 use serde_json::json;
 use tokio::net::TcpListener;
@@ -29,7 +29,13 @@ fn client(url: &str) -> CleanupClient {
 
 fn cleanup_request(key: &str) -> CleanupRequest {
     let key = ApiKey::new(key).expect("test key");
-    build_request(&key, default_model(), TEST_SAMPLE, Some(APP))
+    build_request(
+        CleanupProvider::OpenRouter,
+        &key,
+        default_model(),
+        TEST_SAMPLE,
+        Some(APP),
+    )
 }
 
 fn success_body() -> String {
@@ -179,7 +185,7 @@ async fn times_out_after_twenty_seconds_cln_7() {
         "timed out after {elapsed:?}"
     );
     assert_eq!(
-        got.map_err(|e| e.to_string()),
+        got.map_err(|e| e.describe(CleanupProvider::OpenRouter)),
         Err("OpenRouter request failed: The request timed out.".to_owned())
     );
     server.closed().await;
@@ -255,7 +261,9 @@ async fn connection_refused_is_a_transport_error_cln_11() {
         "message: {message}"
     );
     assert!(!message.contains("127.0.0.1"), "URL leaked: {message}");
-    let shown = got.as_ref().map_err(ToString::to_string);
+    let shown = got
+        .as_ref()
+        .map_err(|error| error.describe(CleanupProvider::OpenRouter));
     assert_eq!(shown, Err(format!("OpenRouter request failed: {message}")));
 }
 
@@ -354,7 +362,9 @@ async fn list_models_gets_and_parses_the_list() {
     .to_string();
     let mut server = Server::start(Reply::Respond { status: 200, body }).await;
 
-    let got = tokio::time::timeout(GUARD, client(&server.url).list_models("unused"))
+    let client = client(&server.url);
+    let listing = client.list_models(CleanupProvider::OpenRouter, None);
+    let got = tokio::time::timeout(GUARD, listing)
         .await
         .expect("listing finished");
     let slugs: Vec<String> = got
@@ -376,11 +386,88 @@ async fn list_models_gets_and_parses_the_list() {
 
 #[tokio::test]
 async fn list_models_reports_transport_errors() {
-    let got = client(&refused_url().await).list_models("unused").await;
+    let got = client(&refused_url().await)
+        .list_models(CleanupProvider::OpenRouter, None)
+        .await;
     assert!(
         matches!(got, Err(CleanupError::Transport(_))),
         "refused connection: {got:?}"
     );
+}
+
+#[tokio::test]
+async fn fireworks_listing_sends_the_key_and_follows_pages() {
+    let page = |models: serde_json::Value, next: &str| {
+        json!({"models": models, "nextPageToken": next}).to_string()
+    };
+    let chat = |name: &str, display: &str| {
+        json!({"name": name, "displayName": display,
+               "supportsServerless": true, "conversationConfig": {"style": "x"}})
+    };
+    let (url, served) = Server::start_sequence(vec![
+        (
+            200,
+            page(
+                json!([chat("accounts/fireworks/models/kimi-k3", "Kimi K3")]),
+                "p2",
+            ),
+        ),
+        (
+            200,
+            page(
+                json!([chat(
+                    "accounts/fireworks/models/glm-5p3-flash",
+                    "GLM 5.3 Flash"
+                )]),
+                "",
+            ),
+        ),
+    ])
+    .await;
+    let key = ApiKey::new("fw-greendale-human-beings").expect("key");
+
+    let client = client(&url);
+    let listing = client.list_models(CleanupProvider::Fireworks, Some(&key));
+    let got = tokio::time::timeout(GUARD, listing)
+        .await
+        .expect("listing finished")
+        .expect("models");
+    let names: Vec<&str> = got.iter().map(|m| m.display_name.as_ref()).collect();
+    assert_eq!(names, ["GLM 5.3 Flash", "Kimi K3"], "both pages, sorted");
+
+    let captured = tokio::time::timeout(GUARD, served)
+        .await
+        .expect("server finished")
+        .expect("server task");
+    assert_eq!(captured.len(), 2, "one request per page");
+    for request in &captured {
+        assert_eq!(
+            request.header("authorization"),
+            ["Bearer fw-greendale-human-beings"]
+        );
+    }
+    assert!(
+        captured[0]
+            .request_line
+            .contains("filter=supports_serverless%3Dtrue")
+            && !captured[0].request_line.contains("pageToken"),
+        "{}",
+        captured[0].request_line
+    );
+    assert!(
+        captured[1].request_line.contains("&pageToken=p2 "),
+        "{}",
+        captured[1].request_line
+    );
+}
+
+#[tokio::test]
+async fn fireworks_listing_needs_a_key() {
+    // nothing listens: a request would be a transport error instead
+    let got = client("http://127.0.0.1:9/")
+        .list_models(CleanupProvider::Fireworks, None)
+        .await;
+    assert_eq!(got, Err(CleanupError::MissingKey));
 }
 
 #[test]
@@ -391,5 +478,5 @@ fn futures_are_send() {
     let cancel = CancellationToken::new();
     assert_send(&client.send(&request));
     assert_send(&client.send_cancellable(&request, &cancel));
-    assert_send(&client.list_models("http://127.0.0.1:9/"));
+    assert_send(&client.list_models(CleanupProvider::OpenRouter, None));
 }

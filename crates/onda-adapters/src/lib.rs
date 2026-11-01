@@ -19,7 +19,7 @@ pub use history::History;
 pub use models::{
     DownloadListener, EngineFactory, Models, download_update, forward_download_events,
 };
-pub use secrets::{Keychain, OpenRouter};
+pub use secrets::{CloudCleanup, Keychain};
 pub use settings::SettingsAdapter;
 
 /// Where Onda keeps its files under the platform data directory.

@@ -2032,6 +2032,109 @@ async fn the_model_sheet_picks_the_model_in_one_click() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn fireworks_lists_its_models_only_with_its_key() {
+    use onda_domain::cleanup::{CleanupModel, CleanupProvider, FIREWORKS_MODELS};
+
+    let fireworks = CleanupProvider::Fireworks;
+    let sheet = |h: &Harness| {
+        post_processing(h)
+            .details
+            .expect("details")
+            .dialog
+            .expect("sheet")
+    };
+    let h = Harness::with(|s| {
+        s.cleanup_enabled = true;
+        s.cleanup_provider = CleanupProvider::Fireworks;
+        s.cleanup_model = FIREWORKS_MODELS[0].clone();
+    })
+    .await;
+    *lock(&h.cleanup.listed) = Some(Ok(vec![CleanupModel::listed(
+        "accounts/fireworks/models/kimi-k3",
+        "Kimi K3",
+    )]));
+
+    // the page reads no key, so it lists nothing for Fireworks
+    h.app.page_appeared(MainWindowSection::PostProcessing);
+    sleep(10).await;
+    let details = post_processing(&h).details.expect("details");
+    assert_eq!(details.provider_name, "Fireworks AI");
+    assert_eq!(details.model_name, "DeepSeek V4.1 Flash");
+    assert!(lock(&h.secrets.2).is_empty(), "no keychain read");
+    assert_eq!(h.cleanup.list_calls.load(Ordering::SeqCst), 0);
+
+    // the sheet lists with the stored key
+    h.app.open_providers_dialog();
+    sleep(10).await;
+    assert_eq!(
+        *lock(&h.cleanup.list_requests),
+        [(fireworks, Some("sk-or-greendale".to_owned()))]
+    );
+    let dialog = sheet(&h);
+    assert_eq!(dialog.key.placeholder, "Fireworks AI API key");
+    assert_eq!(
+        dialog.model_groups.last().map(|g| g.title.as_str()),
+        Some("All Fireworks AI Models")
+    );
+    assert!(
+        lock(&h.secrets.2).iter().all(|(_, p)| *p == fireworks),
+        "every keychain call is Fireworks'"
+    );
+
+    // saving a new key lists again with it
+    h.app.api_key_edited("fw-annie-edison");
+    h.app.api_key_commit();
+    sleep(10).await;
+    assert_eq!(
+        lock(&h.cleanup.list_requests).last(),
+        Some(&(fireworks, Some("fw-annie-edison".to_owned())))
+    );
+
+    // with no key, the sheet asks for one
+    h.app.api_key_edited("");
+    h.app.api_key_commit();
+    sleep(10).await;
+    assert_eq!(
+        sheet(&h).models_error.as_deref(),
+        Some("Enter your Fireworks AI API key to see its models.")
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn picking_another_providers_model_switches_the_provider() {
+    use onda_domain::cleanup::CleanupProvider;
+
+    let h = Harness::with(|s| s.cleanup_enabled = true).await;
+    h.app.page_appeared(MainWindowSection::PostProcessing);
+    h.app.open_providers_dialog();
+    sleep(10).await;
+    h.app.select_dialog_provider(CleanupProvider::Fireworks);
+    sleep(10).await;
+    let dialog = post_processing(&h)
+        .details
+        .expect("details")
+        .dialog
+        .expect("sheet");
+    assert_eq!(dialog.selected_provider, "fireworks");
+    assert_eq!(dialog.selected_model, None, "OpenRouter is still in use");
+
+    h.app.select_cleanup_model(
+        CleanupProvider::Fireworks,
+        "accounts/fireworks/models/deepseek-v4p1-flash",
+    );
+    sleep(1).await;
+    let settings = lock(&h.settings.settings).clone();
+    assert_eq!(settings.cleanup_provider, CleanupProvider::Fireworks);
+    assert_eq!(
+        settings.cleanup_model.slug,
+        "accounts/fireworks/models/deepseek-v4p1-flash"
+    );
+    let details = post_processing(&h).details.expect("details");
+    assert_eq!(details.provider_name, "Fireworks AI");
+    assert_eq!(details.model_name, "DeepSeek V4.1 Flash");
+}
+
+#[tokio::test(start_paused = true)]
 async fn cln_25_quitting_saves_the_typed_key() {
     let h = Harness::with(|s| s.cleanup_enabled = true).await;
     h.app.page_appeared(MainWindowSection::PostProcessing);

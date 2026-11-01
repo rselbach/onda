@@ -691,7 +691,8 @@ pub struct ProvidersDialog {
     pub models_loading: bool,
     /// "Loading models…".
     pub loading_title: String,
-    /// Why the last listing failed, in red under the list.
+    /// Why the list is missing, under the search field: a failed listing
+    /// or, for a provider that lists only with a key, a request for one.
     pub models_error: Option<String>,
     /// "Done"; sends `close_providers_dialog`.
     pub done_title: String,

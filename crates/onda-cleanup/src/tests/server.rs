@@ -80,6 +80,34 @@ impl Server {
         }
     }
 
+    /// Answers one connection per reply, in order, and returns every
+    /// request it read once all replies are sent.
+    pub async fn start_sequence(
+        replies: Vec<(u16, String)>,
+    ) -> (String, tokio::task::JoinHandle<Vec<Captured>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("local address");
+        let served = tokio::spawn(async move {
+            let mut captured = Vec::new();
+            for (status, body) in replies {
+                let (stream, _) = listener.accept().await.expect("accept");
+                let mut stream = BufReader::new(stream);
+                captured.push(read_request(&mut stream).await);
+                let response = format!(
+                    "HTTP/1.1 {status} Greendale\r\nContent-Type: application/json\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("write response");
+            }
+            captured
+        });
+        (format!("http://{address}{PATH}"), served)
+    }
+
     /// The request the client sent.
     pub async fn captured(&mut self) -> Captured {
         (&mut self.captured).await.expect("server read a request")

@@ -823,6 +823,7 @@ mod tests {
                 name: "refine failed while typing",
                 message: UserMessage::Cleanup {
                     notice: CleanupNotice::CouldNotRefine {
+                        provider: crate::cleanup::CleanupProvider::OpenRouter,
                         error: "timed out".to_owned(),
                     },
                     output_mode: OutputMode::Type,
@@ -836,6 +837,7 @@ mod tests {
                 name: "refine failed in clipboard mode",
                 message: UserMessage::Cleanup {
                     notice: CleanupNotice::CouldNotRefine {
+                        provider: crate::cleanup::CleanupProvider::OpenRouter,
                         error: "timed out".to_owned(),
                     },
                     output_mode: OutputMode::Clipboard,
@@ -1049,6 +1051,7 @@ mod tests {
                 name: "cleanup failed",
                 message: UserMessage::Cleanup {
                     notice: CleanupNotice::CouldNotRefine {
+                        provider: crate::cleanup::CleanupProvider::OpenRouter,
                         error: "boom".to_owned(),
                     },
                     output_mode: OutputMode::Type,

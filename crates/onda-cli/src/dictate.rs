@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use onda_adapters::{
-    DataPaths, History, Keychain, Microphone, Models, OpenRouter, SettingsAdapter,
+    CloudCleanup, DataPaths, History, Keychain, Microphone, Models, SettingsAdapter,
     forward_audio_events,
 };
 use onda_app::ports::{
@@ -157,7 +157,7 @@ pub fn run(args: &Args, paths: &DataPaths, models_dir: &Path) -> Result<()> {
         models: Arc::new(models),
         catalog,
         history: Arc::new(History::new(Arc::new(history), settings.clone())),
-        cleanup: Arc::new(OpenRouter::new(CleanupClient::new()?)),
+        cleanup: Arc::new(CloudCleanup::new(CleanupClient::new()?)),
         secrets: secrets(),
         settings: Arc::new(settings_source),
         tray_term: "menu bar icon".into(),

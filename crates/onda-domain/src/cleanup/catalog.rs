@@ -37,7 +37,7 @@ pub struct CleanupModel {
 }
 
 impl CleanupModel {
-    const fn curated(slug: &'static str, display_name: &'static str) -> Self {
+    pub(super) const fn curated(slug: &'static str, display_name: &'static str) -> Self {
         Self {
             slug: Cow::Borrowed(slug),
             display_name: Cow::Borrowed(display_name),

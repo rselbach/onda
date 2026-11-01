@@ -250,19 +250,26 @@ pub(crate) async fn clean_up(job: CleanupJob) -> Msg {
             None
         }
     };
-    let outcome = match cleanup::start(true, &job.raw, key.as_deref()) {
+    let outcome = match cleanup::start(provider, true, &job.raw, key.as_deref()) {
         CleanupStart::Skip(outcome) => outcome,
         CleanupStart::Request(key) => {
             let _ = job.messages.send(Msg::Refining(job.id));
-            let request =
-                || cleanup::build_request(&key, &job.model, &job.raw, job.app_name.as_deref());
+            let request = || {
+                cleanup::build_request(
+                    provider,
+                    &key,
+                    &job.model,
+                    &job.raw,
+                    job.app_name.as_deref(),
+                )
+            };
             let first = job.transport.send(request()).await;
-            match cleanup::after_first_attempt(&job.raw, first) {
+            match cleanup::after_first_attempt(provider, &job.raw, first) {
                 CleanupStep::Done(outcome) => outcome,
                 CleanupStep::Retry(violation) => {
                     tracing::info!(%violation, "cleanup rejected by guardrails; retrying once");
                     let second = job.transport.send(request()).await;
-                    cleanup::after_retry(&job.raw, second)
+                    cleanup::after_retry(provider, &job.raw, second)
                 }
             }
         }

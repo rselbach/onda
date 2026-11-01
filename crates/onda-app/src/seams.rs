@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use jiff::Timestamp;
 use onda_asr::SpeechEngine;
-use onda_domain::cleanup::{CleanupError, CleanupModel, CleanupProvider, CleanupRequest};
+use onda_domain::cleanup::{ApiKey, CleanupError, CleanupModel, CleanupProvider, CleanupRequest};
 use onda_domain::history::{HistoryEntry, NewEntry, RecentTranscript};
 use onda_domain::hotkey::Shortcut;
 use onda_domain::languages::LanguageSetting;
@@ -165,10 +165,12 @@ pub trait CleanupTransport: Send + Sync {
     /// Sends `request`.
     fn send(&self, request: CleanupRequest) -> BoxFuture<'static, Result<String, CleanupError>>;
 
-    /// The models `provider` lists; empty when it cannot list them.
+    /// The models `provider` lists. `key` is the provider's stored key,
+    /// read only for providers that list with it.
     fn list_models(
         &self,
         provider: CleanupProvider,
+        key: Option<ApiKey>,
     ) -> BoxFuture<'static, Result<Vec<CleanupModel>, CleanupError>>;
 }
 

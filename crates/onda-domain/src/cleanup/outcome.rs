@@ -12,10 +12,14 @@
 
 use super::guardrails::{GuardrailViolation, check_guardrails};
 use super::openrouter::{ApiKey, CleanupError};
+use super::provider::CleanupProvider;
 use crate::types::OutputMode;
 
-/// History error recorded when no usable key is stored (CLN-2).
-pub const UNAVAILABLE_ERROR: &str = "OpenRouter unavailable";
+/// History error recorded when no usable key is stored (CLN-2), e.g.
+/// "OpenRouter unavailable".
+pub fn unavailable_error(provider: CleanupProvider) -> String {
+    format!("{} unavailable", provider.display_name())
+}
 
 /// What cleanup did to a transcript.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,6 +80,8 @@ pub enum CleanupNotice {
     /// Request 1 failed (CLN-13). Feedback notice, rate limited to one per
     /// 1.5 s.
     CouldNotRefine {
+        /// The provider that failed.
+        provider: CleanupProvider,
         /// The [`CleanupError`] message.
         error: String,
     },
@@ -96,12 +102,13 @@ impl CleanupNotice {
     /// Notice message; CLN-13 names where the raw transcript went.
     pub fn message(&self, mode: OutputMode) -> String {
         match self {
-            Self::CouldNotRefine { error } => {
+            Self::CouldNotRefine { provider, error } => {
                 let destination = match mode {
                     OutputMode::Type => "Typed the raw transcript instead.",
                     OutputMode::Clipboard => "Copied the raw transcript to the clipboard instead.",
                 };
-                format!("OpenRouter cleanup failed ({error}). {destination}")
+                let name = provider.display_name();
+                format!("{name} cleanup failed ({error}). {destination}")
             }
             Self::UsedRawTranscript => "Post-processing looked wrong.".to_owned(),
         }
@@ -122,14 +129,19 @@ pub enum CleanupStart {
 ///
 /// `stored_key` is the credential-store value read once for this dictation;
 /// pass `None` when it is absent or the read failed (log the failure).
-pub fn start(enabled: bool, raw: &str, stored_key: Option<&str>) -> CleanupStart {
+pub fn start(
+    provider: CleanupProvider,
+    enabled: bool,
+    raw: &str,
+    stored_key: Option<&str>,
+) -> CleanupStart {
     if !enabled || raw.trim().is_empty() {
         return CleanupStart::Skip(CleanupOutcome::NotRun);
     }
     match stored_key.map(ApiKey::new) {
         Some(Ok(key)) => CleanupStart::Request(key),
         Some(Err(_)) | None => CleanupStart::Skip(CleanupOutcome::FellBack {
-            error: UNAVAILABLE_ERROR.to_owned(),
+            error: unavailable_error(provider),
             notice: None,
         }),
     }
@@ -147,13 +159,18 @@ pub enum CleanupStep {
 /// Decides what follows request 1 (CLN-12..CLN-14).
 ///
 /// `result` is [`super::parse_response`]'s value or the transport error.
-pub fn after_first_attempt(raw: &str, result: Result<String, CleanupError>) -> CleanupStep {
+pub fn after_first_attempt(
+    provider: CleanupProvider,
+    raw: &str,
+    result: Result<String, CleanupError>,
+) -> CleanupStep {
     let cleaned = match result {
         Ok(cleaned) => cleaned.trim().to_owned(),
         Err(error) => {
-            let error = error.to_string();
+            let error = error.describe(provider);
             return CleanupStep::Done(CleanupOutcome::FellBack {
                 notice: Some(CleanupNotice::CouldNotRefine {
+                    provider,
                     error: error.clone(),
                 }),
                 error,
@@ -175,14 +192,18 @@ pub fn after_first_attempt(raw: &str, result: Result<String, CleanupError>) -> C
 /// is ambiguous after a rejected first pass and records the shrinkage
 /// message; a failed retry records its error. Every fallback here shows
 /// "Used Raw Transcript".
-pub fn after_retry(raw: &str, result: Result<String, CleanupError>) -> CleanupOutcome {
+pub fn after_retry(
+    provider: CleanupProvider,
+    raw: &str,
+    result: Result<String, CleanupError>,
+) -> CleanupOutcome {
     let fell_back = |error: String| CleanupOutcome::FellBack {
         error,
         notice: Some(CleanupNotice::UsedRawTranscript),
     };
     let cleaned = match result {
         Ok(cleaned) => cleaned.trim().to_owned(),
-        Err(error) => return fell_back(error.to_string()),
+        Err(error) => return fell_back(error.describe(provider)),
     };
     if cleaned.is_empty() {
         let violation = GuardrailViolation::Shrinkage {
@@ -290,7 +311,12 @@ mod tests {
             },
         ];
         for tc in cases {
-            assert_eq!(start(tc.enabled, tc.raw, tc.key), tc.want, "{}", tc.name);
+            assert_eq!(
+                start(CleanupProvider::OpenRouter, tc.enabled, tc.raw, tc.key),
+                tc.want,
+                "{}",
+                tc.name
+            );
         }
     }
 
@@ -334,6 +360,7 @@ mod tests {
                 want: CleanupStep::Done(fell_back(
                     "OpenRouter request failed: Greendale is offline",
                     Some(CleanupNotice::CouldNotRefine {
+                        provider: CleanupProvider::OpenRouter,
                         error: "OpenRouter request failed: Greendale is offline".to_owned(),
                     }),
                 )),
@@ -361,7 +388,11 @@ mod tests {
             },
         ];
         for tc in cases {
-            let got = after_first_attempt(tc.raw, tc.result.map(str::to_owned));
+            let got = after_first_attempt(
+                CleanupProvider::OpenRouter,
+                tc.raw,
+                tc.result.map(str::to_owned),
+            );
             assert_eq!(got, tc.want, "{}", tc.name);
         }
     }
@@ -411,7 +442,11 @@ mod tests {
             },
         ];
         for tc in cases {
-            let got = after_retry(tc.raw, tc.result.map(str::to_owned));
+            let got = after_retry(
+                CleanupProvider::OpenRouter,
+                tc.raw,
+                tc.result.map(str::to_owned),
+            );
             assert_eq!(got, tc.want, "{}", tc.name);
         }
     }
@@ -473,6 +508,7 @@ mod tests {
             want_message: &'static str,
         }
         let offline = || CleanupNotice::CouldNotRefine {
+            provider: CleanupProvider::OpenRouter,
             error: "Greendale is offline".to_owned(),
         };
         let cases = [

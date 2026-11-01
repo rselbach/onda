@@ -1,6 +1,6 @@
 # Post-processing (cleanup)
 
-Optional OpenRouter cleanup of transcripts, configured on the Post-Processing
+Optional OpenRouter or Fireworks AI cleanup of transcripts, configured on the Post-Processing
 page. Verify the UI only: no real API key, no requests.
 
 ## Sub-features
@@ -41,12 +41,15 @@ Main window > Post-Processing.
 ## Gotchas
 
 - Each provider's API key has its own Keychain account (service
-  `com.rselbach.onda`; OpenRouter's is `openRouterApiKey`), shared with the
-  user's Onda. If one is stored, every
+  `com.rselbach.onda`: `openRouterApiKey`, `fireworksApiKey`), shared with
+  the user's Onda. If one is stored, every
   dictation with post-processing on sends a real request. `doctor` warns and
   `launch --setting postProcessingEnabled=true` refuses when it exists. With
   a key present, verify only the page, toggle it back off, and never dictate
   while it is on.
+- Fireworks AI lists its models only with its key, so with no key stored its
+  sheet shows "Enter your Fireworks AI API key to see its models." and only
+  the curated models. That is expected; do not add a key to get the list.
 - Never type a key, paste one, or press Test; never put the field's value in
   evidence.
 - With no stored key, dictating with post-processing on is safe: CLN-2

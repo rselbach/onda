@@ -1,28 +1,31 @@
 //! The services cleanup can run through.
 
 use super::catalog::{self, CLEANUP_MODELS, CleanupModel};
+use super::fireworks::{self, FIREWORKS_MODELS};
 use super::openrouter;
 
 /// A cleanup provider: where requests go and which models it offers.
 ///
-/// Only OpenRouter exists today. Adding a provider means a variant here, its
-/// request and response shapes, its settings keys, and its credential-store
-/// account.
+/// Adding a provider means a variant here, its request body and model
+/// listing, its settings key, and its credential-store account.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum CleanupProvider {
     /// OpenRouter's chat-completions API.
     #[default]
     OpenRouter,
+    /// Fireworks AI's serverless chat-completions API.
+    Fireworks,
 }
 
 impl CleanupProvider {
     /// Every provider, in picker order.
-    pub const ALL: [CleanupProvider; 1] = [CleanupProvider::OpenRouter];
+    pub const ALL: [CleanupProvider; 2] = [CleanupProvider::OpenRouter, CleanupProvider::Fireworks];
 
     /// The stable id stored in `cleanupProvider`.
     pub const fn id(self) -> &'static str {
         match self {
             Self::OpenRouter => "openrouter",
+            Self::Fireworks => "fireworks",
         }
     }
 
@@ -35,6 +38,7 @@ impl CleanupProvider {
     pub const fn display_name(self) -> &'static str {
         match self {
             Self::OpenRouter => "OpenRouter",
+            Self::Fireworks => "Fireworks AI",
         }
     }
 
@@ -42,13 +46,17 @@ impl CleanupProvider {
     pub const fn chat_endpoint(self) -> &'static str {
         match self {
             Self::OpenRouter => openrouter::ENDPOINT,
+            Self::Fireworks => fireworks::ENDPOINT,
         }
     }
 
-    /// Where the provider lists its models, when it can.
-    pub const fn models_endpoint(self) -> Option<&'static str> {
+    /// Whether listing the provider's models needs its API key. Without
+    /// one, the list is read only while the model sheet shows, which has
+    /// already read the key.
+    pub const fn lists_models_with_key(self) -> bool {
         match self {
-            Self::OpenRouter => Some(openrouter::MODELS_ENDPOINT),
+            Self::OpenRouter => false,
+            Self::Fireworks => true,
         }
     }
 
@@ -56,6 +64,7 @@ impl CleanupProvider {
     pub fn curated_models(self) -> &'static [CleanupModel] {
         match self {
             Self::OpenRouter => &CLEANUP_MODELS,
+            Self::Fireworks => &FIREWORKS_MODELS,
         }
     }
 
@@ -68,6 +77,7 @@ impl CleanupProvider {
     pub fn resolve_model(self, stored: Option<&str>) -> CleanupModel {
         match self {
             Self::OpenRouter => catalog::resolve_model(stored),
+            Self::Fireworks => fireworks::resolve_model(stored),
         }
     }
 
@@ -96,9 +106,14 @@ mod tests {
         assert_eq!(provider.default_model(), &CLEANUP_MODELS[0]);
         assert!(provider.is_curated("~anthropic/claude-haiku-latest"));
         assert!(!provider.is_curated("openai/gpt-4o"));
-        assert_eq!(
-            provider.models_endpoint(),
-            Some("https://openrouter.ai/api/v1/models")
+        assert!(
+            !provider.lists_models_with_key(),
+            "OpenRouter's list is public"
         );
+        let fireworks = CleanupProvider::Fireworks;
+        assert_eq!(fireworks.id(), "fireworks");
+        assert_eq!(fireworks.display_name(), "Fireworks AI");
+        assert_eq!(fireworks.default_model(), &FIREWORKS_MODELS[0]);
+        assert!(fireworks.lists_models_with_key());
     }
 }

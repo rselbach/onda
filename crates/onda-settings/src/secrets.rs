@@ -16,11 +16,15 @@ pub const SERVICE: &str = "com.rselbach.onda";
 /// Credential-store account holding the OpenRouter key.
 pub const OPENROUTER_ACCOUNT: &str = "openRouterApiKey";
 
+/// Credential-store account holding the Fireworks AI key.
+pub const FIREWORKS_ACCOUNT: &str = "fireworksApiKey";
+
 /// The credential-store account holding `provider`'s key. Keys are never
 /// shared between providers.
 pub const fn key_account(provider: CleanupProvider) -> &'static str {
     match provider {
         CleanupProvider::OpenRouter => OPENROUTER_ACCOUNT,
+        CleanupProvider::Fireworks => FIREWORKS_ACCOUNT,
     }
 }
 
@@ -313,12 +317,37 @@ mod tests {
     #[test]
     fn every_provider_has_its_own_account() {
         assert_eq!(key_account(OPENROUTER), "openRouterApiKey");
+        assert_eq!(key_account(CleanupProvider::Fireworks), "fireworksApiKey");
         let accounts: std::collections::HashSet<_> =
             CleanupProvider::ALL.into_iter().map(key_account).collect();
         assert_eq!(
             accounts.len(),
             CleanupProvider::ALL.len(),
             "no shared accounts"
+        );
+    }
+
+    #[test]
+    fn memory_store_keeps_each_providers_key_apart() {
+        let store = MemorySecretStore::new();
+        store.save(OPENROUTER, "sk-or-troy").expect("save");
+        store
+            .save(CleanupProvider::Fireworks, "fw-abed")
+            .expect("save");
+        let read = |provider| {
+            store
+                .read(provider)
+                .expect("read")
+                .map(|key| key.expose().to_owned())
+        };
+        assert_eq!(read(OPENROUTER).as_deref(), Some("sk-or-troy"));
+        assert_eq!(read(CleanupProvider::Fireworks).as_deref(), Some("fw-abed"));
+        store.delete(OPENROUTER).expect("delete");
+        assert_eq!(read(OPENROUTER), None);
+        assert_eq!(
+            read(CleanupProvider::Fireworks).as_deref(),
+            Some("fw-abed"),
+            "deleting one key leaves the other"
         );
     }
 

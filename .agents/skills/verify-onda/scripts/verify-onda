@@ -162,11 +162,17 @@ clone_model() {
   cp -c -R "${DEV_MODELS}/${model}" "${data}/Models/"
 }
 
-# whether the shared Keychain holds an OpenRouter key (existence only; the
-# secret is never read)
+# whether the shared Keychain holds any cleanup provider's key (existence
+# only; the secret is never read); one account per provider
 has_stored_api_key() {
-  security find-generic-password -s com.rselbach.onda -a openRouterApiKey \
-    >/dev/null 2>&1
+  local account
+  for account in openRouterApiKey fireworksApiKey; do
+    if security find-generic-password -s com.rselbach.onda -a "${account}" \
+      >/dev/null 2>&1; then
+      return 0
+    fi
+  done
+  return 1
 }
 
 launch() {
@@ -197,7 +203,7 @@ launch() {
 
   if [[ " ${settings[*]} " == *" postProcessingEnabled=true "* ]] &&
     has_stored_api_key; then
-    die "a real OpenRouter key is stored for com.rselbach.onda; enabling" \
+    die "a real cleanup API key is stored for com.rselbach.onda; enabling" \
       "post-processing would send requests with it"
   fi
   local root
@@ -298,7 +304,7 @@ doctor() {
 
   printf 'healthy pid=%s sha256=%s\n' "${pid}" "${current:0:12}"
   if has_stored_api_key; then
-    printf 'warning: an OpenRouter key is stored; keep post-processing off\n'
+    printf 'warning: a cleanup API key is stored; keep post-processing off\n'
   fi
   printf 'data_dir=%s\n' "$(read_state "${root}" data-dir)"
   printf 'tray=%s\n' "$(tray_label "${pid}")"
