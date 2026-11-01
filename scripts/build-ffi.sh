@@ -13,6 +13,9 @@ readonly SHELL_DIR="${ROOT}/shell/macos"
 readonly GENERATED_DIR="${SHELL_DIR}/Generated"
 readonly SWIFT_OUT="${SHELL_DIR}/Sources/OndaCore/Generated"
 readonly TARGET="aarch64-apple-darwin"
+# keep the static library's objects, including cc-built C code, at the app's
+# minimum macOS (Info.plist LSMinimumSystemVersion)
+export MACOSX_DEPLOYMENT_TARGET="26.0"
 STAGING=""
 
 cleanup() {

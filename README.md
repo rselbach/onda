@@ -12,7 +12,7 @@ and are not part of this repository.
 
 ## Requirements
 
-- macOS 27 or later on Apple Silicon (arm64 only)
+- macOS 26 or later on Apple Silicon (arm64 only)
 - Rust stable 1.99 or later (`rustup`), with `rustfmt` and `clippy`
 - Xcode 27
 - [SwiftFormat](https://github.com/nicklockwood/SwiftFormat) for the Swift

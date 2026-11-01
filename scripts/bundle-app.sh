@@ -41,11 +41,20 @@ signing_identity() {
 }
 
 # kept out of command substitutions, which would ignore a failed build and
-# bundle the previous binary
+# bundle the previous binary. SwiftPM records the deployment target as the
+# SDK version, so newer macOS would run Onda in compatibility mode; record
+# the SDK actually used instead.
 build_shell() {
   local configuration="$1"
+  local minimum
+  local sdk
+  minimum="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' \
+    "${SHELL_DIR}/Info.plist")"
+  sdk="$(xcrun --show-sdk-version)"
   swift build --package-path "${SHELL_DIR}" -c "${configuration}" \
-    --arch arm64
+    --arch arm64 \
+    -Xlinker -platform_version -Xlinker macos \
+    -Xlinker "${minimum}" -Xlinker "${sdk}"
 }
 
 shell_bin_dir() {

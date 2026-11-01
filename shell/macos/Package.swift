@@ -5,7 +5,7 @@ import PackageDescription
 let package = Package(
     name: "Onda",
     platforms: [
-        .macOS("27.0")
+        .macOS("26.0")
     ],
     products: [
         .executable(name: "Onda", targets: ["Onda"])
