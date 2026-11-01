@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use onda_domain::cleanup::{CLEANUP_MODELS, default_model};
+use onda_domain::cleanup::{CLEANUP_MODELS, CleanupProvider, default_model};
 use onda_domain::hotkey::{KeyCode, Modifier, ModifierKey, ModifierSet, Shortcut};
 use onda_domain::languages::LanguageSetting;
 use onda_domain::messages::UserMessage;
@@ -34,7 +34,8 @@ struct Snapshot {
     history_retention: HistoryRetention,
     replacement_rules: Vec<ReplacementRule>,
     post_processing_enabled: bool,
-    openrouter_model: &'static str,
+    cleanup_provider: CleanupProvider,
+    openrouter_model: String,
     onboarding_completed: bool,
     did_show_first_run_setup: bool,
     last_model_migration_notice_key: String,
@@ -57,7 +58,11 @@ fn snapshot(settings: &Settings) -> Snapshot {
         history_retention: settings.history_retention(),
         replacement_rules: settings.replacement_rules(),
         post_processing_enabled: settings.post_processing_enabled(),
-        openrouter_model: settings.openrouter_model().slug,
+        cleanup_provider: settings.cleanup_provider(),
+        openrouter_model: settings
+            .cleanup_model(CleanupProvider::OpenRouter)
+            .slug
+            .into_owned(),
         onboarding_completed: settings.onboarding_completed(),
         did_show_first_run_setup: settings.did_show_first_run_setup(),
         last_model_migration_notice_key: settings.last_model_migration_notice_key(),
@@ -81,7 +86,8 @@ fn defaults() -> Snapshot {
         history_retention: HistoryRetention::Month,
         replacement_rules: Vec::new(),
         post_processing_enabled: false,
-        openrouter_model: "~openai/gpt-luna-latest",
+        cleanup_provider: CleanupProvider::OpenRouter,
+        openrouter_model: "~openai/gpt-luna-latest".to_owned(),
         onboarding_completed: false,
         did_show_first_run_setup: false,
         last_model_migration_notice_key: String::new(),
@@ -174,6 +180,7 @@ fn key_names_match_prd_09() {
         "historyRetention",
         "replacementEntries",
         "postProcessingEnabled",
+        "cleanupProvider",
         "openRouterModel",
         "onboardingCompleted",
         "didShowFirstRunSetup",
@@ -230,7 +237,10 @@ fn every_setter_round_trips_through_the_file() {
     settings.set_replacement_rules(&rules).expect("set");
     settings.set_post_processing_enabled(true).expect("set");
     settings
-        .set_openrouter_model(&CLEANUP_MODELS[1])
+        .set_cleanup_provider(CleanupProvider::OpenRouter)
+        .expect("set");
+    settings
+        .set_cleanup_model(CleanupProvider::OpenRouter, &CLEANUP_MODELS[1])
         .expect("set");
     settings.complete_onboarding().expect("set");
     settings
@@ -255,7 +265,8 @@ fn every_setter_round_trips_through_the_file() {
         history_retention: HistoryRetention::Forever,
         replacement_rules: rules,
         post_processing_enabled: true,
-        openrouter_model: "~anthropic/claude-haiku-latest",
+        cleanup_provider: CleanupProvider::OpenRouter,
+        openrouter_model: "~anthropic/claude-haiku-latest".to_owned(),
         onboarding_completed: true,
         did_show_first_run_setup: true,
         last_model_migration_notice_key: "parakeet-old->parakeet-ultra".to_owned(),
@@ -363,7 +374,9 @@ fn corrupt_values_read_as_defaults_set_2() {
         ("replacementEntries".into(), json!("{broken")),
         ("replacementEntries".into(), json!({"id": "x"})),
         ("replacementEntries".into(), json!([{"id": "a"}])),
-        ("openRouterModel".into(), json!("openai/gpt-4o")),
+        ("cleanupProvider".into(), json!("greendale")),
+        ("cleanupProvider".into(), json!(1)),
+        ("openRouterModel".into(), json!("")),
         ("openRouterModel".into(), json!(3)),
         ("lastModelMigrationNoticeKey".into(), json!(9)),
         ("declinedModelMigrationNoticeKey".into(), json!({})),
@@ -554,7 +567,7 @@ fn canonicalize_leaves_unset_and_canonical_values_alone() {
         ("empty file", json!({})),
         (
             "canonical",
-            json!({"outputMode": "clipboard", "hotkeyActivationMode": "toggle", "historyRetention": "week", "openRouterModel": default_model().slug}),
+            json!({"outputMode": "clipboard", "hotkeyActivationMode": "toggle", "historyRetention": "week", "openRouterModel": default_model().slug.as_ref()}),
         ),
     ];
     for (name, file) in cases {

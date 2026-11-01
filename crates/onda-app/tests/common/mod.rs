@@ -32,7 +32,9 @@ use onda_app::seams::{
 use onda_app::system_speech::SystemSpeechEngine;
 use onda_app::{App, Event, EventSink, HotkeyEvent, Ports};
 use onda_asr::{AsrError, LoadProgress, SpeechEngine};
-use onda_domain::cleanup::{CleanupError, CleanupRequest, default_model};
+use onda_domain::cleanup::{
+    CleanupError, CleanupModel, CleanupProvider, CleanupRequest, default_model,
+};
 use onda_domain::history::{HistoryEntry, NewEntry, RecentTranscript, plan_retention};
 use onda_domain::hotkey::{GlobeKeyAction, HotkeyView, ModifierSet, Shortcut};
 use onda_domain::language_menu::recent_languages;
@@ -812,6 +814,9 @@ pub struct FakeCleanup {
     pub requests: Mutex<Vec<serde_json::Value>>,
     pub hold: Mutex<Option<Arc<tokio::sync::Notify>>>,
     pub started: AtomicU64,
+    /// What `list_models` answers; an empty list by default.
+    pub listed: Mutex<Option<Result<Vec<CleanupModel>, CleanupError>>>,
+    pub list_calls: AtomicU64,
 }
 
 impl FakeCleanup {
@@ -853,12 +858,23 @@ impl CleanupTransport for FakeCleanup {
             result
         })
     }
+
+    fn list_models(
+        &self,
+        _provider: CleanupProvider,
+    ) -> BoxFuture<'static, Result<Vec<CleanupModel>, CleanupError>> {
+        self.list_calls.fetch_add(1, Ordering::SeqCst);
+        let result = lock(&self.listed).clone().unwrap_or(Ok(Vec::new()));
+        Box::pin(async move { result })
+    }
 }
 
-/// The stored key, and a hold the next save waits on before writing.
+/// OpenRouter's stored key, a hold the next save waits on before writing,
+/// and the provider of every read and save, in order.
 pub struct FakeSecrets(
     pub Mutex<Result<Option<String>, String>>,
     pub Mutex<Option<Arc<Hold>>>,
+    pub Mutex<Vec<(&'static str, CleanupProvider)>>,
 );
 
 impl FakeSecrets {
@@ -875,11 +891,13 @@ impl FakeSecrets {
 }
 
 impl SecretSource for FakeSecrets {
-    fn openrouter_key(&self) -> Result<Option<String>, String> {
+    fn api_key(&self, provider: CleanupProvider) -> Result<Option<String>, String> {
+        lock(&self.2).push(("read", provider));
         lock(&self.0).clone()
     }
 
-    fn save_openrouter_key(&self, value: &str) -> Result<(), String> {
+    fn save_api_key(&self, provider: CleanupProvider, value: &str) -> Result<(), String> {
+        lock(&self.2).push(("save", provider));
         let hold = lock(&self.1).take();
         if let Some(hold) = hold {
             hold.wait();
@@ -935,7 +953,8 @@ impl SettingsSource for FakeSettings {
             SettingChange::HistoryRetention(retention) => s.history_retention = retention,
             SettingChange::ReplacementRules(rules) => s.replacement_rules = rules,
             SettingChange::CleanupEnabled(on) => s.cleanup_enabled = on,
-            SettingChange::CleanupModel(model) => s.cleanup_model = model,
+            SettingChange::CleanupProvider(provider) => s.cleanup_provider = provider,
+            SettingChange::CleanupModel(_, model) => s.cleanup_model = model,
             SettingChange::Onboarding(flags) => s.onboarding = flags,
             SettingChange::LastNoticeKey(key) => s.last_notice_key = key,
             SettingChange::DeclinedNoticeKey(key) => s.declined_notice_key = key,
@@ -966,7 +985,8 @@ pub fn default_settings() -> Settings {
         recent_languages: vec![LanguageSetting::Auto],
         selected_model: ModelId::ParakeetTdtV2,
         cleanup_enabled: false,
-        cleanup_model: default_model(),
+        cleanup_provider: CleanupProvider::OpenRouter,
+        cleanup_model: default_model().clone(),
         replacement_rules: Vec::new(),
         history_enabled: true,
         keep_audio: false,
@@ -1129,6 +1149,7 @@ impl Harness {
         let cleanup = Arc::new(FakeCleanup::default());
         let secrets = Arc::new(FakeSecrets(
             Mutex::new(Ok(Some("sk-or-greendale".to_owned()))),
+            Mutex::default(),
             Mutex::default(),
         ));
         let settings = Arc::new(FakeSettings {

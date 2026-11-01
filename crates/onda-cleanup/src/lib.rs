@@ -1,4 +1,4 @@
-//! OpenRouter HTTP client for transcript cleanup.
+//! OpenRouter HTTP client for transcript cleanup and model listing.
 //!
 //! A thin transport: [`onda_domain::cleanup::build_request`] describes the
 //! request and [`onda_domain::cleanup::parse_response`] reads the reply. This
@@ -7,7 +7,8 @@
 //! (CLN-9).
 
 use onda_domain::cleanup::{
-    CleanupError, CleanupRequest, ENDPOINT, REQUEST_TIMEOUT, parse_response,
+    CleanupError, CleanupModel, CleanupRequest, REQUEST_TIMEOUT, parse_models_response,
+    parse_response,
 };
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue};
 use serde::Deserialize;
@@ -26,7 +27,8 @@ const TIMED_OUT: &str = "The request timed out.";
 #[derive(Debug, Clone)]
 pub struct CleanupClient {
     http: reqwest::Client,
-    endpoint: String,
+    // tests point every request at a local server
+    endpoint: Option<String>,
 }
 
 /// The request was cancelled before it finished (CLN-9).
@@ -37,12 +39,16 @@ pub struct CleanupClient {
 pub struct Cancelled;
 
 impl CleanupClient {
-    /// Creates a client for [`ENDPOINT`]. Touches no network.
+    /// Creates a client that posts each request to its own endpoint.
+    /// Touches no network.
     pub fn new() -> Result<Self, CleanupError> {
-        Self::build(ENDPOINT, reqwest::Client::builder())
+        Self::build(None, reqwest::Client::builder())
     }
 
-    fn build(endpoint: &str, builder: reqwest::ClientBuilder) -> Result<Self, CleanupError> {
+    fn build(
+        endpoint: Option<&str>,
+        builder: reqwest::ClientBuilder,
+    ) -> Result<Self, CleanupError> {
         let http = builder
             .user_agent(concat!("Onda/", env!("CARGO_PKG_VERSION")))
             .build()
@@ -54,7 +60,7 @@ impl CleanupClient {
             })?;
         Ok(Self {
             http,
-            endpoint: endpoint.to_owned(),
+            endpoint: endpoint.map(str::to_owned),
         })
     }
 
@@ -106,6 +112,25 @@ impl CleanupClient {
         Ok(result)
     }
 
+    /// Fetches the models `url` lists, capped at [`REQUEST_TIMEOUT`].
+    pub async fn list_models(&self, url: &str) -> Result<Vec<CleanupModel>, CleanupError> {
+        let url = self.endpoint.as_deref().unwrap_or(url);
+        let fetched = tokio::time::timeout(REQUEST_TIMEOUT, async {
+            let response = self.http.get(url).send().await.map_err(transport_error)?;
+            let status = response.status().as_u16();
+            let body = response.bytes().await.map_err(transport_error)?;
+            Ok((status, body))
+        })
+        .await
+        .unwrap_or_else(|_elapsed| Err(CleanupError::Transport(TIMED_OUT.to_owned())));
+        let result = fetched.and_then(|(status, body)| parse_models_response(status, &body));
+        match &result {
+            Ok(models) => tracing::info!(count = models.len(), "listed cleanup models"),
+            Err(error) => tracing::warn!(%error, "could not list cleanup models"),
+        }
+        result
+    }
+
     async fn exchange(
         &self,
         request: &CleanupRequest,
@@ -113,7 +138,7 @@ impl CleanupClient {
     ) -> Result<(u16, Vec<u8>), CleanupError> {
         let response = self
             .http
-            .post(&self.endpoint)
+            .post(self.endpoint.as_deref().unwrap_or(request.endpoint))
             .headers(header_map(request)?)
             .body(body)
             .send()

@@ -5,7 +5,7 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use onda_domain::cleanup::CleanupModel;
+use onda_domain::cleanup::{CleanupError, CleanupModel, CleanupProvider};
 use onda_domain::hotkey::{HotkeyPreset, Shortcut};
 use onda_domain::languages::LanguageSetting;
 use onda_domain::messages::{LoginItemError, LoginItemRegistryStatus, LoginItemStatus};
@@ -68,7 +68,14 @@ pub(crate) enum UiMsg {
     DismissSpeechAlert(u64),
     // Post-Processing (CLN-24..CLN-27)
     SetCleanupEnabled(bool),
-    SetCleanupModel(&'static CleanupModel),
+    SelectCleanupModel {
+        provider: CleanupProvider,
+        slug: String,
+    },
+    OpenProvidersDialog,
+    CloseProvidersDialog,
+    SelectDialogProvider(CleanupProvider),
+    RefreshCleanupModels,
     ApiKeyEdited(String),
     ApiKeyCommit,
     TestCleanup,
@@ -127,12 +134,18 @@ pub(crate) enum UiMsg {
         result: Result<Option<String>, String>,
     },
     KeySaved {
+        provider: CleanupProvider,
         value: String,
         result: Result<(), String>,
     },
     TestFinished {
         generation: u64,
         result: Result<String, String>,
+    },
+    ModelsListed {
+        generation: u64,
+        provider: CleanupProvider,
+        result: Result<Vec<CleanupModel>, CleanupError>,
     },
     HistoryLoaded(Result<Vec<onda_domain::history::HistoryEntry>, String>),
     HistoryOpDone(Result<(), String>),
@@ -300,7 +313,13 @@ impl Actor {
             UiMsg::ConfirmSpeechAlert(id) => self.close_speech_alert(id, true),
             UiMsg::DismissSpeechAlert(id) => self.close_speech_alert(id, false),
             UiMsg::SetCleanupEnabled(on) => self.set_cleanup_enabled(on),
-            UiMsg::SetCleanupModel(model) => self.set_cleanup_model(model),
+            UiMsg::SelectCleanupModel { provider, slug } => {
+                self.select_cleanup_model(provider, &slug);
+            }
+            UiMsg::OpenProvidersDialog => self.open_providers_dialog(),
+            UiMsg::CloseProvidersDialog => self.close_providers_dialog(),
+            UiMsg::SelectDialogProvider(provider) => self.select_dialog_provider(provider),
+            UiMsg::RefreshCleanupModels => self.refresh_cleanup_models(),
             UiMsg::ApiKeyEdited(text) => self.api_key_edited(text),
             UiMsg::ApiKeyCommit => self.save_api_key(),
             UiMsg::TestCleanup => self.test_cleanup(),
@@ -385,8 +404,17 @@ impl Actor {
             }
             UiMsg::Updater(state) => self.ui.general.updater = state,
             UiMsg::KeyLoaded { generation, result } => self.key_loaded(generation, result),
-            UiMsg::KeySaved { value, result } => self.key_saved(value, result),
+            UiMsg::KeySaved {
+                provider,
+                value,
+                result,
+            } => self.key_saved(provider, value, result),
             UiMsg::TestFinished { generation, result } => self.test_finished(generation, result),
+            UiMsg::ModelsListed {
+                generation,
+                provider,
+                result,
+            } => self.models_listed(generation, provider, result),
             UiMsg::HistoryLoaded(result) => self.history_loaded(result),
             UiMsg::HistoryOpDone(result) => self.history_op_done(result),
             UiMsg::ModelDeleted {
@@ -459,7 +487,8 @@ impl Actor {
         self.forget_page(page);
         match page {
             MainWindowSection::PostProcessing => {
-                self.save_api_key();
+                // the sheet goes with the page, saving the key field
+                self.close_providers_dialog();
                 // leaving cancels a running test silently (CLN-27)
                 self.cancel_cleanup_test();
             }

@@ -5,7 +5,7 @@
 
 use onda_app::App;
 use onda_app::MainWindowSection;
-use onda_domain::cleanup::{CleanupModel, model_for_slug};
+use onda_domain::cleanup::CleanupProvider;
 use onda_domain::hotkey::HotkeyPreset;
 use onda_domain::languages::LanguageSetting;
 use onda_domain::migration::NoticeChoice;
@@ -40,10 +40,10 @@ fn entry(id: &str) -> Option<Uuid> {
     parsed
 }
 
-fn cleanup_model(slug: &str) -> Option<&'static CleanupModel> {
-    let parsed = model_for_slug(slug);
+fn cleanup_provider(id: &str) -> Option<CleanupProvider> {
+    let parsed = CleanupProvider::from_id(id);
     if parsed.is_none() {
-        tracing::warn!(slug, "unknown cleanup model from the shell");
+        tracing::warn!(id, "unknown cleanup provider from the shell");
     }
     parsed
 }
@@ -241,11 +241,34 @@ impl OndaCore {
         self.with_app(|app| app.set_cleanup_enabled(on));
     }
 
-    /// The "Model" picker, by slug (CLN-26).
-    pub fn set_cleanup_model(&self, slug: String) {
-        if let Some(model) = cleanup_model(&slug) {
-            self.with_app(|app| app.set_cleanup_model(model));
+    /// The "Model" row on Post-Processing.
+    pub fn open_providers_dialog(&self) {
+        self.with_app(App::open_providers_dialog);
+    }
+
+    /// "Done" in the model sheet, or the sheet going away.
+    pub fn close_providers_dialog(&self) {
+        self.with_app(App::close_providers_dialog);
+    }
+
+    /// A provider in the sheet's sidebar, by id.
+    pub fn select_dialog_provider(&self, id: String) {
+        if let Some(provider) = cleanup_provider(&id) {
+            self.with_app(|app| app.select_dialog_provider(provider));
         }
+    }
+
+    /// A model row or the use-by-ID field in the model sheet: the provider,
+    /// by id, and the model become the ones in use (CLN-26).
+    pub fn select_cleanup_model(&self, provider: String, slug: String) {
+        if let Some(provider) = cleanup_provider(&provider) {
+            self.with_app(|app| app.select_cleanup_model(provider, slug));
+        }
+    }
+
+    /// "Refresh Models" in the sheet.
+    pub fn refresh_cleanup_models(&self) {
+        self.with_app(App::refresh_cleanup_models);
     }
 
     /// The API key field changed (CLN-25).

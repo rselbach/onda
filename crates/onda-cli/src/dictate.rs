@@ -38,6 +38,7 @@ use onda_asr_coreml::ParakeetEngine;
 use onda_asr_coreml::manifest::manifest;
 use onda_audio::{AudioCapture, DeviceSelection};
 use onda_cleanup::CleanupClient;
+use onda_domain::cleanup::CleanupProvider;
 use onda_domain::hotkey::{GlobeKeyAction, ModifierSet, Shortcut};
 use onda_domain::messages::{LoginItemRegistryStatus, NotificationAuthorization};
 use onda_domain::models::{Catalog, ModelId};
@@ -222,7 +223,7 @@ fn secrets() -> Arc<dyn SecretSource> {
         return Arc::new(Keychain::new(KeychainSecretStore::new()));
     };
     let store = MemorySecretStore::new();
-    if let Err(error) = store.save(&key) {
+    if let Err(error) = store.save(CleanupProvider::OpenRouter, &key) {
         eprintln!("could not hold {KEY_VARIABLE}: {error}");
     }
     Arc::new(Keychain::new(store))

@@ -7,15 +7,16 @@ use std::time::SystemTime;
 
 use onda_app::views::{
     AboutLibrary, AboutModel, AboutPage, ActivationOption, AlertView, ApiKeyFieldView, ButtonView,
-    ChecklistButton, ChecklistRow, CleanupModelOption, CleanupTestResult, CompatibilityView,
-    DayHeading, GeneralPage, GettingStartedPage, HistoryContent, HistoryDialog, HistoryMenuItem,
-    HistoryPage, HistoryRow, HistorySection, HotkeyPage, InputOption, InputPickerView,
-    LanguageCardView, LanguageOption, LoginCaptionView, MainWindowSection, ModelCardAction,
-    ModelCardView, ModelRow, ModelRowControl, NoteActionView, NoticeButtonView, OnboardingContent,
-    OnboardingProgress, OnboardingView, OtherModelsView, OutputModeOption, OutputModePicker,
-    PermissionCardView, PermissionFixButton, PermissionRowView, PostProcessingDetails,
-    PostProcessingPage, PresetCardView, ReplacementRowView, ReplacementsPage, RetentionOption,
-    SidebarGroup, SidebarPage, SpeechAlert, SpeechPage, ToggleView, UpdateNotice, sidebar,
+    ChecklistButton, ChecklistRow, CleanupModelGroup, CleanupModelOption, CleanupProviderOption,
+    CleanupTestResult, CompatibilityView, DayHeading, GeneralPage, GettingStartedPage,
+    HistoryContent, HistoryDialog, HistoryMenuItem, HistoryPage, HistoryRow, HistorySection,
+    HotkeyPage, InputOption, InputPickerView, LanguageCardView, LanguageOption, LoginCaptionView,
+    MainWindowSection, ModelCardAction, ModelCardView, ModelRow, ModelRowControl, NoteActionView,
+    NoticeButtonView, OnboardingContent, OnboardingProgress, OnboardingView, OtherModelsView,
+    OutputModeOption, OutputModePicker, PermissionCardView, PermissionFixButton, PermissionRowView,
+    PostProcessingDetails, PostProcessingPage, PresetCardView, ProvidersDialog, ReplacementRowView,
+    ReplacementsPage, RetentionOption, SidebarGroup, SidebarPage, SpeechAlert, SpeechPage,
+    ToggleView, UpdateNotice, sidebar,
 };
 use onda_domain::history::ContextMenuItem;
 use onda_domain::hotkey::HotkeyPreset;
@@ -585,13 +586,31 @@ pub struct ApiKeyFieldView {
     pub error: Option<String>,
 }
 
-/// One model picker entry.
+/// One provider entry in the sheet's sidebar.
+#[uniffi::remote(Record)]
+pub struct CleanupProviderOption {
+    /// Value for `select_dialog_provider`.
+    pub id: String,
+    /// Display name.
+    pub name: String,
+}
+
+/// One model row in the sheet.
 #[uniffi::remote(Record)]
 pub struct CleanupModelOption {
-    /// Value for `set_cleanup_model`.
+    /// Value for `select_cleanup_model`.
     pub slug: String,
     /// Display name.
     pub name: String,
+}
+
+/// A titled run of model rows.
+#[uniffi::remote(Record)]
+pub struct CleanupModelGroup {
+    /// "Recommended", "Custom", or "All OpenRouter Models".
+    pub title: String,
+    /// The rows, in display order.
+    pub models: Vec<CleanupModelOption>,
 }
 
 /// A finished test (CLN-27), selectable.
@@ -603,17 +622,58 @@ pub struct CleanupTestResult {
     pub result: String,
 }
 
+/// The model sheet: pick a provider, set its key, and click the model to
+/// use.
+#[uniffi::remote(Record)]
+pub struct ProvidersDialog {
+    /// "Choose Model".
+    pub title: String,
+    /// The sidebar, in order.
+    pub providers: Vec<CleanupProviderOption>,
+    /// The provider whose pane shows.
+    pub selected_provider: String,
+    /// The provider's API key field.
+    pub key: ApiKeyFieldView,
+    /// "Models".
+    pub models_label: String,
+    /// The provider's models: curated, then the model in use when it is a
+    /// typed ID, then the rest of the provider's list by name. Empty groups
+    /// are left out.
+    pub model_groups: Vec<CleanupModelGroup>,
+    /// The model in use, when it belongs to this provider; clicking a row
+    /// sends `select_cleanup_model`.
+    pub selected_model: Option<String>,
+    /// Placeholder for the one field above the list. Its text filters rows
+    /// by name or slug in the shell; text that matches no slug offers a
+    /// row that sends it to `select_cleanup_model`.
+    pub search_placeholder: String,
+    /// Caption on that row, under the typed ID.
+    pub use_id_caption: String,
+    /// "Refresh Models"; absent when the provider cannot list its models,
+    /// disabled while a listing runs.
+    pub refresh_models: Option<ButtonView>,
+    /// A listing is running: show a spinner next to the refresh button and,
+    /// with `loading_title`, a row above the list.
+    pub models_loading: bool,
+    /// "Loading models…".
+    pub loading_title: String,
+    /// Why the last listing failed, in red under the list.
+    pub models_error: Option<String>,
+    /// "Done"; sends `close_providers_dialog`.
+    pub done_title: String,
+}
+
 /// What shows while post-processing is on (CLN-26).
 #[uniffi::remote(Record)]
 pub struct PostProcessingDetails {
-    /// The API key field.
-    pub key: ApiKeyFieldView,
-    /// "Model".
+    /// "Model"; clicking the row sends `open_providers_dialog`.
     pub model_label: String,
-    /// The catalog, in order.
-    pub models: Vec<CleanupModelOption>,
-    /// The model actually used (CLN-21).
-    pub selected_model: String,
+    /// The provider in use, e.g. "OpenRouter".
+    pub provider_name: String,
+    /// The model in use (CLN-21), by name.
+    pub model_name: String,
+    /// The model sheet, while open.
+    pub dialog: Option<ProvidersDialog>,
     /// The privacy caption.
     pub caption: String,
     /// "Test with Sample Text"; disabled while a test runs.

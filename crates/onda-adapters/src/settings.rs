@@ -38,6 +38,7 @@ impl SettingsSource for SettingsAdapter {
         let settings = &self.settings;
         let language = settings.selected_language(os_language);
         let stored_model = settings.selected_model(&self.catalog, os_language);
+        let cleanup_provider = settings.cleanup_provider();
         let selected_model = resolved_model(
             &self.catalog,
             &stored_model,
@@ -51,7 +52,8 @@ impl SettingsSource for SettingsAdapter {
             recent_languages: recent_languages(language, &settings.recent_languages()),
             selected_model,
             cleanup_enabled: settings.post_processing_enabled(),
-            cleanup_model: settings.openrouter_model(),
+            cleanup_provider,
+            cleanup_model: settings.cleanup_model(cleanup_provider),
             replacement_rules: settings.replacement_rules(),
             history_enabled: settings.history_enabled(),
             keep_audio: settings.history_keeps_audio(),
@@ -101,7 +103,10 @@ impl SettingsSource for SettingsAdapter {
             SettingChange::HistoryRetention(retention) => settings.set_history_retention(retention),
             SettingChange::ReplacementRules(rules) => settings.set_replacement_rules(&rules),
             SettingChange::CleanupEnabled(on) => settings.set_post_processing_enabled(on),
-            SettingChange::CleanupModel(model) => settings.set_openrouter_model(model),
+            SettingChange::CleanupProvider(provider) => settings.set_cleanup_provider(provider),
+            SettingChange::CleanupModel(provider, model) => {
+                settings.set_cleanup_model(provider, &model)
+            }
             SettingChange::Onboarding(flags) => settings
                 .set_onboarding_flags(flags.onboarding_completed, flags.did_show_first_run_setup),
             SettingChange::LastNoticeKey(key) => settings.set_last_model_migration_notice_key(&key),
