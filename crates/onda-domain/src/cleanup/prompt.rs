@@ -64,6 +64,7 @@ When multiple commands are chained, execute ALL of them in sequence, but never i
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
 
     #[test]
     fn prompt_keeps_its_guardrails() {
@@ -179,29 +180,20 @@ mod tests {
         }
     }
 
-    // the spec's "System prompt" block, the only fenced block after
-    // "Verbatim."
-    fn spec_prompt() -> &'static str {
-        let spec = include_str!("../../../../prd/05-cleanup-and-replacements.md");
-        let after = spec
-            .split_once("Verbatim. The prompt is product behavior")
-            .map(|(_, after)| after)
-            .unwrap_or_else(|| panic!("the spec's prompt section moved"));
-        let block = after
-            .split_once("```text\n")
-            .map(|(_, block)| block)
-            .unwrap_or_else(|| panic!("the spec's prompt block moved"));
-        block
-            .split_once("\n```")
-            .map(|(prompt, _)| prompt)
-            .unwrap_or_else(|| panic!("the spec's prompt block is unterminated"))
-    }
-
+    // the prompt is product behavior (05 "System prompt"): the spec is not
+    // in the repository, so the verbatim text is pinned by hash and length.
+    // A change must update both deliberately, after checking it against the
+    // spec's block.
     #[test]
     fn prompt_matches_the_spec_byte_for_byte() {
-        assert_eq!(SYSTEM_PROMPT, spec_prompt());
-        // a second pin, so editing the spec and the constant together still
-        // shows up in review
+        let digest: String = Sha256::digest(SYSTEM_PROMPT.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        assert_eq!(
+            digest,
+            "b2b2dcde328c24fbe61c06fe5ad1682c6f4378141fbb3d15f3239f3c50a7b62c"
+        );
         assert_eq!(SYSTEM_PROMPT.len(), 4_268);
     }
 
