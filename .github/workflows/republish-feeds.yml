@@ -1,0 +1,60 @@
+name: Republish update feeds
+
+# Recover an already signed release without rebuilding or replacing its assets.
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Successful Release workflow run containing the feeds
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Validate the source release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          [[ "${RUN_ID}" =~ ^[0-9]+$ ]]
+          gh api "repos/${GH_REPO}/actions/runs/${RUN_ID}" \
+            --jq 'select(.path == ".github/workflows/release.yml" and
+              .conclusion == "success" and .event == "push" and
+              (.head_branch | startswith("v"))) | .id' >source-run
+          [[ "$(cat source-run)" == "${RUN_ID}" ]]
+      - uses: actions/download-artifact@v4
+        with:
+          name: github-pages
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+          path: previous
+      - name: Recover the signed feeds
+        run: |
+          mkdir _site
+          tar -xf previous/artifact.tar -C _site
+          test -f _site/update.json
+          test -f _site/appcast.xml
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - uses: actions/deploy-pages@v4
+        id: deployment
+      - name: Verify the public feeds
+        run: python3 scripts/verify-published-feeds.py previous/artifact.tar

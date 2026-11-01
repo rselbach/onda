@@ -100,6 +100,13 @@ Existing release assets are never overwritten: a rerun whose built bytes
 differ fails verification and leaves the feeds unchanged. Publish a new
 version for changed bytes.
 
+The workflow also compares both public feeds with the uploaded artifact.
+If Pages reports success but serves an older deployment, run **Republish
+update feeds** from a newer commit on `main`, passing the successful Release
+run's ID. This republishes its signed feeds without rebuilding the app or
+changing release assets. Give each release a distinct source commit; two
+tags of the same commit can reuse the same Pages deployment identity.
+
 ### Updates
 
 `update.json` is one JSON envelope: the base64 release JSON (bundle id,
