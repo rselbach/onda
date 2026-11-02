@@ -1,0 +1,46 @@
+[package]
+name = "onda-linux"
+description = "GTK4 and libadwaita desktop shell for Onda."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "onda"
+path = "src/main.rs"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+adw = { package = "libadwaita", version = "0.9", features = ["v1_5"] }
+gtk = { package = "gtk4", version = "0.11", features = ["v4_12"] }
+gtk4-layer-shell = "0.8"
+anyhow = "1"
+ashpd = { version = "0.13", default-features = false, features = ["tokio", "global_shortcuts", "remote_desktop", "screencast"] }
+async-channel = "2"
+futures-util = "0.3"
+global-hotkey = "0.9"
+onda-adapters = { path = "../../crates/onda-adapters" }
+onda-app = { path = "../../crates/onda-app" }
+onda-asr = { path = "../../crates/onda-asr" }
+onda-audio = { path = "../../crates/onda-audio" }
+onda-cleanup = { path = "../../crates/onda-cleanup" }
+onda-domain = { path = "../../crates/onda-domain" }
+onda-history = { path = "../../crates/onda-history" }
+onda-models = { path = "../../crates/onda-models" }
+onda-settings = { path = "../../crates/onda-settings" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+transcribe-cpp = "=0.4.1"
+uuid = "1"
+x11rb = { version = "0.13", features = ["shape", "xtest", "randr"] }
+wayland-client = "0.31"
+wl-clipboard-rs = "0.9"
+ksni = { version = "0.3", features = ["blocking"] }
+gio = { version = "0.22", features = ["v2_80"] }
+
+[lints]
+workspace = true

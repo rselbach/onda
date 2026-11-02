@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Onda
+Comment=Local voice dictation
+Exec=onda
+Icon=com.rselbach.onda
+Terminal=false
+Categories=AudioVideo;Audio;Accessibility;
+StartupNotify=true

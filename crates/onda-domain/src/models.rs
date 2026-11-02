@@ -239,12 +239,24 @@ const STATIC_MODELS: [ModelInfo<'static>; 4] = [
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Catalog {
     system_speech: Option<SystemSpeechInfo>,
+    gguf: bool,
 }
 
 impl Catalog {
     /// Builds the catalog. Pass `None` when the shell has no system engine.
     pub fn new(system_speech: Option<SystemSpeechInfo>) -> Catalog {
-        Catalog { system_speech }
+        Catalog {
+            system_speech,
+            gguf: false,
+        }
+    }
+
+    /// Linux's downloadable GGUF models, decoded offline by transcribe.cpp.
+    pub fn gguf() -> Catalog {
+        Catalog {
+            system_speech: None,
+            gguf: true,
+        }
     }
 
     /// Whether the shell provides a system engine.
@@ -260,11 +272,27 @@ impl Catalog {
             .collect()
     }
 
-    /// The entry for `id`, or `None` for `system-speech` without a system
-    /// engine.
+    /// The entry for `id`, or `None` when this catalog has no such backend.
     pub fn model(&self, id: ModelId) -> Option<ModelInfo<'_>> {
+        if self.gguf && matches!(id, ModelId::ParakeetJapanese | ModelId::SystemSpeech) {
+            return None;
+        }
         if let Some(info) = STATIC_MODELS.iter().find(|m| m.id == id) {
-            return Some(info.clone());
+            let mut info = info.clone();
+            if self.gguf {
+                info.live_preview = false;
+                info.size_hint = match id {
+                    ModelId::ParakeetTdtV2 => "~730MB",
+                    ModelId::ParakeetUltra => "~740MB",
+                    _ => "~731MB",
+                };
+                info.attribution =
+                    "Parakeet by NVIDIA / Moondream; GGUF conversion by handy-computer";
+                if id == ModelId::ParakeetUnified {
+                    info.description = "NVIDIA Parakeet Unified — English transcription";
+                }
+            }
+            return Some(info);
         }
         let system = self.system_speech.as_ref()?;
         Some(ModelInfo {
@@ -284,11 +312,11 @@ impl Catalog {
 
     /// Whether `id` is in this run's catalog.
     pub fn contains(&self, id: ModelId) -> bool {
-        id != ModelId::SystemSpeech || self.has_system_speech()
+        self.model(id).is_some()
     }
 
-    /// Parses a stored id against this catalog. `None` for unknown ids and
-    /// for `system-speech` when the shell has no system engine.
+    /// Parses a stored id against this catalog. Unknown or unavailable ids
+    /// return `None`.
     pub fn resolve(&self, stored: &str) -> Option<ModelId> {
         ModelId::parse(stored).filter(|id| self.contains(*id))
     }
@@ -411,6 +439,22 @@ impl FolderValidation {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn gguf_catalog_excludes_unavailable_backends() {
+        let catalog = Catalog::gguf();
+        assert!(!catalog.contains(ModelId::ParakeetJapanese));
+        assert!(!catalog.contains(ModelId::SystemSpeech));
+        assert_eq!(catalog.models().len(), 3);
+        assert!(catalog.models().iter().all(|model| !model.live_preview));
+        assert!(
+            crate::routing::routes(
+                &catalog,
+                crate::languages::LanguageSetting::parse("ja").unwrap()
+            )
+            .is_empty()
+        );
+    }
 
     /// A macOS-like system engine with Jabber's language list (SYS-1).
     pub(crate) fn mac_system_speech() -> SystemSpeechInfo {

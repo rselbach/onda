@@ -97,6 +97,8 @@ pub(crate) enum Msg {
     RecorderChanged,
     DismissDownloadOverlay,
     MenuToggle,
+    StartDictation,
+    StopDictation,
     Cancel,
     Retry,
     DiscardFailed,
@@ -496,6 +498,17 @@ impl Actor {
                 self.refresh_settings();
                 self.menu_toggle();
             }
+            Msg::StartDictation => {
+                if matches!(self.phase, Phase::Idle) {
+                    self.refresh_settings();
+                    self.menu_toggle();
+                }
+            }
+            Msg::StopDictation => match self.phase {
+                Phase::Starting(_) => self.abort_start(),
+                Phase::Recording(_) => self.menu_toggle(),
+                _ => {}
+            },
             Msg::Cancel => self.cancel(),
             Msg::Retry => {
                 self.refresh_settings();

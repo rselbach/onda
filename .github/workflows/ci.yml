@@ -16,6 +16,39 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  linux:
+    runs-on: ubuntu-latest
+    container: fedora:44
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Linux build dependencies
+        run: |
+          dnf install -y rust cargo rustfmt clippy gcc-c++ cmake clang-devel \
+            pkgconf-pkg-config gtk4-devel libadwaita-devel gtk4-layer-shell-devel \
+            alsa-lib-devel openssl-devel libX11-devel libXtst-devel \
+            libxkbcommon-devel wayland-devel ShellCheck
+
+      - name: Rust format
+        run: cargo fmt --all --check
+
+      - name: Linux lint
+        run: cargo clippy --locked -p onda-linux --all-targets -- -D warnings
+
+      - name: Linux and shared core tests
+        run: |
+          cargo test --locked -p onda-domain -p onda-app -p onda-adapters -p onda-audio \
+            -p onda-linux -- --test-threads=1
+
+      - name: Linux build
+        run: scripts/build-linux.sh
+
+      - name: Shell lint
+        run: |
+          shellcheck scripts/build-linux.sh scripts/install-linux.sh \
+            scripts/test-linux-dictation.sh scripts/test-linux-post-processing.sh
+
   build-and-test:
     runs-on: xcode-27
     steps:

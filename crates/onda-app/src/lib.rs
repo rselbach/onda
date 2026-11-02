@@ -282,6 +282,16 @@ impl App {
         self.send(Msg::MenuToggle);
     }
 
+    /// Starts recording when idle. Repeated desktop commands are harmless.
+    pub fn start_dictation(&self) {
+        self.send(Msg::StartDictation);
+    }
+
+    /// Finishes a recording or aborts pending start checks; idle is a no-op.
+    pub fn stop_dictation(&self) {
+        self.send(Msg::StopDictation);
+    }
+
     /// Cancels the session: overlay ✕, menu cancel (DICT-19).
     pub fn cancel_dictation(&self) {
         self.send(Msg::Cancel);
@@ -751,7 +761,7 @@ impl App {
     }
 
     /// [`App::shutdown`] for an app started with [`App::start_on`].
-    pub async fn shutdown_async(self) {
+    pub async fn shutdown_async(&self) {
         let (done, wait) = oneshot::channel();
         self.send(Msg::Shutdown(done));
         let _ = wait.await;

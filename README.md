@@ -2,6 +2,9 @@
 
 Multiplatform speech-to-text app.
 
+The [Linux GTK4/libadwaita shell](shell/linux/README.md) has separate build and
+desktop setup instructions. The requirements below apply to macOS.
+
 ## Requirements
 
 - macOS 26 or later on Apple Silicon (arm64 only)

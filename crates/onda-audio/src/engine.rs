@@ -58,8 +58,9 @@ pub(crate) trait Input {
     fn channels(&self) -> usize;
     /// Opens the microphone.
     fn start(&mut self) -> Result<(), AudioError>;
-    /// Closes the microphone; the input stays built.
-    fn stop(&mut self);
+    /// Pauses the microphone. False means the caller must drop the input
+    /// to release the device because this backend cannot pause it.
+    fn stop(&mut self) -> bool;
     /// Appends captured interleaved frames, device format, to `out`.
     fn read(&mut self, out: &mut Vec<f32>);
     /// A fault the stream reported since the last call.
@@ -554,9 +555,12 @@ impl<B: Backend> Engine<B> {
         let Some(prepared) = self.prepared.as_mut().filter(|p| p.running) else {
             return;
         };
-        prepared.input.stop();
+        let paused = prepared.input.stop();
         prepared.running = false;
         prepared.resampler.reset();
+        if !paused {
+            self.prepared = None;
+        }
         self.pre_roll.clear();
         info!("audio input stopped after standby");
     }
@@ -700,6 +704,7 @@ mod tests {
         builds: Vec<String>,
         starts: usize,
         stops: usize,
+        cannot_pause: bool,
         // the latest input's state
         running: bool,
         stalled: bool,
@@ -756,6 +761,14 @@ mod tests {
     impl FakeInput {
         fn live(&self) -> bool {
             self.world.borrow().live_input == self.serial
+        }
+    }
+
+    impl Drop for FakeInput {
+        fn drop(&mut self) {
+            if self.live() {
+                self.world.borrow_mut().running = false;
+            }
         }
     }
 
@@ -824,15 +837,19 @@ mod tests {
             Ok(())
         }
 
-        fn stop(&mut self) {
+        fn stop(&mut self) -> bool {
             if !self.live() {
-                return;
+                return true;
             }
             let mut world = self.world.borrow_mut();
+            if world.cannot_pause {
+                return false;
+            }
             if world.running {
                 world.stops += 1;
             }
             world.running = false;
+            true
         }
 
         fn read(&mut self, out: &mut Vec<f32>) {
@@ -1016,6 +1033,21 @@ mod tests {
         let start = h.start().expect("restart");
         assert!(!start.warm);
         assert_eq!(h.builds(), 1, "restart reuses the built input");
+    }
+
+    #[test]
+    fn standby_releases_and_rebuilds_inputs_that_cannot_pause() {
+        let mut h = Harness::new(DeviceSelection::SystemDefault);
+        h.world.borrow_mut().cannot_pause = true;
+        h.start().expect("start");
+        h.advance(ms(200));
+        h.stop();
+        h.advance(STANDBY);
+        assert!(!h.world.borrow().running, "microphone must be closed");
+        let start = h.start().expect("restart");
+        assert!(!start.warm);
+        assert_eq!(h.builds(), 2);
+        assert!(h.world.borrow().running);
     }
 
     #[test]

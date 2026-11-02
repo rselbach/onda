@@ -10,6 +10,7 @@ use std::time::Duration;
 use common::{
     EngineCall, Harness, Hold, asr_failure, eventually, lock, loud, quiet, sleep, target,
 };
+
 use onda_app::HotkeyEvent;
 use onda_app::seams::AudioSignal;
 use onda_domain::cleanup::CleanupError;
@@ -33,6 +34,29 @@ fn rule(trigger: &str, replacement: &str) -> ReplacementRule {
 
 // ---------------------------------------------------------------------------
 // activation modes (HOT-24..HOT-31)
+
+#[tokio::test(start_paused = true)]
+async fn desktop_start_and_stop_commands_are_idempotent() {
+    let h = Harness::new().await;
+    h.app.stop_dictation();
+    sleep(100).await;
+    assert!(h.idle());
+    h.app.start_dictation();
+    h.app.start_dictation();
+    sleep(500).await;
+    assert!(h.audio.is_open());
+    h.app.start_dictation();
+    sleep(100).await;
+    assert!(h.audio.is_open());
+    h.app.stop_dictation();
+    h.app.stop_dictation();
+    sleep(500).await;
+    assert_eq!(h.typed().len(), 1);
+    assert!(h.idle());
+    h.app.stop_dictation();
+    sleep(100).await;
+    assert!(h.idle());
+}
 
 #[tokio::test(start_paused = true)]
 async fn hold_records_provisionally_confirms_at_300_ms_and_types_on_release() {
@@ -248,6 +272,22 @@ async fn hot_28_releasing_during_the_microphone_prompt_aborts_the_start() {
     assert_eq!(h.audio.starts.load(Ordering::SeqCst), 0, "never began");
     assert!(h.idle());
     assert!(h.notices().is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn desktop_stop_during_start_checks_prevents_late_recording() {
+    let h = Harness::new().await;
+    *lock(&h.permissions.microphone) = MicrophonePermission::NotDetermined;
+    let prompt = Hold::new();
+    *lock(&h.permissions.hold_request) = Some(prompt.clone());
+    h.app.start_dictation();
+    eventually("the prompt", || prompt.started()).await;
+    h.app.stop_dictation();
+    prompt.release();
+    sleep(1_000).await;
+    assert_eq!(h.audio.starts.load(Ordering::SeqCst), 0);
+    assert!(h.idle());
+    assert!(h.typed().is_empty());
 }
 
 // ---------------------------------------------------------------------------

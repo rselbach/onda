@@ -26,6 +26,17 @@ const fn route(model: ModelId, is_recommended: bool) -> Route {
 /// remaining Parakeet route becomes the recommendation (LANG-5). A language
 /// only the system engine covers then has no routes.
 pub fn routes(catalog: &Catalog, language: LanguageSetting) -> Vec<Route> {
+    let mut routes = available_routes(catalog, language);
+    routes.retain(|route| catalog.contains(route.model));
+    if !routes.iter().any(|route| route.is_recommended)
+        && let Some(first) = routes.first_mut()
+    {
+        first.is_recommended = true;
+    }
+    routes
+}
+
+fn available_routes(catalog: &Catalog, language: LanguageSetting) -> Vec<Route> {
     let system = catalog.model(ModelId::SystemSpeech);
     let code = match language {
         LanguageSetting::Auto => {

@@ -216,9 +216,13 @@ impl Input for CpalInput {
             .map_err(|err| AudioError::StartFailed(err.to_string()))
     }
 
-    fn stop(&mut self) {
-        if let Err(err) = self.stream.pause() {
-            warn!(%err, "could not stop the input stream");
+    fn stop(&mut self) -> bool {
+        match self.stream.pause() {
+            Ok(()) => true,
+            Err(err) => {
+                debug!(%err, "input cannot pause; releasing the stream");
+                false
+            }
         }
     }
 
