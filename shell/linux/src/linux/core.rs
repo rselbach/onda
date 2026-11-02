@@ -105,6 +105,7 @@ impl Core {
         let desktop = Arc::new(Desktop {
             events: events.clone(),
         });
+        let updater = super::updates::Updates::new(paths.root(), events.clone(), runtime.handle())?;
         let app = App::start_on(
             runtime.handle(),
             Ports {
@@ -116,7 +117,7 @@ impl Core {
                 hotkeys: Arc::new(Hotkeys::new(runtime.handle(), events.clone(), held)),
                 notifier: desktop.clone(),
                 login_item: desktop.clone(),
-                updater: desktop.clone(),
+                updater: Arc::new(updater),
                 files: desktop,
                 audio: Arc::new(Microphone::new(capture)),
                 models: Arc::new(models),
@@ -135,7 +136,7 @@ impl Core {
                 settings: source,
                 tray_term: "application".into(),
                 privacy_naming: PrivacyNaming::Accessibility,
-                app_version: env!("CARGO_PKG_VERSION").into(),
+                app_version: env!("ONDA_VERSION").into(),
             },
             Arc::new(Sink(events)),
         );

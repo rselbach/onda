@@ -111,14 +111,14 @@ fn verify_feed_refuses_a_feed_signed_by_another_key() {
 
 #[test]
 fn the_pinned_key_matches_info_plist() {
-    let plist = concat!(env!("CARGO_MANIFEST_DIR"), "/../../shell/macos/Info.plist");
-    let out = Command::new("/usr/bin/plutil")
-        .args(["-extract", "SUPublicEDKey", "raw", "-o", "-", plist])
-        .output()
-        .unwrap();
-    assert!(out.status.success());
-    assert_eq!(
-        String::from_utf8_lossy(&out.stdout).trim(),
-        onda_update::PUBLIC_KEY
-    );
+    let plist = include_str!("../../../shell/macos/Info.plist");
+    let (_, value) = plist.split_once("<key>SUPublicEDKey</key>").unwrap();
+    let key = value
+        .trim_start()
+        .strip_prefix("<string>")
+        .unwrap()
+        .split_once("</string>")
+        .unwrap()
+        .0;
+    assert_eq!(key, onda_update::PUBLIC_KEY);
 }

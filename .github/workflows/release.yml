@@ -4,7 +4,8 @@ name: Release
 # (REL-3, REL-4, REL-6, UPD-3, UPD-5).
 #
 # GitHub Releases hold the versioned ZIP (what the in-app updater installs)
-# and DMG, both packaged from the same stapled Onda.app. GitHub Pages holds
+# and DMG, both packaged from the same stapled Onda.app, plus native Linux
+# DEB, RPM, and tar.gz packages for both architectures. GitHub Pages holds
 # two feeds, deployed together only after the release's assets download and
 # verify: update.json, the signed feed current Onda reads, and appcast.xml,
 # the Sparkle appcast that builds from before the switch still read.
@@ -41,7 +42,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  linux:
+    uses: ./.github/workflows/linux-packages.yml
+    with:
+      version: ${{ github.ref_name }}
+
   build:
+    needs: linux
     runs-on: xcode-27
     steps:
       - name: Checkout
@@ -94,12 +101,12 @@ jobs:
           DEEPSEEK_API_TOKEN: ${{ secrets.DEEPSEEK_API_TOKEN }}
         with:
           project-name: Onda
-          project-description: macOS menu bar app for local, on-device speech-to-text dictation.
+          project-description: macOS and Linux app for local, on-device speech-to-text dictation.
           output-file: build/release-notes.md
           additional-context: >-
             Keep notes user-facing and concise. Do not include installation
-            instructions; the signed DMG and ZIP are attached to the GitHub
-            release and the in-app update feed is updated separately.
+            instructions; macOS DMG and ZIP and Linux DEB, RPM, and tar.gz
+            packages are attached. The signed update feed is updated separately.
 
       - name: Import signing certificate
         env:
@@ -177,6 +184,13 @@ jobs:
           EOF
           xmllint --noout _site/appcast.xml
 
+      - name: Download Linux packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: onda-linux-*
+          merge-multiple: true
+          path: build/linux
+
       - name: Sign the update feed
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -196,6 +210,7 @@ jobs:
             --notes-url "https://github.com/${GITHUB_REPOSITORY}/releases/tag/${GITHUB_REF_NAME}" \
             --zip "build/${zip}" --zip-url "${base}/${zip}" \
             --dmg "build/${dmg}" --dmg-url "${base}/${dmg}" \
+            --linux-dir build/linux --linux-base-url "${base}" \
             --out _site/update.json <<<"${SIGNING_KEY}"
 
       - name: Create GitHub release
@@ -207,7 +222,41 @@ jobs:
           files: |
             build/Onda-${{ steps.version.outputs.version }}-macos-arm64.zip
             build/Onda-${{ steps.version.outputs.version }}.dmg
+            build/linux/*.deb
+            build/linux/*.rpm
+            build/linux/*.tar.gz
+            build/linux/*.sha256
           body_path: ${{ steps.release_notes.outputs.body-path }}
+
+      - name: Verify the published Linux checksum files
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import os
+          import time
+          import urllib.request
+          from pathlib import Path
+
+          base = (
+              f"https://github.com/{os.environ['GITHUB_REPOSITORY']}"
+              f"/releases/download/{os.environ['GITHUB_REF_NAME']}"
+          )
+          for path in sorted(Path("build/linux").glob("*.sha256")):
+              expected = hashlib.sha256(path.read_bytes()).digest()
+              for attempt in range(5):
+                  try:
+                      with urllib.request.urlopen(f"{base}/{path.name}", timeout=120) as response:
+                          actual = hashlib.sha256()
+                          while chunk := response.read(1024 * 1024):
+                              actual.update(chunk)
+                      if actual.digest() != expected:
+                          raise ValueError(f"Published asset differs: {path.name}")
+                      break
+                  except (OSError, ValueError):
+                      if attempt == 4:
+                          raise
+                      time.sleep(5)
+          PY
 
       # the feeds go live only once the published assets are the signed ones,
       # fetched through the app's own transport and URL policy

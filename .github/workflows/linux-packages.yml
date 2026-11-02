@@ -1,0 +1,108 @@
+name: Linux packages
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Package version (for example 3.2.0-rc.1)
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    env:
+      PKG_CONFIG_PATH: ${{ github.workspace }}/build/linux-layer-shell/install/lib/pkgconfig
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Normalize release tag
+        run: echo "VERSION=${VERSION#v}" >> "${GITHUB_ENV}"
+      - name: Install build and package verification dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake clang libclang-dev \
+            pkg-config libgtk-4-dev libadwaita-1-dev libasound2-dev libssl-dev \
+            libx11-dev libxtst-dev libxkbcommon-dev libwayland-dev \
+            wayland-protocols meson ninja-build desktop-file-utils \
+            rpm cpio shellcheck xvfb dbus-daemon
+      - name: Install Rust
+        run: |
+          rustup toolchain install 1.99.1 --profile minimal
+          rustup default 1.99.1
+      - name: Build private GTK4 Layer Shell
+        run: scripts/build-linux-layer-shell.sh
+      - name: Check packaging scripts
+        run: |
+          shellcheck scripts/build-linux-layer-shell.sh \
+            shell/linux/packaging/install.sh
+          desktop-file-validate shell/linux/com.rselbach.onda.desktop
+      - name: Build packages
+        run: python3 scripts/package-linux.py "${VERSION}"
+      - name: Verify all package payloads and archive installation
+        run: python3 scripts/test-linux-packages.py "${VERSION}"
+      - name: Install Debian package
+        run: |
+          sudo apt-get install -y ./build/linux/*.deb
+          test "$(/usr/bin/onda --version)" = "Onda ${VERSION}"
+      - name: Smoke-test the installed desktop app
+        run: |
+          xvfb-run -a dbus-run-session \
+            --config-file=shell/linux/tests/dbus-session.conf -- \
+            python3 scripts/test-linux-package-launch.py /usr/bin/onda
+      - uses: actions/upload-artifact@v4
+        with:
+          name: onda-linux-${{ matrix.arch }}
+          path: |
+            build/linux/*.deb
+            build/linux/*.rpm
+            build/linux/*.tar.gz
+            build/linux/*.sha256
+          if-no-files-found: error
+
+  install-rpm:
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    container: fedora:44
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: onda-linux-${{ matrix.arch }}
+          path: packages
+      - name: Install RPM and its runtime dependencies on Fedora
+        run: |
+          dnf install -y ./packages/*.rpm python3 xorg-x11-server-Xvfb \
+            dbus-daemon xorg-x11-xauth
+          test "$(/usr/bin/onda --version)" = "Onda ${VERSION#v}"
+      - name: Smoke-test the installed desktop app
+        run: |
+          xvfb-run -a dbus-run-session \
+            --config-file=shell/linux/tests/dbus-session.conf -- \
+            python3 scripts/test-linux-package-launch.py /usr/bin/onda

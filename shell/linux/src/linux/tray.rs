@@ -6,6 +6,7 @@ use ksni::blocking::TrayMethods;
 pub struct Tray {
     events: async_channel::Sender<Message>,
     pub label: String,
+    pub update: onda_domain::updates::UpdateControl,
 }
 
 impl ksni::Tray for Tray {
@@ -22,7 +23,7 @@ impl ksni::Tray for Tray {
         send(&self.events, Message::Action("show"));
     }
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
-        [
+        let mut items: Vec<_> = [
             ("Open Onda", "show"),
             ("Start / Stop Dictation", "toggle"),
             ("Cancel Dictation", "cancel"),
@@ -40,7 +41,21 @@ impl ksni::Tray for Tray {
             }
             .into()
         })
-        .collect()
+        .collect();
+        let action = self.update.action;
+        items.insert(
+            4,
+            ksni::menu::StandardItem {
+                label: self.update.title.clone(),
+                enabled: self.update.enabled,
+                activate: Box::new(move |tray: &mut Self| {
+                    send(&tray.events, Message::Update(action))
+                }),
+                ..Default::default()
+            }
+            .into(),
+        );
+        items
     }
 }
 
@@ -48,6 +63,10 @@ pub fn start(events: async_channel::Sender<Message>) -> Option<ksni::blocking::H
     match (Tray {
         events,
         label: "Onda".into(),
+        update: onda_domain::updates::update_control(
+            &onda_domain::updates::UpdateStatus::Idle,
+            false,
+        ),
     })
     .spawn()
     {

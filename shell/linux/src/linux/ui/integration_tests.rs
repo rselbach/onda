@@ -134,6 +134,28 @@ pub(super) fn exercise_pages(owner: &Rc<Window>) {
     capture(owner, "replacements");
     owner.stack.set_visible_child_name("general");
     wait_for(|| {
+        widgets::<adw::SwitchRow>(&owner.general)
+            .iter()
+            .any(|row| row.title() == "Check for updates automatically")
+    });
+    let automatic = widgets::<adw::SwitchRow>(&owner.general)
+        .into_iter()
+        .find(|row| row.title() == "Check for updates automatically")
+        .unwrap();
+    assert!(automatic.is_active());
+    assert!(button(&owner.general, "Check for Updates…").is_sensitive());
+    automatic.set_active(false);
+    wait_for(|| {
+        std::fs::read(
+            super::super::core::data_dir()
+                .unwrap()
+                .join("updates/updater.json"),
+        )
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .is_some_and(|prefs| prefs["automatic_checks"] == false)
+    });
+    wait_for(|| {
         owner
             .core
             .settings

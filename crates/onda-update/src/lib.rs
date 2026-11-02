@@ -10,6 +10,10 @@
 //! architecture, minimum macOS, Developer ID signature, and notarization,
 //! and swapped in atomically when the user restarts ([`install`]). The
 //! [`Updater`] runs the checks and owns the state the UI shows.
+//!
+//! Linux uses [`Updater::start_download_only`]: the same signed feed and
+//! scheduling, with semantic-version comparison and package-specific browser
+//! downloads. Installation remains with the user's package manager or installer.
 
 pub mod feed;
 pub mod install;
@@ -17,7 +21,9 @@ mod prefs;
 pub mod transport;
 mod updater;
 
-pub use updater::{Config, Host, Installer, MacInstaller, Schedule, Snapshot, Updater};
+pub use updater::{
+    Config, DownloadTarget, Host, Installer, MacInstaller, Schedule, Snapshot, Updater,
+};
 
 /// The stable feed on GitHub Pages, next to the legacy Sparkle appcast.
 pub const FEED_URL: &str = "https://rselbach.github.io/onda/update.json";

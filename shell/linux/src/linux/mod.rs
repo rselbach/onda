@@ -11,6 +11,7 @@ mod speech;
 mod system;
 mod tray;
 mod ui;
+mod updates;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -25,6 +26,8 @@ enum Message {
     Hotkey(onda_app::HotkeyEvent),
     Download(onda_app::seams::DownloadUpdate),
     DevicesChanged,
+    UpdaterChanged,
+    Update(onda_domain::updates::UpdateAction),
     ShortcutStatus(String),
     Notice(String, String),
     Inhibit(Option<String>),
@@ -58,9 +61,13 @@ pub fn run() -> glib::ExitCode {
         )
         .init();
     let args: Vec<String> = std::env::args().collect();
+    if args.len() == 2 && args[1] == "--version" {
+        println!("Onda {}", env!("ONDA_VERSION"));
+        return glib::ExitCode::SUCCESS;
+    }
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         println!(
-            "Onda — local dictation\n\nonda [--background]\nonda --start | --stop | --toggle | --cancel | --paste-last | --status | --quit\n\nControl commands require a running Onda. ONDA_DATA_DIR selects a separate data directory."
+            "Onda — local dictation\n\nonda [--background]\nonda --version\nonda --start | --stop | --toggle | --cancel | --paste-last | --status | --quit\n\nControl commands require a running Onda. ONDA_DATA_DIR selects a separate data directory."
         );
         return glib::ExitCode::SUCCESS;
     }

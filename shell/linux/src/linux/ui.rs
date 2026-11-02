@@ -272,6 +272,8 @@ impl Window {
             Message::Hotkey(event) => self.core.app.on_hotkey_event(event),
             Message::Download(update) => self.core.app.download_event(update),
             Message::DevicesChanged => self.core.app.input_devices_changed(),
+            Message::UpdaterChanged => self.core.app.updater_changed(),
+            Message::Update(action) => self.core.app.update_action(action),
             Message::ShortcutStatus(status) => {
                 self.shortcut.set_text(&status);
                 self.hotkey.set_status(&status);
@@ -324,6 +326,11 @@ impl Window {
                     self.meter.set_value(level);
                 }
                 Event::SpeechChanged(page) => self.speech(*page),
+                Event::MenuChanged(menu) => {
+                    if let Some(tray) = &self.tray {
+                        tray.update(|tray| tray.update = menu.update.clone());
+                    }
+                }
                 Event::GeneralChanged(page) => self.settings(*page),
                 Event::HistoryPageChanged(page) => self.history.update(self, *page),
                 Event::HotkeyPageChanged(page) => self.hotkey.update(self, *page),

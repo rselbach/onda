@@ -16,6 +16,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  linux-packages:
+    uses: ./.github/workflows/linux-packages.yml
+    with:
+      version: 0.0.0-ci
+
   linux:
     runs-on: ubuntu-latest
     container: fedora:44
@@ -40,6 +45,8 @@ jobs:
         run: |
           cargo test --locked -p onda-domain -p onda-app -p onda-adapters -p onda-audio \
             -p onda-linux -- --test-threads=1
+          # Bundle swap and codesign tests run in the macOS job.
+          cargo test --locked -p onda-update -- --skip install::tests
 
       - name: Linux build
         run: scripts/build-linux.sh

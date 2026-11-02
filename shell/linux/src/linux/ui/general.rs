@@ -124,5 +124,54 @@ impl Window {
         });
         group.add(&launch);
         self.general.append(&group);
+
+        let group = adw::PreferencesGroup::builder()
+            .title("Updates")
+            .description("Download the matching package, then install it with your package manager or the archive installer.")
+            .build();
+        let automatic = adw::SwitchRow::builder()
+            .title(&page.automatic_updates.label)
+            .active(page.automatic_updates.on)
+            .sensitive(page.automatic_updates.enabled)
+            .build();
+        let weak = Rc::downgrade(self);
+        automatic.connect_active_notify(move |row| {
+            if let Some(owner) = weak.upgrade() {
+                owner.core.app.set_automatic_update_checks(row.is_active());
+            }
+        });
+        group.add(&automatic);
+        let row = adw::ActionRow::builder()
+            .title(&page.version_footer)
+            .use_markup(false)
+            .build();
+        if page.update.action == onda_domain::updates::UpdateAction::Download {
+            row.set_subtitle("An update is available. Install the new package, then restart Onda.");
+        } else if let Some(caption) = page.update_caption {
+            row.set_subtitle(&caption.text);
+        }
+        let button = gtk::Button::with_label(&page.update.title);
+        button.set_sensitive(page.update.enabled);
+        button.set_valign(gtk::Align::Center);
+        let weak = Rc::downgrade(self);
+        button.connect_clicked(move |_| {
+            if let Some(owner) = weak.upgrade() {
+                owner.core.app.update_action(page.update.action);
+            }
+        });
+        row.add_suffix(&button);
+        group.add(&row);
+        if let Some(last) = page.last_update_check
+            && let Ok(since) = last.duration_since(std::time::UNIX_EPOCH)
+            && let Ok(date) = gtk::glib::DateTime::from_unix_local(since.as_secs() as i64)
+            && let Ok(date) = date.format("%x %X")
+        {
+            let checked = adw::ActionRow::builder()
+                .title("Last checked")
+                .subtitle(date.as_str())
+                .build();
+            group.add(&checked);
+        }
+        self.general.append(&group);
     }
 }

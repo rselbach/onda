@@ -62,9 +62,9 @@ pub struct Config {
     pub origins: Origins,
     /// The key the feed must be signed with.
     pub public_key: VerifyingKey,
-    /// The running `CFBundleVersion`.
+    /// The running `CFBundleVersion`; unused for download-only checks.
     pub build: u64,
-    /// The running OS.
+    /// The running macOS version; unused for download-only checks.
     pub os_version: OsVersion,
     /// Holds `updater.json` and partial downloads.
     pub state_dir: PathBuf,
@@ -76,6 +76,34 @@ pub struct Config {
     pub schedule: Schedule,
     /// Sent with every request.
     pub user_agent: String,
+}
+
+/// A package managed outside Onda. Checks offer a download without replacing files.
+#[derive(Debug, Clone)]
+pub struct DownloadTarget {
+    /// Installed semantic version; equal or older versions are never offered.
+    pub version: semver::Version,
+    /// Feed platform, such as `linux`.
+    pub os: String,
+    /// Feed architecture, such as `arm64` or `x86_64`.
+    pub arch: String,
+    /// Package kind: `deb`, `rpm`, or `tar.gz`.
+    pub kind: String,
+}
+
+impl DownloadTarget {
+    fn decide(&self, release: &Release) -> Result<Option<Artifact>, UpdateFailure> {
+        let version =
+            semver::Version::parse(&release.version).map_err(|_| UpdateFailure::Untrusted)?;
+        if !version.cmp_precedence(&self.version).is_gt() {
+            return Ok(None);
+        }
+        release
+            .artifact(&self.os, &self.arch, &self.kind)
+            .cloned()
+            .map(Some)
+            .ok_or(UpdateFailure::Check)
+    }
 }
 
 /// What the updater needs from the app.
@@ -236,6 +264,26 @@ impl Updater {
         host: Arc<dyn Host>,
         runtime: &Handle,
     ) -> Result<Self, String> {
+        Self::start_worker(config, Some(installer), None, host, runtime)
+    }
+
+    /// Starts signed checks for a package installed outside Onda.
+    pub fn start_download_only(
+        config: Config,
+        target: DownloadTarget,
+        host: Arc<dyn Host>,
+        runtime: &Handle,
+    ) -> Result<Self, String> {
+        Self::start_worker(config, None, Some(target), host, runtime)
+    }
+
+    fn start_worker(
+        config: Config,
+        installer: Option<Arc<dyn Installer>>,
+        download_target: Option<DownloadTarget>,
+        host: Arc<dyn Host>,
+        runtime: &Handle,
+    ) -> Result<Self, String> {
         let transport = Transport::new(config.origins.clone(), &config.user_agent)?;
         let prefs_file = config.state_dir.join("updater.json");
         let prefs = Prefs::load(&prefs_file, config.automatic_default);
@@ -258,6 +306,7 @@ impl Updater {
             config,
             transport,
             installer,
+            download_target,
         };
         tracing::info!(
             build = worker.config.build,
@@ -342,13 +391,15 @@ struct Worker {
     shared: Arc<Shared>,
     config: Config,
     transport: Transport,
-    installer: Arc<dyn Installer>,
+    installer: Option<Arc<dyn Installer>>,
+    download_target: Option<DownloadTarget>,
 }
 
 impl Worker {
     async fn run(self, mut commands: mpsc::UnboundedReceiver<Command>) {
-        let installer = self.installer.clone();
-        if let Err(error) = tokio::task::spawn_blocking(move || installer.remove_leftovers()).await
+        if let Some(installer) = self.installer.clone()
+            && let Err(error) =
+                tokio::task::spawn_blocking(move || installer.remove_leftovers()).await
         {
             tracing::warn!(%error, "could not clean up earlier updates");
         }
@@ -437,7 +488,9 @@ impl Worker {
         };
         if let Some(staged) = dropped {
             tracing::info!(build = staged.build(), "dropping the staged update");
-            self.installer.discard(&staged);
+            if let Some(installer) = &self.installer {
+                installer.discard(&staged);
+            }
         }
         status
     }
@@ -478,12 +531,26 @@ impl Worker {
         Install {
             build: self.config.build,
             os_version: self.config.os_version,
-            replaceable: self.installer.replaceable(),
+            replaceable: self
+                .installer
+                .as_ref()
+                .is_some_and(|installer| installer.replaceable()),
         }
     }
 
     /// Decides what `release` means for this install and acts on it.
     async fn act(&self, release: &Release) -> Result<UpdateStatus, UpdateFailure> {
+        if let Some(target) = &self.download_target {
+            let artifact = target.decide(release)?;
+            self.shared.lock().download_url =
+                artifact.as_ref().map(|artifact| artifact.url.clone());
+            return Ok(match artifact {
+                Some(_) => UpdateStatus::Available {
+                    version: release.version.clone(),
+                },
+                None => UpdateStatus::UpToDate,
+            });
+        }
         let install = self.install();
         tracing::info!(
             version = release.version,
@@ -557,7 +624,7 @@ impl Worker {
                     TransferError::Network(_) | TransferError::Io(_) => UpdateFailure::Download,
                 }
             })?;
-        let installer = self.installer.clone();
+        let installer = self.installer.clone().ok_or(UpdateFailure::Install)?;
         let archive = zip.clone();
         let owned = release.clone();
         let staged = tokio::task::spawn_blocking(move || installer.stage(&archive, &owned))
@@ -575,8 +642,10 @@ impl Worker {
         })?;
         tracing::info!(version = release.version, path = %staged.app.display(), "update ready");
         let earlier = self.shared.lock().staged.replace(staged);
-        if let Some(earlier) = earlier {
-            self.installer.discard(&earlier);
+        if let Some(earlier) = earlier
+            && let Some(installer) = &self.installer
+        {
+            installer.discard(&earlier);
         }
         Ok(ready)
     }
@@ -595,6 +664,9 @@ impl Worker {
     /// times out (offline) does not hold the restart back: the staged app
     /// was verified when staged and is verified again before the swap.
     async fn restart(&self) -> bool {
+        let Some(installer) = self.installer.clone() else {
+            return false;
+        };
         let staged = {
             let state = self.shared.lock();
             match (&state.status, &state.staged) {
@@ -634,9 +706,9 @@ impl Worker {
             }
             Err(_) => tracing::warn!("the feed refresh timed out; installing the staged update"),
         }
-        let installer = self.installer.clone();
+        let applying = installer.clone();
         let target = staged.clone();
-        let applied = tokio::task::spawn_blocking(move || installer.apply(&target))
+        let applied = tokio::task::spawn_blocking(move || applying.apply(&target))
             .await
             .unwrap_or_else(|error| {
                 Err(ApplyError::NotApplied(InstallError::Failed(
@@ -655,7 +727,7 @@ impl Worker {
             Err(ApplyError::NotApplied(error)) => {
                 tracing::error!(%error, "could not install the update");
                 // nothing changed, so the staging folder holds only the update
-                self.installer.discard(&staged);
+                installer.discard(&staged);
                 self.shared.lock().staged = None;
                 match error {
                     InstallError::Rejected(_) => UpdateFailure::Verify,
@@ -796,6 +868,153 @@ mod tests {
 
     fn zip_body() -> Vec<u8> {
         b"Troy and Abed's update".repeat(1000)
+    }
+
+    #[tokio::test]
+    async fn package_checks_verify_feeds_preserve_preferences_and_never_install() {
+        let server = Server::start().await;
+        let directory = tempfile::tempdir().unwrap();
+        let host = Arc::new(FakeHost::default());
+        let target = DownloadTarget {
+            version: "3.2.0".parse().unwrap(),
+            os: "linux".into(),
+            arch: "arm64".into(),
+            kind: "rpm".into(),
+        };
+        let config = Config {
+            feed_url: server.url("/update.json"),
+            origins: server.origins(),
+            public_key: signing_key().verifying_key(),
+            build: 0,
+            os_version: OsVersion::parse("0").unwrap(),
+            state_dir: directory.path().to_owned(),
+            background_checks: false,
+            automatic_default: true,
+            schedule: Schedule::default(),
+            user_agent: "Onda/test".into(),
+        };
+        let start = || {
+            Updater::start_download_only(
+                config.clone(),
+                target.clone(),
+                host.clone(),
+                &Handle::current(),
+            )
+            .unwrap()
+        };
+        let updater = start();
+        let mut artifacts = Vec::new();
+        for arch in ["arm64", "x86_64"] {
+            for kind in ["rpm", "deb", "tar.gz"] {
+                let mut item = artifact_for(
+                    &server,
+                    &format!("/releases/Greendale-{arch}.{kind}"),
+                    b"Troy Barnes",
+                );
+                item.os = "linux".into();
+                item.arch = arch.into();
+                item.kind = kind.into();
+                artifacts.push(item);
+            }
+        }
+        let mut release = Release {
+            schema: SCHEMA,
+            app: crate::BUNDLE_ID.into(),
+            channel: CHANNEL.into(),
+            version: "3.3.0".into(),
+            build: 20,
+            published_at: "2026-11-01T12:00:00Z".into(),
+            notes_url: None,
+            artifacts,
+        };
+        for arch in ["arm64", "x86_64"] {
+            for kind in ["rpm", "deb", "tar.gz"] {
+                let selected = DownloadTarget {
+                    arch: arch.into(),
+                    kind: kind.into(),
+                    ..target.clone()
+                };
+                let item = selected.decide(&release).unwrap().unwrap();
+                assert_eq!((&item.arch, &item.kind), (&selected.arch, &selected.kind));
+            }
+        }
+        server.put(
+            "/update.json",
+            feed::seal(&release, &signing_key()),
+            Behavior::Serve,
+        );
+        assert_eq!(
+            package_check(&updater).await,
+            UpdateStatus::Available {
+                version: "3.3.0".into()
+            }
+        );
+        assert!(updater.snapshot().last_check.is_some());
+        updater.open_download();
+        assert_eq!(
+            *host.opened.lock().unwrap(),
+            [server.url("/releases/Greendale-arm64.rpm")]
+        );
+        assert!(!updater.restart_to_update());
+        assert_eq!(host.terminated.load(Ordering::SeqCst), 0);
+        assert!(!directory.path().join("downloads").exists());
+        assert!(server.requests("/releases/Greendale-arm64.rpm").is_empty());
+        updater.set_automatic_checks(false);
+        drop(updater);
+        let updater = start();
+        assert!(!updater.snapshot().automatic);
+        assert!(updater.snapshot().last_check.is_some());
+
+        release.build = 19;
+        server.put(
+            "/update.json",
+            feed::seal(&release, &signing_key()),
+            Behavior::Serve,
+        );
+        assert_eq!(
+            package_check(&updater).await,
+            UpdateStatus::Failed(UpdateFailure::Untrusted)
+        );
+        release.build = 21;
+        server.put(
+            "/update.json",
+            feed::seal(&release, &SigningKey::from_bytes(&[7; 32])),
+            Behavior::Serve,
+        );
+        assert_eq!(
+            package_check(&updater).await,
+            UpdateStatus::Failed(UpdateFailure::Untrusted)
+        );
+        updater.open_download();
+        assert_eq!(host.opened.lock().unwrap().len(), 1);
+
+        for version in ["3.1.9", "3.2.0-rc.1", "3.2.0", "3.2.0+greendale"] {
+            release.version = version.into();
+            assert!(target.decide(&release).unwrap().is_none(), "{version}");
+        }
+        release.version = "3.3.0".into();
+        release.artifacts.retain(|item| item.kind != "rpm");
+        server.put(
+            "/update.json",
+            feed::seal(&release, &signing_key()),
+            Behavior::Serve,
+        );
+        assert_eq!(
+            package_check(&updater).await,
+            UpdateStatus::Failed(UpdateFailure::Check)
+        );
+    }
+
+    async fn package_check(updater: &Updater) -> UpdateStatus {
+        let before = updater.shared.finished.load(Ordering::SeqCst);
+        updater.check_now();
+        for _ in 0..500 {
+            if updater.shared.finished.load(Ordering::SeqCst) > before {
+                return updater.snapshot().status;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("package check did not finish");
     }
 
     struct Fixture {

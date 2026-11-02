@@ -80,13 +80,14 @@ pub struct Release {
 /// One downloadable file of a release.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Artifact {
-    /// "macos".
+    /// Platform, such as "macos" or "linux".
     pub os: String,
-    /// "arm64".
+    /// Architecture, such as "arm64" or "x86_64".
     pub arch: String,
-    /// [`KIND_APP_ZIP`] or [`KIND_DMG`]; other kinds are ignored.
+    /// [`KIND_APP_ZIP`], [`KIND_DMG`], or a Linux package kind (`deb`, `rpm`, `tar.gz`).
     pub kind: String,
-    /// The lowest OS version the app runs on, e.g. "26.0".
+    /// Lowest macOS version, e.g. "26.0". Linux uses "0"; package dependencies
+    /// and the archive's build.json describe its distribution requirements.
     pub minimum_os: String,
     /// Where to download it.
     pub url: String,
@@ -434,7 +435,7 @@ mod tests {
     fn artifact(kind: &str, minimum_os: &str) -> Artifact {
         Artifact {
             os: "macos".to_owned(),
-            arch: "arm64".to_owned(),
+            arch: crate::ARCH.to_owned(),
             kind: kind.to_owned(),
             minimum_os: minimum_os.to_owned(),
             url: format!(

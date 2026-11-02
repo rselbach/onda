@@ -6,7 +6,7 @@
 //! ```text
 //! onda-update-tool sign-feed --version V --build N --minimum-os X
 //!     --published-at RFC3339 --notes-url URL --zip FILE --zip-url URL
-//!     --dmg FILE --dmg-url URL --out FILE
+//!     --dmg FILE --dmg-url URL [--linux-dir DIR --linux-base-url URL] --out FILE
 //! onda-update-tool sparkle-signature FILE
 //! onda-update-tool verify-feed FILE [--version V --build N] [--download]
 //! ```
@@ -121,7 +121,7 @@ fn sign_feed(args: &[String]) -> Result<(), String> {
         .parse()
         .map_err(|_| "--build is not a number".to_owned())?;
     let minimum_os = args.get("minimum-os")?;
-    let release = Release {
+    let mut release = Release {
         schema: feed::SCHEMA,
         app: onda_update::BUNDLE_ID.to_owned(),
         channel: feed::CHANNEL.to_owned(),
@@ -144,6 +144,13 @@ fn sign_feed(args: &[String]) -> Result<(), String> {
             )?,
         ],
     };
+    if let Some(directory) = args.options.get("linux-dir") {
+        release.artifacts.extend(linux_artifacts(
+            Path::new(directory),
+            &release.version,
+            args.get("linux-base-url")?,
+        )?);
+    }
     let key = pinned_key()?;
     let sealed = feed::seal(&release, &key);
     // the published bytes must open exactly as the app opens them
@@ -161,6 +168,21 @@ fn sign_feed(args: &[String]) -> Result<(), String> {
         out.display()
     );
     Ok(())
+}
+
+fn linux_artifacts(directory: &Path, version: &str, base: &str) -> Result<Vec<Artifact>, String> {
+    semver::Version::parse(version).map_err(|_| "invalid Linux release version".to_owned())?;
+    let mut artifacts = Vec::new();
+    for arch in ["x86_64", "arm64"] {
+        for kind in ["deb", "rpm", "tar.gz"] {
+            let name = format!("Onda-{version}-linux-{arch}.{kind}");
+            let mut item = artifact(kind, "0", &directory.join(&name), &format!("{base}/{name}"))?;
+            item.os = "linux".into();
+            item.arch = arch.into();
+            artifacts.push(item);
+        }
+    }
+    Ok(artifacts)
 }
 
 fn sparkle_signature(args: &[String]) -> Result<(), String> {
@@ -239,4 +261,42 @@ fn download_all(release: &Release) -> Result<(), String> {
         eprintln!("warning: could not remove {}: {error}", dir.display());
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn linux_feed_contains_every_format_and_architecture() {
+        let directory = tempfile::tempdir().unwrap();
+        let base = "https://github.com/rselbach/onda/releases/download/v3.2.0";
+        for arch in ["x86_64", "arm64"] {
+            for kind in ["deb", "rpm", "tar.gz"] {
+                std::fs::write(
+                    directory
+                        .path()
+                        .join(format!("Onda-3.2.0-linux-{arch}.{kind}")),
+                    b"Greendale",
+                )
+                .unwrap();
+            }
+        }
+        let artifacts = linux_artifacts(directory.path(), "3.2.0", base).unwrap();
+        assert_eq!(artifacts.len(), 6);
+        for item in artifacts {
+            assert_eq!(item.os, "linux");
+            assert_eq!(item.size, 9);
+            assert!(
+                item.url
+                    .ends_with(&format!("linux-{}.{}", item.arch, item.kind))
+            );
+            assert_eq!(
+                item.sha256,
+                sha256_file(&directory.path().join(item.url.rsplit('/').next().unwrap())).unwrap()
+            );
+        }
+        std::fs::remove_file(directory.path().join("Onda-3.2.0-linux-arm64.rpm")).unwrap();
+        assert!(linux_artifacts(directory.path(), "3.2.0", base).is_err());
+    }
 }

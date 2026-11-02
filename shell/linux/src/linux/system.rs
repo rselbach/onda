@@ -1,7 +1,7 @@
 //! Linux desktop services supplied to the application core.
 
 use super::{Message, process, send};
-use onda_app::{ports::*, seams::SecretSource, views::UpdaterState};
+use onda_app::{ports::*, seams::SecretSource};
 use onda_domain::{
     cleanup::CleanupProvider,
     messages::{LoginItemRegistryStatus, NotificationAuthorization},
@@ -76,18 +76,6 @@ impl Files for Desktop {
             .map(|_| ())
             .map_err(|e| e.to_string())
     }
-}
-
-impl Updater for Desktop {
-    fn state(&self) -> UpdaterState {
-        UpdaterState::default()
-    }
-    fn check_now(&self) {}
-    fn set_automatic_checks(&self, _: bool) {}
-    fn restart_to_update(&self) -> bool {
-        false
-    }
-    fn open_download(&self) {}
 }
 
 fn autostart() -> Option<PathBuf> {
