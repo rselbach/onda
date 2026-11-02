@@ -84,7 +84,8 @@ pub struct Artifact {
     pub os: String,
     /// Architecture, such as "arm64" or "x86_64".
     pub arch: String,
-    /// [`KIND_APP_ZIP`], [`KIND_DMG`], or a Linux package kind (`deb`, `rpm`, `tar.gz`).
+    /// [`KIND_APP_ZIP`], [`KIND_DMG`], or a Linux package kind
+    /// (`deb`, `rpm`, `pkg.tar.zst`, `tar.gz`).
     pub kind: String,
     /// Lowest macOS version, e.g. "26.0". Linux uses "0"; package dependencies
     /// and the archive's build.json describe its distribution requirements.

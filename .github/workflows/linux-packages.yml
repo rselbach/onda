@@ -41,7 +41,7 @@ jobs:
             pkg-config libgtk-4-dev libadwaita-1-dev libasound2-dev libssl-dev \
             libx11-dev libxtst-dev libxkbcommon-dev libwayland-dev \
             wayland-protocols meson ninja-build desktop-file-utils \
-            rpm cpio shellcheck xvfb dbus-daemon
+            rpm cpio zstd shellcheck xvfb dbus-daemon
       - name: Install Rust
         run: |
           rustup toolchain install 1.99.1 --profile minimal
@@ -72,6 +72,7 @@ jobs:
           path: |
             build/linux/*.deb
             build/linux/*.rpm
+            build/linux/*.pkg.tar.zst
             build/linux/*.tar.gz
             build/linux/*.sha256
           if-no-files-found: error
@@ -101,6 +102,33 @@ jobs:
           dnf install -y ./packages/*.rpm python3 xorg-x11-server-Xvfb \
             dbus-daemon xorg-x11-xauth
           test "$(/usr/bin/onda --version)" = "Onda ${VERSION#v}"
+      - name: Smoke-test the installed desktop app
+        run: |
+          xvfb-run -a dbus-run-session \
+            --config-file=shell/linux/tests/dbus-session.conf -- \
+            python3 scripts/test-linux-package-launch.py /usr/bin/onda
+
+  install-archlinux:
+    needs: package
+    runs-on: ubuntu-24.04
+    container: archlinux:base
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - name: Prepare Arch test environment
+        run: |
+          pacman -Syu --noconfirm --needed git python xorg-server-xvfb \
+            xorg-xauth dbus
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: onda-linux-x86_64
+          path: packages
+      - name: Install Arch package and its runtime dependencies
+        run: |
+          pacman -U --noconfirm ./packages/*.pkg.tar.zst
+          test "$(/usr/bin/onda --version)" = "Onda ${VERSION#v}"
+          test "$(cat /usr/share/doc/onda/package-kind)" = "pkg.tar.zst"
       - name: Smoke-test the installed desktop app
         run: |
           xvfb-run -a dbus-run-session \

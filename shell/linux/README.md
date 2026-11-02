@@ -9,11 +9,16 @@ keymap workaround is adapted under its [MIT license](licenses/hex.txt).
 
 ## Release packages
 
-Linux releases provide `.deb`, `.rpm`, and `.tar.gz` artifacts for **x86_64**
-and **ARM64**, with a SHA-256 checksum file for each architecture. Install with
-`sudo apt install ./Onda-VERSION-linux-ARCH.deb` or
-`sudo dnf install ./Onda-VERSION-linux-ARCH.rpm`. The package manager installs
-the runtime dependencies. Use the package matching your architecture.
+Linux releases provide `.deb`, `.rpm`, `.pkg.tar.zst` (Arch), and `.tar.gz`
+artifacts for **x86_64** and **ARM64**, with a SHA-256 checksum file for each
+architecture. Use the package matching your architecture:
+
+- Debian/Ubuntu: `sudo apt install ./Onda-VERSION-linux-ARCH.deb`
+- Fedora: `sudo dnf install ./Onda-VERSION-linux-ARCH.rpm`
+- Arch Linux/Arch Linux ARM: `sudo pacman -U ./Onda-VERSION-linux-ARCH.pkg.tar.zst`
+
+The package manager installs the runtime dependencies. Arch packages are release
+downloads; they do not add a pacman repository or an AUR entry.
 
 For the archive, extract it and run `./install.sh` to install into `~/.local`.
 Ensure `~/.local/bin` is on your desktop session's PATH. The archive's README
@@ -61,7 +66,7 @@ python3 scripts/package-linux.py 3.2.0
 ```
 
 This builds the app with the requested version, stages its desktop files,
-library, and license notices, then writes all three formats and checksums to
+library, and license notices, then writes all four formats and checksums to
 `build/linux/`. The script downloads a pinned, checksum-verified nFPM binary;
 neither root, Go, Docker, nor Podman is needed. Build each architecture natively.
 Release compilation has its own `build/linux-target` directory so CPU settings
@@ -79,12 +84,13 @@ python3 scripts/package-linux.py 3.2.0
 
 The **Linux packages** GitHub Actions workflow can also be run manually with a
 version. It produces downloadable artifacts without publishing a release.
-CI builds and checks both architectures, installs the DEB on Ubuntu, and installs
-the RPM in Fedora containers. It launches the installed app in isolated desktop
-sessions. A `v*` release waits for those checks and attaches the packages
+CI builds and checks all payloads on both architectures, installs the DEB on
+Ubuntu and the RPM in Fedora containers, and installs the x86_64 Arch package
+in the official Arch Linux container. It launches the installed app in isolated
+desktop sessions. A `v*` release waits for those checks and attaches the packages
 alongside the macOS artifacts, then verifies the published downloads.
 
-To validate local payloads and installation, install `rpm`, `cpio`, and
+To validate local payloads and installation, install `rpm`, `cpio`, `zstd`, and
 `desktop-file-utils`, Xvfb, and `dbus-daemon`, then run:
 
 ```sh

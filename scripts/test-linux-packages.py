@@ -109,10 +109,28 @@ def main():
             cwd=rpm_root,
         )
         verify(rpm_root / "usr", version, "rpm")
+        arch_package = directory / f"{name}.pkg.tar.zst"
+        with tarfile.open(
+            fileobj=io.BytesIO(run("zstd", "--decompress", "--stdout", str(arch_package)))
+        ) as tar:
+            metadata = tar.extractfile(".PKGINFO").read().decode()
+            assert "pkgname = onda\n" in metadata, metadata
+            assert f"arch = {rpm_arch}\n" in metadata, metadata
+            pkgver = version.replace("-", "", 1).replace("-", "_")
+            assert f"pkgver = {pkgver}-1\n" in metadata, metadata
+            for dependency in ("glibc>=", "gcc-libs>=", "gtk4>=", "libadwaita>="):
+                assert f"depend = {dependency}" in metadata, metadata
+            assert "optdepend = gnome-keyring\n" in metadata, metadata
+            tar.extractall(work / "archlinux", filter="data")
+        verify(work / "archlinux/usr", version, "pkg.tar.zst")
+        assert (work / "archlinux/usr/share/licenses/onda/LICENSE").read_bytes() == (
+            ROOT / "LICENSE"
+        ).read_bytes()
         binaries = [
             archive / "bin/onda",
             work / "deb/usr/bin/onda",
             rpm_root / "usr/bin/onda",
+            work / "archlinux/usr/bin/onda",
         ]
         assert (
             len({hashlib.sha256(path.read_bytes()).hexdigest() for path in binaries})

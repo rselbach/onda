@@ -174,7 +174,7 @@ fn linux_artifacts(directory: &Path, version: &str, base: &str) -> Result<Vec<Ar
     semver::Version::parse(version).map_err(|_| "invalid Linux release version".to_owned())?;
     let mut artifacts = Vec::new();
     for arch in ["x86_64", "arm64"] {
-        for kind in ["deb", "rpm", "tar.gz"] {
+        for kind in ["deb", "rpm", "pkg.tar.zst", "tar.gz"] {
             let name = format!("Onda-{version}-linux-{arch}.{kind}");
             let mut item = artifact(kind, "0", &directory.join(&name), &format!("{base}/{name}"))?;
             item.os = "linux".into();
@@ -272,7 +272,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let base = "https://github.com/rselbach/onda/releases/download/v3.2.0";
         for arch in ["x86_64", "arm64"] {
-            for kind in ["deb", "rpm", "tar.gz"] {
+            for kind in ["deb", "rpm", "pkg.tar.zst", "tar.gz"] {
                 std::fs::write(
                     directory
                         .path()
@@ -283,7 +283,7 @@ mod tests {
             }
         }
         let artifacts = linux_artifacts(directory.path(), "3.2.0", base).unwrap();
-        assert_eq!(artifacts.len(), 6);
+        assert_eq!(artifacts.len(), 8);
         for item in artifacts {
             assert_eq!(item.os, "linux");
             assert_eq!(item.size, 9);
@@ -296,7 +296,7 @@ mod tests {
                 sha256_file(&directory.path().join(item.url.rsplit('/').next().unwrap())).unwrap()
             );
         }
-        std::fs::remove_file(directory.path().join("Onda-3.2.0-linux-arm64.rpm")).unwrap();
+        std::fs::remove_file(directory.path().join("Onda-3.2.0-linux-arm64.pkg.tar.zst")).unwrap();
         assert!(linux_artifacts(directory.path(), "3.2.0", base).is_err());
     }
 }

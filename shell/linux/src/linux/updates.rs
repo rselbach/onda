@@ -60,6 +60,7 @@ fn package_kind(executable: &Path) -> &'static str {
     match kind.as_deref().map(str::trim) {
         Some("deb") => "deb",
         Some("rpm") => "rpm",
+        Some("pkg.tar.zst") => "pkg.tar.zst",
         _ => "tar.gz",
     }
 }
@@ -115,7 +116,7 @@ mod tests {
         assert_eq!(package_kind(&executable), "tar.gz");
         let docs = root.path().join("share/doc/onda");
         std::fs::create_dir_all(&docs).unwrap();
-        for kind in ["deb", "rpm", "tar.gz"] {
+        for kind in ["deb", "rpm", "pkg.tar.zst", "tar.gz"] {
             std::fs::write(docs.join("package-kind"), format!("{kind}\n")).unwrap();
             assert_eq!(package_kind(&executable), kind);
         }

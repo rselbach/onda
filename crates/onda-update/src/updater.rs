@@ -87,7 +87,7 @@ pub struct DownloadTarget {
     pub os: String,
     /// Feed architecture, such as `arm64` or `x86_64`.
     pub arch: String,
-    /// Package kind: `deb`, `rpm`, or `tar.gz`.
+    /// Package kind: `deb`, `rpm`, `pkg.tar.zst`, or `tar.gz`.
     pub kind: String,
 }
 
@@ -905,7 +905,7 @@ mod tests {
         let updater = start();
         let mut artifacts = Vec::new();
         for arch in ["arm64", "x86_64"] {
-            for kind in ["rpm", "deb", "tar.gz"] {
+            for kind in ["rpm", "deb", "pkg.tar.zst", "tar.gz"] {
                 let mut item = artifact_for(
                     &server,
                     &format!("/releases/Greendale-{arch}.{kind}"),
@@ -928,7 +928,7 @@ mod tests {
             artifacts,
         };
         for arch in ["arm64", "x86_64"] {
-            for kind in ["rpm", "deb", "tar.gz"] {
+            for kind in ["rpm", "deb", "pkg.tar.zst", "tar.gz"] {
                 let selected = DownloadTarget {
                     arch: arch.into(),
                     kind: kind.into(),

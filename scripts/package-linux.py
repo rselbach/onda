@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build native Linux release archives, Debian packages, and RPMs without root."""
+"""Build native Linux archives and Debian, RPM, and Arch packages without root."""
 
 import argparse
 import hashlib
@@ -140,6 +140,19 @@ def dependencies(binary, library):
         f"alsa-lib >= {versions['alsa']}",
         "libsecret",
     ]
+    archlinux = common + [
+        f"glibc>={glibc}",
+        f"gcc-libs>={cxx}",
+        f"gtk4>={versions['gtk4']}",
+        f"libadwaita>={versions['libadwaita-1']}",
+        f"glib2>={versions['glib-2.0']}",
+        f"alsa-lib>={versions['alsa']}",
+        "libsecret",
+        "libx11",
+        "libxtst",
+        "libxkbcommon",
+        "wayland",
+    ]
     # nFPM does not automatically generate ELF dependency requirements.
     for path in (binary, library):
         for soname in re.findall(
@@ -149,7 +162,7 @@ def dependencies(binary, library):
                 rpm.append(f"{soname}()(64bit)")
     for symbol in sorted(set(re.findall(r"\b(?:GLIBCXX|CXXABI)_[\d.]+", symbols))):
         rpm.append(f"libstdc++.so.6({symbol})(64bit)")
-    return deb, sorted(set(rpm)), versions, glibc
+    return deb, sorted(set(rpm)), archlinux, versions, glibc
 
 
 def package(version, arch, stage, destination, target):
@@ -180,7 +193,7 @@ def package(version, arch, stage, destination, target):
     )
     copy(ROOT / "shell/linux/packaging/README.txt", stage / "share/doc/onda/README.txt")
     third_party_notices(stage, target)
-    deb, rpm, versions, glibc = dependencies(binary, library)
+    deb, rpm, archlinux, versions, glibc = dependencies(binary, library)
     requirements = {
         "version": version,
         "architecture": arch,
@@ -209,19 +222,33 @@ def package(version, arch, stage, destination, target):
         "overrides": {
             "deb": {"depends": deb, "recommends": ["gnome-keyring"]},
             "rpm": {"depends": rpm, "recommends": ["gnome-keyring"]},
+            "archlinux": {"depends": archlinux, "recommends": ["gnome-keyring"]},
         },
+        "archlinux": {"packager": "Roberto Selbach <rselbach@rselbach.com>"},
     }
     config_path = stage.parent / "nfpm.json"
-    for kind in ("deb", "rpm"):
-        marker = stage.parent / f"{kind}-package-kind"
+    formats = {"deb": "deb", "rpm": "rpm", "archlinux": "pkg.tar.zst"}
+    for packager, kind in formats.items():
+        marker = stage.parent / f"{packager}-package-kind"
         marker.write_text(kind + "\n")
-        config["overrides"][kind]["contents"] = config["contents"] + [
+        config["overrides"][packager]["contents"] = config["contents"] + [
             {"src": str(marker), "dst": "/usr/share/doc/onda/package-kind"}
         ]
-    config_path.write_text(json.dumps(config, indent=2))
+    config["overrides"]["archlinux"]["contents"].append(
+        {"src": str(ROOT / "LICENSE"), "dst": "/usr/share/licenses/onda/LICENSE"}
+    )
     tool = nfpm(arch)
     artifacts = []
-    for kind in ("deb", "rpm"):
+    for packager, kind in formats.items():
+        package_config = config
+        if packager == "archlinux":
+            # Preserve prereleases: nFPM 2.48 drops them from Arch's .PKGINFO
+            # when parsing semver. Arch pkgver cannot contain hyphens.
+            package_config = config | {
+                "version_schema": "none",
+                "version": version.replace("-", "", 1).replace("-", "_"),
+            }
+        config_path.write_text(json.dumps(package_config, indent=2))
         artifact = destination / f"{stage.name}.{kind}"
         run(
             str(tool),
@@ -229,7 +256,7 @@ def package(version, arch, stage, destination, target):
             "--config",
             str(config_path),
             "--packager",
-            kind,
+            packager,
             "--target",
             str(artifact),
         )

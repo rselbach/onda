@@ -1,7 +1,8 @@
 Onda for Linux
 
-Install the .deb with `sudo apt install ./Onda-*.deb`, or the .rpm with
-`sudo dnf install ./Onda-*.rpm`. Select the file for your architecture.
+Install the .deb with `sudo apt install ./Onda-*.deb`, the .rpm with
+`sudo dnf install ./Onda-*.rpm`, or the Arch package with
+`sudo pacman -U ./Onda-*.pkg.tar.zst`. Select the file for your architecture.
 
 For this archive, run ./install.sh to install into ~/.local. Ensure ~/.local/bin
 is in your desktop session's PATH, then launch Onda from the application menu.
@@ -24,6 +25,10 @@ Archive runtime dependencies on Fedora:
   sudo dnf install gtk4 libadwaita alsa-lib libstdc++ libsecret \
     wl-clipboard wtype xclip xdotool xdg-utils xdg-desktop-portal
 
+Archive runtime dependencies on Arch Linux:
+  sudo pacman -S --needed gtk4 libadwaita alsa-lib gcc-libs libsecret \
+    wl-clipboard wtype xclip xdotool xdg-utils xdg-desktop-portal
+
 Use your desktop's portal backend and an unlocked Secret Service keyring
 (such as GNOME Keyring) for global shortcuts, keyboard permission, and API keys.
 Keep your existing PipeWire or PulseAudio setup; no PulseAudio daemon is needed.
@@ -43,7 +48,7 @@ Do not mix package-manager and per-user installations; ~/.local/bin/onda can
 shadow /usr/bin/onda. Quit an older running instance before testing an upgrade.
 
 Verify downloads with `sha256sum -c Onda-VERSION-linux-ARCH.sha256` in the
-directory containing all three release artifacts for that architecture.
+directory containing all four release artifacts for that architecture.
 
 Documentation: https://github.com/rselbach/onda/tree/main/shell/linux
 Licenses and third-party notices: share/doc/onda/

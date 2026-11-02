@@ -5,7 +5,7 @@ name: Release
 #
 # GitHub Releases hold the versioned ZIP (what the in-app updater installs)
 # and DMG, both packaged from the same stapled Onda.app, plus native Linux
-# DEB, RPM, and tar.gz packages for both architectures. GitHub Pages holds
+# DEB, RPM, Arch, and tar.gz packages for both architectures. GitHub Pages holds
 # two feeds, deployed together only after the release's assets download and
 # verify: update.json, the signed feed current Onda reads, and appcast.xml,
 # the Sparkle appcast that builds from before the switch still read.
@@ -199,7 +199,7 @@ jobs:
           output-file: build/release-notes.md
           additional-context: >-
             Keep notes user-facing and concise. Do not include installation
-            instructions; macOS DMG and ZIP and Linux DEB, RPM, and tar.gz
+            instructions; macOS DMG and ZIP and Linux DEB, RPM, Arch, and tar.gz
             packages are attached. The signed update feed is updated separately.
 
       - name: Sign the legacy Sparkle appcast
@@ -275,6 +275,7 @@ jobs:
             build/Onda-${{ steps.version.outputs.version }}.dmg
             build/linux/*.deb
             build/linux/*.rpm
+            build/linux/*.pkg.tar.zst
             build/linux/*.tar.gz
             build/linux/*.sha256
           body_path: ${{ steps.release_notes.outputs.body-path }}
