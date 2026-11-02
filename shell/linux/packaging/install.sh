@@ -20,6 +20,8 @@ main() {
     "${prefix}/lib/onda/libgtk4-layer-shell.so.0.next"
   mv "${prefix}/lib/onda/libgtk4-layer-shell.so.0.next" \
     "${prefix}/lib/onda/libgtk4-layer-shell.so.0"
+  install -m644 "${source}/lib/onda/package-kind" \
+    "${prefix}/lib/onda/package-kind"
   install -m755 "${source}/bin/onda" "${prefix}/bin/onda.next"
   mv "${prefix}/bin/onda.next" "${prefix}/bin/onda"
   while IFS= read -r -d '' file; do

@@ -20,7 +20,7 @@ def run(*args, **kwargs):
 
 def verify(prefix, version, kind="tar.gz"):
     binary = prefix / "bin/onda"
-    assert (prefix / "share/doc/onda/package-kind").read_text().strip() == kind
+    assert (prefix / "lib/onda/package-kind").read_text().strip() == kind
     env = os.environ.copy()
     env.pop("LD_LIBRARY_PATH", None)
     env.pop("LD_PRELOAD", None)

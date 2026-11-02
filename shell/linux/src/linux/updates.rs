@@ -54,9 +54,7 @@ fn package_kind(executable: &Path) -> &'static str {
     let kind = executable
         .parent()
         .and_then(Path::parent)
-        .and_then(|prefix| {
-            std::fs::read_to_string(prefix.join("share/doc/onda/package-kind")).ok()
-        });
+        .and_then(|prefix| std::fs::read_to_string(prefix.join("lib/onda/package-kind")).ok());
     match kind.as_deref().map(str::trim) {
         Some("deb") => "deb",
         Some("rpm") => "rpm",
@@ -114,13 +112,26 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let executable = root.path().join("bin/onda");
         assert_eq!(package_kind(&executable), "tar.gz");
-        let docs = root.path().join("share/doc/onda");
-        std::fs::create_dir_all(&docs).unwrap();
+        let library = root.path().join("lib/onda");
+        std::fs::create_dir_all(&library).unwrap();
         for kind in ["deb", "rpm", "pkg.tar.zst", "tar.gz"] {
-            std::fs::write(docs.join("package-kind"), format!("{kind}\n")).unwrap();
+            std::fs::write(library.join("package-kind"), format!("{kind}\n")).unwrap();
             assert_eq!(package_kind(&executable), kind);
         }
-        std::fs::write(docs.join("package-kind"), "unknown").unwrap();
+        std::fs::write(library.join("package-kind"), "unknown").unwrap();
         assert_eq!(package_kind(&executable), "tar.gz");
+    }
+
+    #[test]
+    fn package_identity_survives_documentation_removal() {
+        let root = tempfile::tempdir().unwrap();
+        let library = root.path().join("lib/onda");
+        let docs = root.path().join("share/doc/onda");
+        std::fs::create_dir_all(&library).unwrap();
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::write(library.join("package-kind"), "pkg.tar.zst\n").unwrap();
+        std::fs::write(docs.join("README.txt"), "Greendale installation guide").unwrap();
+        std::fs::remove_dir_all(root.path().join("share/doc")).unwrap();
+        assert_eq!(package_kind(&root.path().join("bin/onda")), "pkg.tar.zst");
     }
 }

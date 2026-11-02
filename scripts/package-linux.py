@@ -232,7 +232,7 @@ def package(version, arch, stage, destination, target):
         marker = stage.parent / f"{packager}-package-kind"
         marker.write_text(kind + "\n")
         config["overrides"][packager]["contents"] = config["contents"] + [
-            {"src": str(marker), "dst": "/usr/share/doc/onda/package-kind"}
+            {"src": str(marker), "dst": "/usr/lib/onda/package-kind"}
         ]
     config["overrides"]["archlinux"]["contents"].append(
         {"src": str(ROOT / "LICENSE"), "dst": "/usr/share/licenses/onda/LICENSE"}
@@ -262,7 +262,7 @@ def package(version, arch, stage, destination, target):
         )
         artifacts.append(artifact)
     copy(ROOT / "shell/linux/packaging/install.sh", stage / "install.sh", 0o755)
-    (stage / "share/doc/onda/package-kind").write_text("tar.gz\n")
+    (stage / "lib/onda/package-kind").write_text("tar.gz\n")
     copy(ROOT / "shell/linux/packaging/README.txt", stage / "README.txt")
     archive = destination / f"{stage.name}.tar.gz"
     with tarfile.open(archive, "w:gz") as tar:

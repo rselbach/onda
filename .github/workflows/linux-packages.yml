@@ -128,7 +128,7 @@ jobs:
         run: |
           pacman -U --noconfirm ./packages/*.pkg.tar.zst
           test "$(/usr/bin/onda --version)" = "Onda ${VERSION#v}"
-          test "$(cat /usr/share/doc/onda/package-kind)" = "pkg.tar.zst"
+          test "$(cat /usr/lib/onda/package-kind)" = "pkg.tar.zst"
       - name: Smoke-test the installed desktop app
         run: |
           xvfb-run -a dbus-run-session \
