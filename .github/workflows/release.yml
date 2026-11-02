@@ -47,14 +47,11 @@ jobs:
     with:
       version: ${{ github.ref_name }}
 
-  build:
-    needs: linux
+  macos:
     runs-on: xcode-27
     steps:
       - name: Checkout
         uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
 
       - name: Install Rust
         run: |
@@ -74,15 +71,12 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          SPARKLE_EDDSA_PRIVATE_KEY: ${{ secrets.SPARKLE_EDDSA_PRIVATE_KEY }}
-          DEEPSEEK_API_TOKEN: ${{ secrets.DEEPSEEK_API_TOKEN }}
         run: |
           missing=0
           for name in MACOS_CERTIFICATE_P12_BASE64 MACOS_CERTIFICATE_PASSWORD \
-            APPLE_ID APPLE_TEAM_ID APPLE_APP_SPECIFIC_PASSWORD \
-            SPARKLE_EDDSA_PRIVATE_KEY DEEPSEEK_API_TOKEN; do
+            APPLE_ID APPLE_TEAM_ID APPLE_APP_SPECIFIC_PASSWORD; do
             if [[ -z "${!name}" ]]; then
-              echo "::error::secret ${name} is not set"
+              echo "::error::secret ${name} is not set" >&2
               missing=1
             fi
           done
@@ -92,21 +86,6 @@ jobs:
         id: version
         run: |
           echo "version=${GITHUB_REF_NAME#v}" >>"${GITHUB_OUTPUT}"
-
-      - name: Generate release notes
-        id: release_notes
-        uses: rselbach/actions/pi-release-notes@v1
-        env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_TOKEN }}
-          DEEPSEEK_API_TOKEN: ${{ secrets.DEEPSEEK_API_TOKEN }}
-        with:
-          project-name: Onda
-          project-description: macOS and Linux app for local, on-device speech-to-text dictation.
-          output-file: build/release-notes.md
-          additional-context: >-
-            Keep notes user-facing and concise. Do not include installation
-            instructions; macOS DMG and ZIP and Linux DEB, RPM, and tar.gz
-            packages are attached. The signed update feed is updated separately.
 
       - name: Import signing certificate
         env:
@@ -142,7 +121,86 @@ jobs:
       # the feed signer shares the app's verifier (crates/onda-update), and
       # signs Sparkle's format too, so no Sparkle tooling is needed
       - name: Build the update tool
-        run: cargo build --locked --release -p onda-update --bin onda-update-tool
+        run: |
+          cargo build --locked --release -p onda-update --bin onda-update-tool
+          cp target/release/onda-update-tool build/onda-update-tool
+
+      - name: Upload macOS release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: onda-macos-arm64
+          path: |
+            build/Onda-${{ steps.version.outputs.version }}-macos-arm64.zip
+            build/Onda-${{ steps.version.outputs.version }}.dmg
+            build/onda-update-tool
+          if-no-files-found: error
+
+      - name: Delete temporary keychain
+        if: always()
+        run: |
+          keychain_path="${RUNNER_TEMP}/signing.keychain-db"
+          if [[ -f "${keychain_path}" ]] && ! security delete-keychain "${keychain_path}"; then
+            echo "::warning::failed to delete ${keychain_path}"
+          fi
+
+  publish:
+    needs: [linux, macos]
+    runs-on: xcode-27
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Validate required secrets
+        env:
+          SPARKLE_EDDSA_PRIVATE_KEY: ${{ secrets.SPARKLE_EDDSA_PRIVATE_KEY }}
+          DEEPSEEK_API_TOKEN: ${{ secrets.DEEPSEEK_API_TOKEN }}
+        run: |
+          missing=0
+          for name in SPARKLE_EDDSA_PRIVATE_KEY DEEPSEEK_API_TOKEN; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::secret ${name} is not set" >&2
+              missing=1
+            fi
+          done
+          exit "${missing}"
+
+      - name: Set version
+        id: version
+        run: |
+          echo "version=${GITHUB_REF_NAME#v}" >>"${GITHUB_OUTPUT}"
+
+      - name: Download macOS release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: onda-macos-arm64
+          path: build
+
+      - name: Prepare the update tool
+        run: chmod +x build/onda-update-tool
+
+      - name: Download Linux packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: onda-linux-*
+          merge-multiple: true
+          path: build/linux
+
+      - name: Generate release notes
+        id: release_notes
+        uses: rselbach/actions/pi-release-notes@v1
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_TOKEN }}
+          DEEPSEEK_API_TOKEN: ${{ secrets.DEEPSEEK_API_TOKEN }}
+        with:
+          project-name: Onda
+          project-description: macOS and Linux app for local, on-device speech-to-text dictation.
+          output-file: build/release-notes.md
+          additional-context: >-
+            Keep notes user-facing and concise. Do not include installation
+            instructions; macOS DMG and ZIP and Linux DEB, RPM, and tar.gz
+            packages are attached. The signed update feed is updated separately.
 
       - name: Sign the legacy Sparkle appcast
         env:
@@ -151,7 +209,7 @@ jobs:
           SIGNING_KEY: ${{ secrets.SPARKLE_EDDSA_PRIVATE_KEY }}
         run: |
           dmg="build/Onda-${VERSION}.dmg"
-          tool="target/release/onda-update-tool"
+          tool="build/onda-update-tool"
           signature="$("${tool}" sparkle-signature "${dmg}" <<<"${SIGNING_KEY}")"
           if [[ ! "${signature}" =~ ^sparkle:edSignature=\".+\"\ length=\"[0-9]+\"$ ]]; then
             echo "::error::unexpected sparkle-signature output"
@@ -184,13 +242,6 @@ jobs:
           EOF
           xmllint --noout _site/appcast.xml
 
-      - name: Download Linux packages
-        uses: actions/download-artifact@v4
-        with:
-          pattern: onda-linux-*
-          merge-multiple: true
-          path: build/linux
-
       - name: Sign the update feed
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -203,7 +254,7 @@ jobs:
           minimum_os="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' \
             shell/macos/Info.plist)"
           mkdir -p _site
-          target/release/onda-update-tool sign-feed \
+          build/onda-update-tool sign-feed \
             --version "${VERSION}" --build "${BUILD}" \
             --minimum-os "${minimum_os}" \
             --published-at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
@@ -266,7 +317,7 @@ jobs:
           BUILD: ${{ github.run_number }}
         run: |
           for attempt in 1 2 3 4 5; do
-            if target/release/onda-update-tool verify-feed _site/update.json \
+            if build/onda-update-tool verify-feed _site/update.json \
               --version "${VERSION}" --build "${BUILD}" --download; then
               exit 0
             fi
@@ -281,18 +332,10 @@ jobs:
         with:
           path: _site
 
-      - name: Delete temporary keychain
-        if: always()
-        run: |
-          keychain_path="${RUNNER_TEMP}/signing.keychain-db"
-          if [[ -f "${keychain_path}" ]] && ! security delete-keychain "${keychain_path}"; then
-            echo "::warning::failed to delete ${keychain_path}"
-          fi
-
   # one Pages deployment publishes update.json and appcast.xml together,
   # after the release's assets verified
   deploy-feeds:
-    needs: build
+    needs: publish
     runs-on: ubuntu-latest
     environment:
       name: github-pages
