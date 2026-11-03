@@ -57,6 +57,23 @@ struct UnicodeEventTests {
     }
 }
 
+struct DeliveryCancellationTests {
+    @Test
+    func `DICT-19: a delivery cancelled before its commit types and copies nothing`() {
+        // the test process as the target, so a regression types only here
+        let target = TargetApp(processId: UInt32(getpid()), name: "Greendale", appId: nil)
+        let before = NSPasteboard.general.changeCount
+        let delivery = Delivery()
+        delivery.cancel()
+
+        let result = TextOutput().insert(text: "Troy Barnes", target: target, delivery: delivery)
+
+        #expect(result == .cancelled)
+        #expect(!delivery.commit())
+        #expect(NSPasteboard.general.changeCount == before)
+    }
+}
+
 struct PasteboardSnapshotTests {
     private static let custom = NSPasteboard.PasteboardType("edu.greendale.study-group")
 

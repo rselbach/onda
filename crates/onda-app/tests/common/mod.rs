@@ -19,9 +19,9 @@ use std::path::{Path, PathBuf};
 
 use jiff::Timestamp;
 use onda_app::ports::{
-    Cue, FieldText, Files, HotkeySource, InsertOutcome, LoginItem, MediaControl, Notifier,
-    NowPlaying, Permissions, Power, PrivacyPane, SoundPlayer, SystemSpeech, Target, TextOutput,
-    Updater,
+    Cue, Delivery, FieldText, Files, HotkeySource, InsertOutcome, LoginItem, MediaControl,
+    Notifier, NowPlaying, Permissions, Power, PrivacyPane, SoundPlayer, SystemSpeech, Target,
+    TextOutput, Updater,
 };
 use onda_app::seams::{
     AudioSource, BoxFuture, CaptureInfo, CleanupTransport, DownloadUpdate, DownloadUpdateKind,
@@ -117,6 +117,14 @@ impl Hold {
     }
 }
 
+// blocks on the hold in `slot`, if any, taking it
+fn wait_at(slot: &Mutex<Option<Arc<Hold>>>) {
+    let hold = lock(slot).take();
+    if let Some(hold) = hold {
+        hold.wait();
+    }
+}
+
 /// Polls `cond` in real time while letting the runtime run, for steps that
 /// wait on a held fake.
 pub async fn eventually(what: &str, cond: impl Fn() -> bool) {
@@ -158,6 +166,11 @@ pub struct FakeText {
     pub field: Mutex<Option<FieldText>>,
     pub insert_outcome: Mutex<InsertOutcome>,
     pub copy_ok: AtomicBool,
+    /// Holds the next field read (OUT-2).
+    pub hold_field: Mutex<Option<Arc<Hold>>>,
+    /// Holds the next insert before it commits, like a consent prompt.
+    pub hold_commit: Mutex<Option<Arc<Hold>>>,
+    /// Holds the next insert after it commits: the output is underway.
     pub hold_insert: Mutex<Option<Arc<Hold>>>,
     /// Holds the next focused-target read, which every start and
     /// re-delivery check makes.
@@ -174,19 +187,24 @@ impl TextOutput for FakeText {
     }
 
     fn field_text(&self, _: Option<&Target>) -> Option<FieldText> {
+        wait_at(&self.hold_field);
         lock(&self.field).clone()
     }
 
-    fn insert(&self, text: &str, target: Option<&Target>) -> InsertOutcome {
-        let hold = lock(&self.hold_insert).take();
-        if let Some(hold) = hold {
-            hold.wait();
+    fn insert(&self, text: &str, target: Option<&Target>, delivery: &Delivery) -> InsertOutcome {
+        self.log.push("text:insert");
+        wait_at(&self.hold_commit);
+        if !delivery.commit() {
+            self.log.push("text:cancelled");
+            return InsertOutcome::Cancelled;
         }
+        wait_at(&self.hold_insert);
         lock(&self.typed).push((text.to_owned(), target.map(|t| t.process_id)));
         *lock(&self.insert_outcome)
     }
 
     fn copy(&self, text: &str) -> bool {
+        self.log.push("text:copy");
         lock(&self.copied).push(text.to_owned());
         self.copy_ok.load(Ordering::SeqCst)
     }
@@ -1165,6 +1183,8 @@ impl Harness {
             field: Mutex::default(),
             insert_outcome: Mutex::new(InsertOutcome::Inserted),
             copy_ok: AtomicBool::new(true),
+            hold_field: Mutex::default(),
+            hold_commit: Mutex::default(),
             hold_insert: Mutex::default(),
             hold_focus: Mutex::default(),
         });

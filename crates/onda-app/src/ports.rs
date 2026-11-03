@@ -5,12 +5,14 @@
 //! shell can delay a step but never deadlock the state machine (ARCH-6).
 
 use std::path::Path;
+use std::sync::Arc;
 
 use onda_domain::cleanup::OnDeviceStatus;
 use onda_domain::hotkey::{GlobeKeyAction, ModifierSet, Shortcut};
 use onda_domain::messages::{LoginItemRegistryStatus, NotificationAuthorization, UserMessage};
 use onda_domain::models::SystemSpeechInfo;
 use onda_domain::types::MicrophonePermission;
+use tokio::sync::watch;
 
 use crate::views::UpdaterState;
 
@@ -48,17 +50,95 @@ pub enum InsertOutcome {
     ClipboardRestoreFailed,
     /// Copying to the clipboard failed (OUT-6).
     CopyFailed,
+    /// The delivery was cancelled before anything was output.
+    Cancelled,
 }
 
 impl InsertOutcome {
     /// The feedback notice for this outcome, if any.
     pub fn notice(self) -> Option<UserMessage> {
         match self {
-            Self::Inserted => None,
+            Self::Inserted | Self::Cancelled => None,
             Self::PasteFailed => Some(UserMessage::PasteFailed),
             Self::ClipboardRestoreFailed => Some(UserMessage::ClipboardRestoreFailed),
             Self::CopyFailed => Some(UserMessage::CopyFailed),
         }
+    }
+}
+
+/// One delivery's commit point (DICT-19, DICT-20).
+///
+/// Output starts only after a successful [`Delivery::commit`]. A cancel
+/// that arrives first drops the text; a cancel that arrives later changes
+/// nothing, because posted keystrokes and clipboard writes cannot be taken
+/// back. Clones share the state.
+#[derive(Debug, Clone)]
+pub struct Delivery(Arc<watch::Sender<DeliveryState>>);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeliveryState {
+    Pending,
+    Committed,
+    Cancelled,
+}
+
+impl Delivery {
+    /// A delivery that has neither started output nor been cancelled.
+    pub fn new() -> Self {
+        Self(Arc::new(watch::Sender::new(DeliveryState::Pending)))
+    }
+
+    /// Marks output as started, right before its first visible effect.
+    /// False when the delivery was cancelled first; the caller must then
+    /// output nothing. Calling it again after success returns true.
+    pub fn commit(&self) -> bool {
+        let mut committed = false;
+        self.0.send_if_modified(|state| match state {
+            DeliveryState::Pending => {
+                *state = DeliveryState::Committed;
+                committed = true;
+                true
+            }
+            DeliveryState::Committed => {
+                committed = true;
+                false
+            }
+            DeliveryState::Cancelled => false,
+        });
+        committed
+    }
+
+    /// Cancels the delivery unless output already started.
+    pub fn cancel(&self) {
+        self.0.send_if_modified(|state| {
+            let pending = *state == DeliveryState::Pending;
+            if pending {
+                *state = DeliveryState::Cancelled;
+            }
+            pending
+        });
+    }
+
+    /// Whether the delivery was cancelled before output started.
+    pub fn is_cancelled(&self) -> bool {
+        *self.0.borrow() == DeliveryState::Cancelled
+    }
+
+    /// Resolves once the delivery is cancelled, so a wait before the commit
+    /// (a consent prompt, a lock) can end early. Never resolves after a
+    /// commit.
+    pub async fn cancelled(&self) {
+        let mut state = self.0.subscribe();
+        // the sender lives in `self`, so the channel cannot close
+        let _ = state
+            .wait_for(|state| *state == DeliveryState::Cancelled)
+            .await;
+    }
+}
+
+impl Default for Delivery {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -75,10 +155,17 @@ pub trait TextOutput: Send + Sync {
 
     /// Types `text` into `target` with the OUT-3 strategies, falling back to
     /// paste with clipboard restore.
-    fn insert(&self, text: &str, target: Option<&Target>) -> InsertOutcome;
+    ///
+    /// `delivery` arrives uncommitted. Call [`Delivery::commit`] right
+    /// before the first effect another app could see (a keystroke, an
+    /// accessibility write, a clipboard write) and return
+    /// [`InsertOutcome::Cancelled`] with no output when it fails. Waits
+    /// before that point should end early on [`Delivery::cancelled`].
+    fn insert(&self, text: &str, target: Option<&Target>, delivery: &Delivery) -> InsertOutcome;
 
     /// Replaces the clipboard with `text`, with no paste and no restore
-    /// (OUT-1, OUT-7). Returns false when copying failed.
+    /// (OUT-1, OUT-7). Returns false when copying failed. The core commits
+    /// the delivery right before calling it.
     fn copy(&self, text: &str) -> bool;
 }
 
@@ -322,4 +409,47 @@ pub trait SystemSpeech: Send + Sync {
     /// Transcribes 16 kHz mono `samples` in `locale`, which was prepared
     /// before. Returns the recognizer's final results in order (SYS-7).
     fn transcribe(&self, samples: &[f32], locale: &str) -> Result<Vec<String>, SystemSpeechError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    #[test]
+    fn whichever_of_commit_and_cancel_comes_first_wins() {
+        let delivery = Delivery::new();
+        delivery.cancel();
+        assert!(!delivery.commit(), "a cancelled delivery cannot commit");
+        assert!(delivery.is_cancelled());
+
+        let delivery = Delivery::new();
+        assert!(delivery.commit());
+        delivery.cancel();
+        assert!(!delivery.is_cancelled(), "a commit cannot be taken back");
+        assert!(delivery.commit(), "committing twice is fine");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_wait_before_the_commit_ends_on_cancel_only() {
+        let delivery = Delivery::new();
+        let waiting = tokio::spawn({
+            let delivery = delivery.clone();
+            async move { delivery.cancelled().await }
+        });
+        tokio::task::yield_now().await;
+        delivery.cancel();
+        assert!(waiting.await.is_ok());
+        // already cancelled: resolves at once
+        delivery.cancelled().await;
+
+        let delivery = Delivery::new();
+        assert!(delivery.commit());
+        let waited = tokio::time::timeout(Duration::from_secs(120), delivery.cancelled()).await;
+        assert!(
+            waited.is_err(),
+            "a committed delivery never reports a cancel"
+        );
+    }
 }

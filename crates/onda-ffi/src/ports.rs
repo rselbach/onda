@@ -97,6 +97,35 @@ pub enum InsertResult {
     ClipboardRestoreFailed,
     /// Copying to the clipboard failed (OUT-6).
     CopyFailed,
+    /// The delivery was cancelled before anything was output.
+    Cancelled,
+}
+
+/// One delivery's commit point (DICT-19). Output starts only after
+/// [`Delivery::commit`] returns true; a cancel that came first means the
+/// text must not be output at all.
+#[derive(Default, uniffi::Object)]
+pub struct Delivery(onda_app::ports::Delivery);
+
+#[uniffi::export]
+impl Delivery {
+    /// A delivery that has neither started output nor been cancelled.
+    #[uniffi::constructor]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Marks output as started; call it right before the first effect
+    /// another app could see. False when the delivery was cancelled first:
+    /// output nothing and return [`InsertResult::Cancelled`].
+    pub fn commit(&self) -> bool {
+        self.0.commit()
+    }
+
+    /// Cancels the delivery unless output already started.
+    pub fn cancel(&self) {
+        self.0.cancel();
+    }
 }
 
 /// Microphone permission (PERM-1).
@@ -148,10 +177,18 @@ pub trait TextOutputPort: Send + Sync {
     /// after 250 ms; none when the field does not expose its text.
     fn field_text(&self, target: Option<TargetApp>) -> Option<FieldContents>;
 
-    /// Types `text` into `target` with the OUT-3 strategies.
-    fn insert(&self, text: String, target: Option<TargetApp>) -> InsertResult;
+    /// Types `text` into `target` with the OUT-3 strategies, calling
+    /// `delivery.commit()` right before the first keystroke, accessibility
+    /// write, or clipboard write.
+    fn insert(
+        &self,
+        text: String,
+        target: Option<TargetApp>,
+        delivery: Arc<Delivery>,
+    ) -> InsertResult;
 
-    /// Replaces the clipboard with `text`. False when copying failed.
+    /// Replaces the clipboard with `text`. False when copying failed. The
+    /// core commits the delivery before calling it.
     fn copy(&self, text: String) -> bool;
 }
 
@@ -406,15 +443,22 @@ impl TextOutput for Shell {
             })
     }
 
-    fn insert(&self, text: &str, target: Option<&Target>) -> InsertOutcome {
-        match self
-            .text
-            .insert(text.to_owned(), target.map(TargetApp::from))
-        {
+    fn insert(
+        &self,
+        text: &str,
+        target: Option<&Target>,
+        delivery: &onda_app::ports::Delivery,
+    ) -> InsertOutcome {
+        match self.text.insert(
+            text.to_owned(),
+            target.map(TargetApp::from),
+            Arc::new(Delivery(delivery.clone())),
+        ) {
             InsertResult::Inserted => InsertOutcome::Inserted,
             InsertResult::PasteFailed => InsertOutcome::PasteFailed,
             InsertResult::ClipboardRestoreFailed => InsertOutcome::ClipboardRestoreFailed,
             InsertResult::CopyFailed => InsertOutcome::CopyFailed,
+            InsertResult::Cancelled => InsertOutcome::Cancelled,
         }
     }
 

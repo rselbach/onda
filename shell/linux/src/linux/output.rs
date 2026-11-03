@@ -1,6 +1,6 @@
 //! Clipboard delivery and consented Wayland keyboard injection.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -11,7 +11,8 @@ use ashpd::desktop::{
     PersistMode, Session,
     remote_desktop::{DeviceType, KeyState, RemoteDesktop, SelectDevicesOptions},
 };
-use onda_app::ports::{FieldText, InsertOutcome, Target, TextOutput};
+use onda_app::ports::{Delivery, FieldText, InsertOutcome, Target, TextOutput};
+use tokio::sync::OwnedMutexGuard;
 
 use super::{hotkeys::HeldKeys, process};
 
@@ -64,49 +65,56 @@ impl Output {
         Ok(())
     }
 
-    fn paste(&self, shift: bool) -> anyhow::Result<()> {
-        self.held.settle()?;
+    // Everything that waits comes before the commit: the held shortcut
+    // keys and, without a virtual keyboard, the RemoteDesktop consent
+    // prompt. None when the delivery was cancelled during the prompt.
+    fn keyboard(&self, delivery: &Delivery) -> Option<anyhow::Result<Keyboard>> {
+        if let Err(error) = self.held.settle() {
+            return Some(Err(error));
+        }
         if !process::wayland() {
-            process::run(
-                "xdotool",
-                &["key", if shift { "ctrl+shift+v" } else { "ctrl+v" }],
-                &[],
-            )?;
-            return Ok(());
+            return Some(Ok(Keyboard::Xdotool));
         }
         if virtual_keyboard() && process::available("wtype") {
-            let keys = wtype_arguments(shift);
-            let args: Vec<&str> = keys.iter().map(String::as_str).collect();
-            process::run("wtype", &args, &[])?;
-            return Ok(());
+            return Some(Ok(Keyboard::Wtype));
         }
+        // The grant opens in its own task, so a cancel stops the wait while
+        // a prompt the user is still answering yields a grant for later.
+        let opening = self
+            .runtime
+            .spawn(grant(self.portal.clone(), self.token.clone()));
         self.runtime.block_on(async {
-            let mut grant = self.portal.lock().await;
-            if grant.is_none() {
-                *grant =
-                    Some(tokio::time::timeout(Duration::from_secs(120), self.open_grant()).await??);
-                let shared = self.portal.clone();
-                self.runtime.spawn(async move {
-                    loop {
-                        tokio::time::sleep(Duration::from_secs(15)).await;
-                        let mut grant = shared.lock().await;
-                        let Some(current) = grant.as_ref() else {
-                            break;
-                        };
-                        if !current.restorable {
-                            break;
-                        }
-                        if current.used.elapsed() >= Duration::from_secs(15) {
-                            if let Some(current) = grant.take()
-                                && let Err(error) = current.session.close().await
-                            {
-                                tracing::debug!(%error);
-                            }
-                            break;
-                        }
-                    }
-                });
+            tokio::select! {
+                opened = opening => Some(
+                    opened
+                        .map_err(anyhow::Error::from)
+                        .and_then(|opened| opened)
+                        .map(Keyboard::Portal),
+                ),
+                () = delivery.cancelled() => None,
             }
+        })
+    }
+
+    fn press(&self, keyboard: Keyboard, shift: bool) -> anyhow::Result<()> {
+        let mut grant = match keyboard {
+            Keyboard::Xdotool => {
+                process::run(
+                    "xdotool",
+                    &["key", if shift { "ctrl+shift+v" } else { "ctrl+v" }],
+                    &[],
+                )?;
+                return Ok(());
+            }
+            Keyboard::Wtype => {
+                let keys = wtype_arguments(shift);
+                let args: Vec<&str> = keys.iter().map(String::as_str).collect();
+                process::run("wtype", &args, &[])?;
+                return Ok(());
+            }
+            Keyboard::Portal(grant) => grant,
+        };
+        self.runtime.block_on(async {
             // The selection must reach the target; a consent dialog may also have just closed.
             tokio::time::sleep(Duration::from_millis(250)).await;
             let current = grant
@@ -162,65 +170,104 @@ impl Output {
             Ok(())
         })
     }
+}
 
-    async fn open_grant(&self) -> anyhow::Result<Grant> {
-        let portal = RemoteDesktop::with_connection(super::portal::connection().await?).await?;
-        let session = portal.create_session(Default::default()).await?;
-        let start = async {
-            let token = std::fs::read_to_string(&self.token).ok();
-            let mut options =
-                SelectDevicesOptions::default().set_devices(Some(DeviceType::Keyboard.into()));
-            if portal.version() >= 2 {
-                options = options
-                    .set_persist_mode(PersistMode::ExplicitlyRevoked)
-                    .set_restore_token(token.as_deref());
-            }
-            portal.select_devices(&session, options).await?.response()?;
-            let devices = portal
-                .start(&session, None, Default::default())
-                .await?
-                .response()?;
-            anyhow::ensure!(
-                devices.devices().contains(DeviceType::Keyboard),
-                "keyboard access was not granted"
-            );
-            let mut restorable = false;
-            if let Some(token) = devices.restore_token() {
-                use std::io::Write;
-                use std::os::unix::fs::OpenOptionsExt;
-                let staged = self.token.with_extension("next");
-                let save = (|| -> std::io::Result<()> {
-                    let mut file = std::fs::OpenOptions::new()
-                        .create(true)
-                        .truncate(true)
-                        .write(true)
-                        .mode(0o600)
-                        .open(&staged)?;
-                    file.write_all(token.as_bytes())?;
-                    file.sync_all()?;
-                    std::fs::rename(staged, &self.token)
-                })();
-                match save {
-                    Ok(()) => restorable = true,
-                    Err(error) => tracing::warn!(%error, "could not save keyboard grant"),
+enum Keyboard {
+    Xdotool,
+    Wtype,
+    Portal(OwnedMutexGuard<Option<Grant>>),
+}
+
+// The keyboard grant, opening one when none is held. The guard keeps the
+// idle closer away until the keys are sent.
+async fn grant(
+    portal: Arc<tokio::sync::Mutex<Option<Grant>>>,
+    token: PathBuf,
+) -> anyhow::Result<OwnedMutexGuard<Option<Grant>>> {
+    let mut grant = portal.clone().lock_owned().await;
+    if grant.is_none() {
+        *grant = Some(tokio::time::timeout(Duration::from_secs(120), open_grant(&token)).await??);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(15)).await;
+                let mut grant = portal.lock().await;
+                let Some(current) = grant.as_ref() else {
+                    break;
+                };
+                if !current.restorable {
+                    break;
+                }
+                if current.used.elapsed() >= Duration::from_secs(15) {
+                    if let Some(current) = grant.take()
+                        && let Err(error) = current.session.close().await
+                    {
+                        tracing::debug!(%error);
+                    }
+                    break;
                 }
             }
-            Ok::<_, anyhow::Error>(restorable)
+        });
+    }
+    Ok(grant)
+}
+
+async fn open_grant(path: &Path) -> anyhow::Result<Grant> {
+    let portal = RemoteDesktop::with_connection(super::portal::connection().await?).await?;
+    let session = portal.create_session(Default::default()).await?;
+    let start = async {
+        let token = std::fs::read_to_string(path).ok();
+        let mut options =
+            SelectDevicesOptions::default().set_devices(Some(DeviceType::Keyboard.into()));
+        if portal.version() >= 2 {
+            options = options
+                .set_persist_mode(PersistMode::ExplicitlyRevoked)
+                .set_restore_token(token.as_deref());
         }
-        .await;
-        match start {
-            Ok(restorable) => Ok(Grant {
-                portal,
-                session,
-                used: std::time::Instant::now(),
-                restorable,
-            }),
-            Err(error) => {
-                if let Err(close) = session.close().await {
-                    tracing::debug!(%close);
-                }
-                Err(error)
+        portal.select_devices(&session, options).await?.response()?;
+        let devices = portal
+            .start(&session, None, Default::default())
+            .await?
+            .response()?;
+        anyhow::ensure!(
+            devices.devices().contains(DeviceType::Keyboard),
+            "keyboard access was not granted"
+        );
+        let mut restorable = false;
+        if let Some(token) = devices.restore_token() {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let staged = path.with_extension("next");
+            let save = (|| -> std::io::Result<()> {
+                let mut file = std::fs::OpenOptions::new()
+                    .create(true)
+                    .truncate(true)
+                    .write(true)
+                    .mode(0o600)
+                    .open(&staged)?;
+                file.write_all(token.as_bytes())?;
+                file.sync_all()?;
+                std::fs::rename(staged, path)
+            })();
+            match save {
+                Ok(()) => restorable = true,
+                Err(error) => tracing::warn!(%error, "could not save keyboard grant"),
             }
+        }
+        Ok::<_, anyhow::Error>(restorable)
+    }
+    .await;
+    match start {
+        Ok(restorable) => Ok(Grant {
+            portal,
+            session,
+            used: std::time::Instant::now(),
+            restorable,
+        }),
+        Err(error) => {
+            if let Err(close) = session.close().await {
+                tracing::debug!(%close);
+            }
+            Err(error)
         }
     }
 }
@@ -232,8 +279,11 @@ impl TextOutput for Output {
     fn field_text(&self, _: Option<&Target>) -> Option<FieldText> {
         None
     }
-    fn insert(&self, text: &str, _: Option<&Target>) -> InsertOutcome {
+    fn insert(&self, text: &str, _: Option<&Target>, delivery: &Delivery) -> InsertOutcome {
         let _serial = self.serial.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(keyboard) = self.keyboard(delivery) else {
+            return InsertOutcome::Cancelled;
+        };
         let previous = match super::clipboard::Snapshot::read() {
             Ok(previous) => Some(previous),
             Err(error) => {
@@ -241,11 +291,16 @@ impl TextOutput for Output {
                 None
             }
         };
+        if !delivery.commit() {
+            return InsertOutcome::Cancelled;
+        }
         if let Err(error) = self.copy_text(text) {
             tracing::warn!(%error, "clipboard write failed");
             return InsertOutcome::CopyFailed;
         }
-        match self.paste(self.terminal.load(Ordering::Relaxed)) {
+        match keyboard
+            .and_then(|keyboard| self.press(keyboard, self.terminal.load(Ordering::Relaxed)))
+        {
             Ok(()) => {
                 if let Some(previous) = previous {
                     std::thread::sleep(Duration::from_millis(500));

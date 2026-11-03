@@ -20,7 +20,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::{JoinHandle, spawn_blocking};
 use tokio::time::Instant;
 
-use crate::ports::{Permissions, Target, TextOutput};
+use crate::ports::{Delivery, Permissions, Target, TextOutput};
 use crate::seams::{AudioSource, CleanupTransport, SecretSource};
 use crate::session::{Msg, SessionId};
 use crate::transcription::TranscriptionService;
@@ -327,29 +327,47 @@ fn log_cleanup(outcome: &CleanupOutcome) {
 }
 
 /// Delivers `text` through the output mode (OUT-1..OUT-11) and returns the
-/// notices to show.
+/// notices to show. Nothing is output once `delivery` is cancelled; a
+/// cancel after its commit cannot take the output back.
 pub(crate) async fn deliver(
     text_output: Arc<dyn TextOutput>,
     permissions: Arc<dyn Permissions>,
     text: String,
     target: Option<Target>,
     mode: OutputMode,
+    delivery: Delivery,
 ) -> Vec<UserMessage> {
+    // the blocking call outlives an aborted task, so it checks the
+    // delivery itself before each step that could output
     let delivered = spawn_blocking(move || {
+        if delivery.is_cancelled() {
+            return vec![];
+        }
         let route = delivery_route(mode, permissions.accessibility_trusted());
         match route {
-            DeliveryRoute::Copy if text_output.copy(&text) => vec![],
-            DeliveryRoute::CopyWithNotice if text_output.copy(&text) => {
-                vec![UserMessage::TranscriptCopiedToClipboard]
+            DeliveryRoute::Copy | DeliveryRoute::CopyWithNotice => {
+                if !delivery.commit() {
+                    return vec![];
+                }
+                match (text_output.copy(&text), route) {
+                    (false, _) => vec![UserMessage::CopyFailed],
+                    (true, DeliveryRoute::CopyWithNotice) => {
+                        vec![UserMessage::TranscriptCopiedToClipboard]
+                    }
+                    (true, _) => vec![],
+                }
             }
-            DeliveryRoute::Copy | DeliveryRoute::CopyWithNotice => vec![UserMessage::CopyFailed],
             DeliveryRoute::Insert => {
-                let joined = match text_output.field_text(target.as_ref()) {
+                let field = text_output.field_text(target.as_ref());
+                if delivery.is_cancelled() {
+                    return vec![];
+                }
+                let joined = match field {
                     Some(field) => join(&text, text_before_caret(&field.text, field.caret_utf16)),
                     None => text,
                 };
                 text_output
-                    .insert(&joined, target.as_ref())
+                    .insert(&joined, target.as_ref(), &delivery)
                     .notice()
                     .into_iter()
                     .collect()
@@ -377,4 +395,128 @@ pub(crate) fn millis(from: Instant, to: Instant) -> u64 {
 pub(crate) async fn after(after: Duration, msg: Msg, messages: mpsc::UnboundedSender<Msg>) {
     tokio::time::sleep(after).await;
     let _ = messages.send(msg);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use super::*;
+    use crate::ports::{FieldText, InsertOutcome, PrivacyPane};
+
+    #[derive(Default)]
+    struct Recorder(Mutex<Vec<String>>);
+
+    impl Recorder {
+        fn push(&self, call: String) {
+            if let Ok(mut calls) = self.0.lock() {
+                calls.push(call);
+            }
+        }
+
+        fn calls(&self) -> Vec<String> {
+            self.0.lock().map(|calls| calls.clone()).unwrap_or_default()
+        }
+    }
+
+    impl TextOutput for Recorder {
+        fn focused_target(&self) -> Option<Target> {
+            None
+        }
+
+        fn field_text(&self, _: Option<&Target>) -> Option<FieldText> {
+            self.push("field".to_owned());
+            None
+        }
+
+        fn insert(&self, text: &str, _: Option<&Target>, delivery: &Delivery) -> InsertOutcome {
+            if !delivery.commit() {
+                return InsertOutcome::Cancelled;
+            }
+            self.push(format!("insert {text}"));
+            InsertOutcome::Inserted
+        }
+
+        fn copy(&self, text: &str) -> bool {
+            self.push(format!("copy {text}"));
+            true
+        }
+    }
+
+    struct Trusted;
+
+    impl Permissions for Trusted {
+        fn microphone(&self) -> MicrophonePermission {
+            MicrophonePermission::Granted
+        }
+
+        fn request_microphone(&self) -> bool {
+            true
+        }
+
+        fn accessibility_trusted(&self) -> bool {
+            true
+        }
+
+        fn prompt_accessibility(&self) {}
+
+        fn open_settings(&self, _: PrivacyPane) {}
+    }
+
+    #[tokio::test]
+    // a blocking call queued behind others starts after the session was
+    // cancelled; it must not read the field or output anything
+    async fn a_delivery_cancelled_before_it_runs_outputs_nothing() {
+        struct Case {
+            name: &'static str,
+            mode: OutputMode,
+            cancelled: bool,
+            want: Vec<&'static str>,
+        }
+        let cases = [
+            Case {
+                name: "typing, cancelled",
+                mode: OutputMode::Type,
+                cancelled: true,
+                want: vec![],
+            },
+            Case {
+                name: "copying, cancelled",
+                mode: OutputMode::Clipboard,
+                cancelled: true,
+                want: vec![],
+            },
+            Case {
+                name: "typing",
+                mode: OutputMode::Type,
+                cancelled: false,
+                want: vec!["field", "insert Troy Barnes"],
+            },
+            Case {
+                name: "copying",
+                mode: OutputMode::Clipboard,
+                cancelled: false,
+                want: vec!["copy Troy Barnes"],
+            },
+        ];
+        for tc in cases {
+            let output = Arc::new(Recorder::default());
+            let delivery = Delivery::new();
+            if tc.cancelled {
+                delivery.cancel();
+            }
+            let notices = deliver(
+                output.clone(),
+                Arc::new(Trusted),
+                "Troy Barnes".to_owned(),
+                None,
+                tc.mode,
+                delivery.clone(),
+            )
+            .await;
+            assert_eq!(output.calls(), tc.want, "{}", tc.name);
+            assert!(notices.is_empty(), "{}", tc.name);
+            assert_eq!(delivery.is_cancelled(), tc.cancelled, "{}", tc.name);
+        }
+    }
 }

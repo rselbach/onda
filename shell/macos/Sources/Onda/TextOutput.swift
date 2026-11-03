@@ -5,6 +5,8 @@ import OndaCore
 /// Delivers text into other apps (OUT-2..OUT-7). Called on core threads;
 /// every call may block. Chunking comes from the core (`unicodeChunks`);
 /// whether to type at all, the joiner, and the notices are core decisions.
+/// An insertion commits its delivery right before the first effect another
+/// app can see, so a cancel that came first outputs nothing (DICT-19).
 final class TextOutput: TextOutputPort, @unchecked Sendable {
     /// OUT-2: a hung app must not stall typing.
     private static let readTimeout: Float = 0.25
@@ -37,14 +39,18 @@ final class TextOutput: TextOutputPort, @unchecked Sendable {
         return FieldContents(text: value, caretUtf16: UInt64(max(range.location, 0)))
     }
 
-    func insert(text: String, target: TargetApp?) -> InsertResult {
+    func insert(text: String, target: TargetApp?, delivery: Delivery) -> InsertResult {
         let chunks = unicodeChunks(text: text)
-        if let pid = Self.livePid(target), Self.postUnicode(chunks, { $0.postToPid(pid) }) {
+        if let pid = Self.livePid(target) {
+            guard delivery.commit() else { return .cancelled }
+            if Self.postUnicode(chunks, { $0.postToPid(pid) }) {
+                return .inserted
+            }
+        }
+        if insertViaAccessibility(text, target: target, delivery: delivery) {
             return .inserted
         }
-        if insertViaAccessibility(text, target: target) {
-            return .inserted
-        }
+        guard delivery.commit() else { return .cancelled }
         if Self.postUnicode(chunks, { $0.post(tap: .cghidEventTap) }) {
             return .inserted
         }
@@ -111,8 +117,9 @@ final class TextOutput: TextOutputPort, @unchecked Sendable {
     }
 
     /// Strategy 2: replace the selection in the focused element's value and
-    /// move the caret after the inserted text.
-    private func insertViaAccessibility(_ text: String, target: TargetApp?) -> Bool {
+    /// move the caret after the inserted text. False without writing when
+    /// the delivery was cancelled during the reads.
+    private func insertViaAccessibility(_ text: String, target: TargetApp?, delivery: Delivery) -> Bool {
         guard let element = Self.focusedElement(target: target, timeout: Self.insertTimeout),
               let value = Self.stringValue(element),
               let selected = Self.selectedRange(element) else { return false }
@@ -121,6 +128,7 @@ final class TextOutput: TextOutputPort, @unchecked Sendable {
         let length = max(0, min(selected.length, current.length - location))
         let updated = NSMutableString(string: value)
         updated.replaceCharacters(in: NSRange(location: location, length: length), with: text)
+        guard delivery.commit() else { return false }
         let result = AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, updated as CFString)
         guard result == .success else {
             Log.output.info("Accessibility insertion failed: \(result.rawValue, privacy: .public)")

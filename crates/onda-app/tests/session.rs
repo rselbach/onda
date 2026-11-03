@@ -773,6 +773,74 @@ async fn dict_19_cln_9_arch_6_cancel_in_every_phase_drops_the_session() {
 }
 
 #[tokio::test(start_paused = true)]
+// ARCH-6 runs delivery on a blocking thread that outlives the cancel; a
+// cancel that beats the delivery's commit leaves nothing to output, even
+// when the port call returns while the next session runs
+async fn dict_19_a_cancel_before_output_starts_outputs_nothing() {
+    struct Case {
+        name: &'static str,
+        hold: fn(&Harness) -> Arc<Hold>,
+        want_cancelled_inserts: usize,
+    }
+    let cases = [
+        Case {
+            name: "reading the field (OUT-2)",
+            hold: |h| {
+                let hold = Hold::new();
+                *lock(&h.text.hold_field) = Some(hold.clone());
+                hold
+            },
+            want_cancelled_inserts: 0,
+        },
+        Case {
+            name: "a port wait before the commit",
+            hold: |h| {
+                let hold = Hold::new();
+                *lock(&h.text.hold_commit) = Some(hold.clone());
+                hold
+            },
+            want_cancelled_inserts: 1,
+        },
+    ];
+    for tc in cases {
+        let h = Harness::with(|s| s.activation_mode = ActivationMode::Toggle).await;
+        h.script.finals(vec![
+            Ok("Troy Barnes".to_owned()),
+            Ok("Abed Nadir".to_owned()),
+        ]);
+        let hold = (tc.hold)(&h);
+        h.tap();
+        sleep(500).await;
+        h.stop_now();
+        eventually("the held delivery", || hold.started()).await;
+        h.app.cancel_dictation();
+        eventually("idle", || h.idle()).await;
+
+        // the next session starts while the cancelled call is still blocked
+        h.tap();
+        eventually("recording", || h.tray().icon == TrayIcon::Recording).await;
+        hold.release();
+        h.tap();
+        sleep(1_000).await;
+        assert_eq!(h.typed(), vec!["Abed Nadir"], "{}", tc.name);
+        assert_eq!(
+            h.log.count("text:insert"),
+            tc.want_cancelled_inserts + 1,
+            "{}",
+            tc.name
+        );
+        assert_eq!(
+            h.log.count("text:cancelled"),
+            tc.want_cancelled_inserts,
+            "{}",
+            tc.name
+        );
+        assert!(h.notices().is_empty(), "{}", tc.name);
+        assert!(h.idle(), "{}", tc.name);
+    }
+}
+
+#[tokio::test(start_paused = true)]
 async fn arch_10_cancel_frees_the_session_while_old_inference_runs() {
     let h = Harness::with(|s| s.activation_mode = ActivationMode::Toggle).await;
     h.script
@@ -1778,6 +1846,68 @@ async fn dict_26_dict_27_a_session_started_during_the_redelivery_check_wins() {
         );
         assert!(h.idle(), "{}", tc.name);
     }
+}
+
+#[tokio::test(start_paused = true)]
+// a session that starts while a re-delivery waits for the port owns the
+// output; text the re-delivery already started cannot be taken back
+async fn dict_26_dict_27_a_session_cancels_a_redelivery_that_has_not_output() {
+    struct Case {
+        name: &'static str,
+        committed: bool,
+        want: Vec<&'static str>,
+    }
+    let cases = [
+        Case {
+            name: "waiting before the commit",
+            committed: false,
+            want: vec!["hello world"],
+        },
+        Case {
+            name: "already outputting",
+            committed: true,
+            want: vec!["six seasons and a movie", "hello world"],
+        },
+    ];
+    for tc in cases {
+        let h = Harness::with(|s| s.activation_mode = ActivationMode::Toggle).await;
+        let hold = Hold::new();
+        match tc.committed {
+            true => *lock(&h.text.hold_insert) = Some(hold.clone()),
+            false => *lock(&h.text.hold_commit) = Some(hold.clone()),
+        }
+        h.app.deliver_transcript("six seasons and a movie");
+        eventually("the held re-delivery", || hold.started()).await;
+        h.tap();
+        eventually("recording", || h.tray().icon == TrayIcon::Recording).await;
+        hold.release();
+        h.tap();
+        sleep(1_000).await;
+        assert_eq!(h.typed(), tc.want, "{}", tc.name);
+        assert_eq!(
+            h.log.count("text:cancelled"),
+            usize::from(!tc.committed),
+            "{}",
+            tc.name
+        );
+        assert!(h.notices().is_empty(), "{}", tc.name);
+        assert!(h.idle(), "{}", tc.name);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn dict_26_a_newer_redelivery_replaces_one_that_has_not_output() {
+    let h = Harness::new().await;
+    let hold = Hold::new();
+    *lock(&h.text.hold_commit) = Some(hold.clone());
+    h.app.deliver_transcript("six seasons and a movie");
+    eventually("the held re-delivery", || hold.started()).await;
+    h.app.deliver_transcript("Greendale Community College");
+    eventually("the second re-delivery", || h.typed().len() == 1).await;
+    hold.release();
+    sleep(100).await;
+    assert_eq!(h.typed(), vec!["Greendale Community College"]);
+    assert_eq!(h.log.count("text:cancelled"), 1);
 }
 
 #[tokio::test(start_paused = true)]

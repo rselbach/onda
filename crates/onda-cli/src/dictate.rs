@@ -28,8 +28,8 @@ use onda_adapters::{
     forward_audio_events,
 };
 use onda_app::ports::{
-    Cue, FieldText, Files, HotkeySource, InsertOutcome, LoginItem, Notifier, Permissions, Power,
-    PrivacyPane, SoundPlayer, Target, TextOutput, Updater,
+    Cue, Delivery, FieldText, Files, HotkeySource, InsertOutcome, LoginItem, Notifier, Permissions,
+    Power, PrivacyPane, SoundPlayer, Target, TextOutput, Updater,
 };
 use onda_app::seams::{ModelStore, SecretSource, SettingsSource};
 use onda_app::views::UpdaterState;
@@ -411,7 +411,10 @@ impl TextOutput for Terminal {
         None
     }
 
-    fn insert(&self, text: &str, _: Option<&Target>) -> InsertOutcome {
+    fn insert(&self, text: &str, _: Option<&Target>, delivery: &Delivery) -> InsertOutcome {
+        if !delivery.commit() {
+            return InsertOutcome::Cancelled;
+        }
         self.console.say("delivered (stdout)");
         println!("{text}");
         InsertOutcome::Inserted

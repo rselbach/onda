@@ -63,7 +63,7 @@ use crate::media::Media;
 use crate::pipeline::{
     self, CheckReport, CleanupJob, DecodeJob, Decoded, PreviewContext, PreviewHandle, millis, mono,
 };
-use crate::ports::{Cue, Target};
+use crate::ports::{Cue, Delivery, Target};
 use crate::seams::{AudioSignal, CaptureInfo, DownloadUpdate, Settings};
 use crate::transcription::{LoadError, TranscriptionService};
 use crate::views::MainWindowSection;
@@ -198,6 +198,16 @@ impl Drop for Task {
     }
 }
 
+// a delivery cancelled when its owner drops it: aborting the task alone
+// leaves the blocking port calls running (DICT-19)
+struct Outgoing(Delivery);
+
+impl Drop for Outgoing {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StartKind {
     Record { provisional: bool },
@@ -313,6 +323,7 @@ enum Step {
     },
     Delivering {
         _task: Task,
+        _delivery: Outgoing,
     },
 }
 
@@ -387,6 +398,8 @@ pub(crate) struct Actor {
     // dictation may start (UPD-8)
     restarting: bool,
     last_transcript: Option<String>,
+    // output from Paste Last Transcript or a Recent Transcripts entry
+    redelivery: Option<Outgoing>,
     recent: Vec<RecentTranscript>,
     cancel_registered: bool,
     preventing_sleep: bool,
@@ -460,6 +473,7 @@ impl Actor {
             failed_audio: None,
             restarting: false,
             last_transcript: None,
+            redelivery: None,
             recent: Vec::new(),
             cancel_registered: false,
             preventing_sleep: false,
@@ -695,6 +709,8 @@ impl Actor {
         if kind == StartKind::Retry && self.failed_audio.is_none() {
             return;
         }
+        // the new session owns the output (DICT-26, DICT-27)
+        self.redelivery = None;
         let id = self.next_session();
         let check = pipeline::check(
             self.ports.permissions.clone(),
@@ -1323,12 +1339,14 @@ impl Actor {
             return;
         }
         self.last_transcript = Some(text.clone());
+        let delivery = Delivery::new();
         let deliver = pipeline::deliver(
             self.ports.text_output.clone(),
             self.ports.permissions.clone(),
             text,
             target,
             mode,
+            delivery.clone(),
         );
         let task = self.spawn(async move {
             let notices = deliver.await;
@@ -1338,7 +1356,10 @@ impl Actor {
             }
         });
         if let Some((_, _, step)) = self.pipeline_mut(id) {
-            *step = Step::Delivering { _task: task };
+            *step = Step::Delivering {
+                _task: task,
+                _delivery: Outgoing(delivery),
+            };
         }
     }
 
@@ -1462,6 +1483,7 @@ impl Actor {
         let key_save = self.pending_key_save();
         // nothing is delivered and no audio is kept (DICT-28a)
         self.cancel();
+        self.redelivery = None;
         if let Phase::Starting(_) = self.phase {
             self.phase = Phase::Idle;
             self.ports.audio.stop();
@@ -1528,13 +1550,17 @@ impl Actor {
         if !self.output_ready(&settings, report.accessibility) {
             return;
         }
+        let delivery = Delivery::new();
         let deliver = pipeline::deliver(
             self.ports.text_output.clone(),
             self.ports.permissions.clone(),
             text,
             report.target,
             settings.output_mode,
+            delivery.clone(),
         );
+        // a later re-delivery or session replaces this one's pending output
+        self.redelivery = Some(Outgoing(delivery));
         tokio::spawn(send_when(self.messages.clone(), async move {
             let notices = deliver.await;
             Msg::Delivered { id: None, notices }
