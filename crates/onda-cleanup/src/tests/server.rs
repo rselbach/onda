@@ -14,6 +14,9 @@ pub enum Reply {
     Respond { status: u16, body: String },
     /// Never answers; reports when the client closes the connection.
     Hang,
+    /// Writes these bytes as the whole response, then closes the
+    /// connection, or with `then_hang` waits for the client to close it.
+    Raw { response: Vec<u8>, then_hang: bool },
 }
 
 /// The request as it arrived on the wire.
@@ -65,11 +68,21 @@ impl Server {
                         .await
                         .expect("write response");
                 }
-                Reply::Hang => {
-                    let mut buf = [0u8; 256];
-                    while let Ok(1..) = stream.read(&mut buf).await {}
-                    // the test may have finished without waiting for this
-                    let _ = closed_tx.send(());
+                Reply::Hang => wait_for_close(&mut stream, closed_tx).await,
+                Reply::Raw {
+                    response,
+                    then_hang,
+                } => {
+                    // a client that stops reading at its cap hangs up
+                    // mid-write; that ends the reply, it is not a failure
+                    for piece in response.chunks(64 * 1024) {
+                        if stream.write_all(piece).await.is_err() {
+                            return;
+                        }
+                    }
+                    if then_hang {
+                        wait_for_close(&mut stream, closed_tx).await;
+                    }
                 }
             }
         });
@@ -113,10 +126,25 @@ impl Server {
         (&mut self.captured).await.expect("server read a request")
     }
 
+    /// Whether a request has arrived, without waiting for one.
+    pub fn was_reached(&mut self) -> bool {
+        self.captured.try_recv().is_ok()
+    }
+
     /// Resolves when the client closes a hung connection.
     pub async fn closed(&mut self) {
         (&mut self.closed).await.expect("server saw the close");
     }
+}
+
+async fn wait_for_close(
+    stream: &mut BufReader<tokio::net::TcpStream>,
+    closed_tx: oneshot::Sender<()>,
+) {
+    let mut buf = [0u8; 256];
+    while let Ok(1..) = stream.read(&mut buf).await {}
+    // the test may have finished without waiting for this
+    let _ = closed_tx.send(());
 }
 
 async fn read_request(stream: &mut BufReader<tokio::net::TcpStream>) -> Captured {

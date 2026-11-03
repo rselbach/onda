@@ -480,3 +480,220 @@ fn futures_are_send() {
     assert_send(&client.send_cancellable(&request, &cancel));
     assert_send(&client.list_models(CleanupProvider::OpenRouter, None));
 }
+
+fn redirect_to(status: u16, location: &str) -> Reply {
+    Reply::Raw {
+        response: format!(
+            "HTTP/1.1 {status} Moved\r\nLocation: {location}\r\nContent-Length: 0\r\n\
+             Connection: close\r\n\r\n"
+        )
+        .into_bytes(),
+        then_hang: false,
+    }
+}
+
+#[tokio::test]
+async fn redirects_are_refused_not_replayed_to_another_origin() {
+    for status in [301, 302, 303, 307, 308] {
+        // another port is another origin
+        let mut elsewhere = Server::start(Reply::Respond {
+            status: 200,
+            body: success_body(),
+        })
+        .await;
+        let server = Server::start(redirect_to(status, &elsewhere.url)).await;
+
+        let got = tokio::time::timeout(GUARD, client(&server.url).send(&cleanup_request(KEY)))
+            .await
+            .expect("send finished");
+
+        assert_eq!(
+            got,
+            Err(CleanupError::Http {
+                status,
+                message: None
+            }),
+            "{status}"
+        );
+        assert!(!elsewhere.was_reached(), "{status} replayed the transcript");
+    }
+}
+
+#[tokio::test]
+async fn listing_redirects_are_refused() {
+    let mut elsewhere = Server::start(Reply::Respond {
+        status: 200,
+        body: json!({"data": []}).to_string(),
+    })
+    .await;
+    let server = Server::start(redirect_to(307, &elsewhere.url)).await;
+    let key = ApiKey::new("fw-greendale-human-beings").expect("key");
+
+    let client = client(&server.url);
+    let listing = client.list_models(CleanupProvider::Fireworks, Some(&key));
+    let got = tokio::time::timeout(GUARD, listing)
+        .await
+        .expect("listing finished");
+
+    assert_eq!(
+        got,
+        Err(CleanupError::Http {
+            status: 307,
+            message: None
+        })
+    );
+    assert!(!elsewhere.was_reached(), "the key went to another origin");
+}
+
+#[tokio::test]
+async fn production_client_refuses_plain_http() {
+    let mut server = Server::start(Reply::Respond {
+        status: 200,
+        body: success_body(),
+    })
+    .await;
+    let production = CleanupClient::new().expect("client");
+
+    let got = production
+        .http
+        .post(&server.url)
+        .body("Troy and Abed")
+        .send()
+        .await;
+
+    let error = got.expect_err("plain HTTP is refused");
+    assert!(error.is_builder(), "refused before connecting: {error:?}");
+    assert!(!server.was_reached(), "the request went out");
+}
+
+fn chunked(total: usize) -> Vec<u8> {
+    let mut response = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n".to_vec();
+    let piece = vec![b'x'; 64 * 1024];
+    let mut left = total;
+    while left > 0 {
+        let size = left.min(piece.len());
+        response.extend_from_slice(format!("{size:x}\r\n").as_bytes());
+        response.extend_from_slice(&piece[..size]);
+        response.extend_from_slice(b"\r\n");
+        left -= size;
+    }
+    response.extend_from_slice(b"0\r\n\r\n");
+    response
+}
+
+fn with_head(head: &str, body_len: usize) -> Vec<u8> {
+    let mut response = head.as_bytes().to_vec();
+    response.resize(head.len() + body_len, b'x');
+    response
+}
+
+#[tokio::test]
+async fn response_bodies_are_capped() {
+    let too_large = Err(CleanupError::Transport(
+        "The response was larger than 4 MB.".to_owned(),
+    ));
+    let over = MAX_RESPONSE_BYTES + 1;
+    let cases = [
+        (
+            // the body never comes: the declared length alone is refused
+            "declared length over the cap",
+            Reply::Raw {
+                response: format!("HTTP/1.1 200 OK\r\nContent-Length: {over}\r\n\r\n").into_bytes(),
+                then_hang: true,
+            },
+            too_large.clone(),
+        ),
+        (
+            "chunked body over the cap",
+            Reply::Raw {
+                response: chunked(over),
+                then_hang: false,
+            },
+            too_large.clone(),
+        ),
+        (
+            "close-delimited body over the cap",
+            Reply::Raw {
+                response: with_head("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n", over),
+                then_hang: false,
+            },
+            too_large.clone(),
+        ),
+        (
+            "a short declared length bounds the read",
+            Reply::Raw {
+                response: with_head("HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n", over),
+                then_hang: false,
+            },
+            Err(CleanupError::Malformed),
+        ),
+        (
+            "chunked body at the cap is read",
+            Reply::Raw {
+                response: chunked(MAX_RESPONSE_BYTES),
+                then_hang: false,
+            },
+            Err(CleanupError::Malformed),
+        ),
+    ];
+    for (name, reply, want) in cases {
+        let server = Server::start(reply).await;
+        let got = tokio::time::timeout(GUARD, client(&server.url).send(&cleanup_request(KEY)))
+            .await
+            .unwrap_or_else(|_| panic!("{name}: send finished"));
+        assert_eq!(got, want, "{name}");
+    }
+}
+
+#[tokio::test]
+async fn listing_pages_are_capped() {
+    let server = Server::start(Reply::Raw {
+        response: chunked(MAX_MODELS_PAGE_BYTES + 1),
+        then_hang: false,
+    })
+    .await;
+
+    let client = client(&server.url);
+    let listing = client.list_models(CleanupProvider::OpenRouter, None);
+    let got = tokio::time::timeout(GUARD, listing)
+        .await
+        .expect("listing finished");
+
+    assert_eq!(
+        got,
+        Err(CleanupError::Transport(
+            "The response was larger than 16 MB.".to_owned()
+        ))
+    );
+}
+
+#[tokio::test]
+async fn cancelling_mid_body_aborts_the_request_cln_9() {
+    let mut server = Server::start(Reply::Raw {
+        response: b"HTTP/1.1 200 OK\r\nContent-Length: 4096\r\n\r\n{\"choices\":".to_vec(),
+        then_hang: true,
+    })
+    .await;
+    let client = client(&server.url);
+    let cancel = CancellationToken::new();
+    let task = tokio::spawn({
+        let cancel = cancel.clone();
+        async move {
+            client
+                .send_cancellable(&cleanup_request(KEY), &cancel)
+                .await
+        }
+    });
+    server.captured().await;
+
+    cancel.cancel();
+
+    let got = tokio::time::timeout(GUARD, task)
+        .await
+        .expect("cancel returns promptly")
+        .expect("task finished");
+    assert_eq!(got, Err(Cancelled));
+    tokio::time::timeout(GUARD, server.closed())
+        .await
+        .expect("connection closed");
+}

@@ -6,6 +6,10 @@
 //! crate moves the bytes, caps each request at 20 s (CLN-7), keeps the API key
 //! out of errors and logs (CLN-8), and keeps cancellation apart from errors
 //! (CLN-9).
+//!
+//! Requests go only to the provider's fixed HTTPS endpoints: redirects are
+//! never followed, so a 3xx cannot replay the transcript, app name, or key
+//! to another origin, and response bodies are read up to a size cap.
 
 use onda_domain::cleanup::{
     ApiKey, CleanupError, CleanupModel, CleanupProvider, CleanupRequest, MAX_MODEL_PAGES,
@@ -22,6 +26,13 @@ mod tests;
 
 /// Transport message when a request runs past [`REQUEST_TIMEOUT`].
 const TIMED_OUT: &str = "The request timed out.";
+
+/// Most bytes read from a cleanup response; a reply holds one transcript.
+const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+
+/// Most bytes read from one page of a model listing. OpenRouter's whole
+/// list was about 0.8 MB in November 2026.
+const MAX_MODELS_PAGE_BYTES: usize = 16 * 1024 * 1024;
 
 /// Sends cleanup requests and lists models.
 ///
@@ -41,18 +52,21 @@ pub struct CleanupClient {
 pub struct Cancelled;
 
 impl CleanupClient {
-    /// Creates a client that posts each request to its own endpoint.
-    /// Touches no network.
+    /// Creates a client that posts each request to its own endpoint over
+    /// HTTPS, never following redirects. Touches no network.
     pub fn new() -> Result<Self, CleanupError> {
         Self::build(None, reqwest::Client::builder())
     }
 
+    // only tests pass an endpoint, and only they may use plain HTTP
     fn build(
         endpoint: Option<&str>,
         builder: reqwest::ClientBuilder,
     ) -> Result<Self, CleanupError> {
         let http = builder
             .user_agent(concat!("Onda/", env!("CARGO_PKG_VERSION")))
+            .redirect(reqwest::redirect::Policy::none())
+            .https_only(endpoint.is_none())
             .build()
             .map_err(|error| {
                 CleanupError::Transport(format!(
@@ -181,8 +195,7 @@ impl CleanupClient {
             .await
             .map_err(transport_error)?;
         let status = response.status().as_u16();
-        let body = response.bytes().await.map_err(transport_error)?;
-        Ok((status, body.to_vec()))
+        Ok((status, read_body(response, MAX_MODELS_PAGE_BYTES).await?))
     }
 
     async fn exchange(
@@ -208,9 +221,31 @@ impl CleanupClient {
             .await
             .map_err(transport_error)?;
         let status = response.status().as_u16();
-        let body = response.bytes().await.map_err(transport_error)?;
-        Ok((status, body.to_vec()))
+        Ok((status, read_body(response, MAX_RESPONSE_BYTES).await?))
     }
+}
+
+// streams the body so a declared, chunked, or close-delimited length past
+// `cap` fails before more than `cap` bytes are held
+async fn read_body(mut response: reqwest::Response, cap: usize) -> Result<Vec<u8>, CleanupError> {
+    let too_large = || {
+        CleanupError::Transport(format!(
+            "The response was larger than {} MB.",
+            cap / (1024 * 1024)
+        ))
+    };
+    let declared = response.content_length().unwrap_or(0);
+    if declared > cap as u64 {
+        return Err(too_large());
+    }
+    let mut body = Vec::with_capacity(declared as usize);
+    while let Some(chunk) = response.chunk().await.map_err(transport_error)? {
+        if chunk.len() > cap - body.len() {
+            return Err(too_large());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 // errors name the header, never its value
