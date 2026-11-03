@@ -404,10 +404,12 @@ mod tests {
         let runtime = tokio::runtime::Runtime::new().expect("test runtime");
         let portal = Arc::new(tokio::sync::Mutex::new(None));
         let (answer, answered) = tokio::sync::oneshot::channel();
+        let (started, starting) = tokio::sync::oneshot::channel();
         let opening = {
             let portal = portal.clone();
             async move {
                 let mut grant = portal.lock_owned().await;
+                started.send(()).expect("consent wait started");
                 *grant = Some(answered.await?);
                 Ok::<_, anyhow::Error>(grant)
             }
@@ -418,6 +420,7 @@ mod tests {
             let delivery = delivery.clone();
             move || unless_cancelled(&runtime, opening, &delivery).is_none()
         });
+        runtime.block_on(starting).expect("consent wait started");
         delivery.cancel();
         assert!(waiting.join().expect("waiting thread"), "the wait ended");
 
