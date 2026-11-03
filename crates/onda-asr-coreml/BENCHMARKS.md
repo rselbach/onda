@@ -50,7 +50,8 @@ tail.
 
 ### Parakeet TDT
 
-Decode of a recording prefix, as each preview tick does. 30 runs after 3
+Cold decode of a recording prefix, as the first preview of a recording
+does (`--bench` resets the preview before each run). 30 runs after 3
 warm-up runs.
 
 | Prefix | v2 median (p95) | Ultra median (p95) | Japanese median (p95) |
@@ -64,11 +65,64 @@ A 15 s prefix decodes in well under 100 ms, as ASR-17 expects. Every window
 pays about 30 to 40 ms for the preprocessor and the fixed 15 s encoder; the
 rest is the TDT decode loop.
 
+#### Live replay to the 15-minute limit
+
+Measured 2026-11-02 on the same M4 Pro, macOS 27.2, release build,
+Parakeet TDT v2 from an installed model folder. Audio is macOS TTS
+(Samantha reading Greendale sentences), converted to 16 kHz mono and cut
+to 14 s, 120 s, and 900 s (the session limit).
+
+```sh
+cargo run --release -p onda-cli -- --models-dir <models> \
+    transcribe --model parakeet-tdt-v2 --stream s900.wav
+```
+
+`--stream` paces previews like the session's loop with audio arriving in
+real time: each preview decodes the recording so far, and the next starts
+300 ms after it returns. "Stop wait" is how long the preview in flight
+when the audio ends delays the final decode; the session waits for it
+(DICT-13) and the final decode queues behind it on the model gate.
+
+Before, every preview decoded every window of the recording again:
+
+| Audio | Previews | Median | p95 | Max | Decoding | Stop wait | Final |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 14 s | 39 | 51.7 ms | 63.5 ms | 64.0 ms | 2.0 s | 39 ms | 65 ms |
+| 120 s | 207 | 260 ms | 609 ms | 680 ms | 58 s | 327 ms | 681 ms |
+| 900 s | 494 | 958 ms | 4.29 s | 10.1 s | 754 s | 2.68 s | 4.60 s |
+
+Over the 15 minutes the model was busy decoding previews 84% of the time,
+and previews past 10 minutes took a median of 3.8 to 4.5 s, so the stop
+wait could reach the full decode; one took 10.1 s, past the 5 s the
+session waits.
+
+Now a preview keeps the window decodes of the last one and decodes only
+the windows whose request changed: the growing last window, the window it
+becomes when the next one starts, and a seam-repair probe the first time
+its gap holds speech. Of 2,461 previews of the 900 s clip, 2,315 decoded
+one window, 144 two, and 2 three.
+
+| Audio | Previews | Median | p95 | Max | Decoding | Stop wait | Final |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 14 s | 38 | 56.6 ms | 69.4 ms | 70.4 ms | 2.1 s | 32 ms | 71 ms |
+| 120 s | 334 | 57.1 ms | 71.8 ms | 117 ms | 19 s | 0 ms | 671 ms |
+| 900 s | 2,461 | 62.7 ms | 116 ms | 182 ms | 161 s | 0 ms | 5.10 s |
+
+The median rises from 56 ms in the first 15 s to 68 ms past 800 s: the
+merge, seam repair, and speech-level scan over the whole recording stay on
+the CPU and take a few milliseconds. Previews come about every 0.36 s
+instead of every 5 s at the end. The final decode still decodes every
+window from scratch, so a 15-minute recording takes about 5 s to
+transcribe after the stop. Copying the recording for each preview tick
+(57.6 MB at 15 minutes) takes a median of 1 ms.
+
 ### Parakeet Unified
 
-`--stream` replays a dictation: a preview of the growing recording every
-300 ms, then the final decode. Each preview encodes only the 0.56 s chunks
-that arrived since the last one, so a tick costs one window or none.
+`--stream` replays a dictation (see above), then the final decode. Each
+preview encodes only the 0.56 s chunks that arrived since the last one, so
+a tick costs one window or none. This run predates the decode-time pacing
+and sent a preview every 300 ms of audio; at 15 ms per preview the two
+pacings differ by about 5%.
 
 | Run | Previews | Median | p95 | Max |
 | --- | --- | --- | --- | --- |

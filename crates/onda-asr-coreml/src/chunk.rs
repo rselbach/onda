@@ -10,9 +10,10 @@
 //! with real audio whose tokens are suppressed (FluidAudio #747). None of
 //! the models has an encoder ladder, so windows never end at pauses.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use onda_asr::AsrError;
+use onda_domain::languages::Language;
 
 use crate::tdt::Token;
 use crate::vocab::{self, Vocabulary};
@@ -80,7 +81,7 @@ impl Layout {
 }
 
 /// One encoder pass: which samples to feed and how to decode them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct WindowRequest {
     /// First sample fed to the model.
     pub start: usize,
@@ -339,9 +340,74 @@ fn silence_aligned_starts(samples: &[f32], chunk: usize, stride: usize) -> Vec<u
     starts
 }
 
+/// Decodes a recording with `decode`: as one window when it fits, else
+/// as overlapping windows merged at the seams.
+pub(crate) fn transcribe<F>(
+    samples: &[f32],
+    vocab: &Vocabulary,
+    layout: Layout,
+    mut decode: F,
+) -> Result<Vec<Token>, AsrError>
+where
+    F: FnMut(&WindowRequest) -> Result<Vec<Token>, AsrError>,
+{
+    if samples.len() <= MAX_MODEL_SAMPLES {
+        return decode(&single_window(samples.len()));
+    }
+    transcribe_long(samples, vocab, layout, decode)
+}
+
+/// The window decodes of the last preview of the current recording.
+///
+/// A preview gets the whole recording so far, which only grows until the
+/// preview stream resets, so a window planned again with the same request
+/// covers the same samples and decodes to the same tokens. Only windows
+/// that changed, such as the growing last window, decode again, which keeps
+/// a preview of a 15-minute recording to a few windows (ASR-17).
+#[derive(Debug, Default)]
+pub(crate) struct PreviewWindows {
+    sample_count: usize,
+    language: Option<Language>,
+    windows: HashMap<WindowRequest, Vec<Token>>,
+}
+
+impl PreviewWindows {
+    /// Decodes `samples` like [`transcribe`], with `decode` called only for
+    /// windows the last preview did not decode. Fewer samples than last
+    /// time, or another language, start a new recording.
+    pub(crate) fn transcribe<F>(
+        &mut self,
+        samples: &[f32],
+        language: Option<Language>,
+        vocab: &Vocabulary,
+        layout: Layout,
+        mut decode: F,
+    ) -> Result<Vec<Token>, AsrError>
+    where
+        F: FnMut(&WindowRequest) -> Result<Vec<Token>, AsrError>,
+    {
+        if samples.len() < self.sample_count || language != self.language {
+            self.windows.clear();
+        }
+        self.sample_count = samples.len();
+        self.language = language;
+        let mut used = HashMap::new();
+        let tokens = transcribe(samples, vocab, layout, |request| {
+            let tokens = match used.get(request).or_else(|| self.windows.get(request)) {
+                Some(tokens) => tokens.clone(),
+                None => decode(request)?,
+            };
+            used.insert(*request, tokens.clone());
+            Ok(tokens)
+        })?;
+        self.windows = used;
+        Ok(tokens)
+    }
+}
+
 /// Decodes a recording longer than one window with `decode`, merging the
 /// windows and repairing seam gaps.
-pub(crate) fn transcribe_long<F>(
+fn transcribe_long<F>(
     samples: &[f32],
     vocab: &Vocabulary,
     layout: Layout,
@@ -1556,6 +1622,132 @@ mod tests {
             let merged = transcribe_long(&samples, &vocab, tc.layout, fake_decode(&truth, tc.deaf))
                 .expect("decode");
             assert_eq!(ids(&merged), ids(&truth), "{}", tc.name);
+        }
+    }
+
+    /// A recording of `seconds` whose words are `truth`, one every four
+    /// frames, rotated by `shift`.
+    fn recording(seconds: usize, shift: usize) -> (Vec<f32>, Vec<Token>) {
+        let samples = vec![0.1f32; seconds * SAMPLE_RATE];
+        let frames = (samples.len() / FRAME_SAMPLES) as i64;
+        let truth = (0..frames / 4)
+            .map(|i| token((i as usize + shift) % 9, i * 4))
+            .collect();
+        (samples, truth)
+    }
+
+    #[test]
+    fn previews_decode_only_the_windows_that_changed() {
+        struct Case {
+            name: &'static str,
+            layout: Layout,
+            seconds: usize,
+            deaf: Option<(i64, i64)>,
+        }
+        let cases = [
+            Case {
+                name: "three minutes",
+                layout: Layout::V2,
+                seconds: 180,
+                deaf: None,
+            },
+            Case {
+                name: "seam repairs are reused too",
+                layout: Layout::V2,
+                seconds: 120,
+                deaf: Some((60, 90)),
+            },
+            Case {
+                name: "v3 layout",
+                layout: Layout::V3,
+                seconds: 90,
+                deaf: None,
+            },
+            Case {
+                name: "Japanese layout",
+                layout: Layout::Japanese,
+                seconds: 90,
+                deaf: None,
+            },
+        ];
+        let vocab = words();
+        for tc in cases {
+            let (samples, truth) = recording(tc.seconds, 0);
+            let mut model = fake_decode(&truth, tc.deaf);
+            let mut windows = PreviewWindows::default();
+            let mut most_decoded = 0;
+            // a preview every 0.4 s of audio through the first seams, then
+            // every 3.2 s, still well under a window stride
+            let prefixes = (MIN_SAMPLES..samples.len())
+                .step_by(6_400)
+                .take(100)
+                .chain((40 * SAMPLE_RATE..=samples.len()).step_by(51_200));
+            for len in prefixes {
+                let prefix = &samples[..len];
+                let mut decoded = 0;
+                let got = windows
+                    .transcribe(prefix, None, &vocab, tc.layout, |request| {
+                        decoded += 1;
+                        model(request)
+                    })
+                    .expect("preview");
+                let want = transcribe(prefix, &vocab, tc.layout, &mut model).expect("decode");
+                assert_eq!(got, want, "{}: {len}", tc.name);
+                most_decoded = most_decoded.max(decoded);
+            }
+            // however long the recording: the window that grew, the one it
+            // became when the next window started, and the placements of a
+            // seam-repair probe the first time its gap holds speech
+            assert!(most_decoded <= 4, "{}: {most_decoded}", tc.name);
+        }
+    }
+
+    #[test]
+    fn a_new_recording_decodes_every_window() {
+        struct Case {
+            name: &'static str,
+            seconds: usize,
+            language: Option<Language>,
+        }
+        let cases = [
+            Case {
+                name: "fewer samples",
+                seconds: 50,
+                language: None,
+            },
+            Case {
+                name: "another language",
+                seconds: 70,
+                language: Language::from_code("de"),
+            },
+        ];
+        let vocab = words();
+        let (troy, troy_truth) = recording(60, 0);
+        let (abed, abed_truth) = recording(70, 4);
+        for tc in cases {
+            let mut windows = PreviewWindows::default();
+            windows
+                .transcribe(
+                    &troy,
+                    None,
+                    &vocab,
+                    Layout::V2,
+                    fake_decode(&troy_truth, None),
+                )
+                .expect("preview");
+            let samples = &abed[..tc.seconds * SAMPLE_RATE];
+            let got = windows
+                .transcribe(
+                    samples,
+                    tc.language,
+                    &vocab,
+                    Layout::V2,
+                    fake_decode(&abed_truth, None),
+                )
+                .expect("preview");
+            let want = transcribe(samples, &vocab, Layout::V2, fake_decode(&abed_truth, None))
+                .expect("decode");
+            assert_eq!(got, want, "{}", tc.name);
         }
     }
 }

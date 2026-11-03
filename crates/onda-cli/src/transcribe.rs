@@ -2,8 +2,9 @@
 //!
 //! `--bench` measures preview latency (ASR-17): it decodes 1, 5, 10, and
 //! 15 s prefixes repeatedly and prints the median and p95. `--stream`
-//! replays a live dictation instead: a preview every 300 ms of a growing
-//! prefix, then the final decode, compared with an offline decode.
+//! replays a live dictation instead, paced like the session's preview loop
+//! with audio arriving in real time: decode the recording so far, wait
+//! 300 ms, repeat; then the final decode, compared with an offline decode.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -144,22 +145,40 @@ fn bench(engine: &mut ParakeetEngine, samples: &[f32], language: Option<Language
     Ok(())
 }
 
-// one preview per 300 ms of new audio, as the session's preview loop
-// does in real time, then the final decode of the whole recording
+// previews paced as the session's loop runs them while audio arrives in
+// real time: each decode takes the recording so far, and the next starts
+// 300 ms after it returns, so slow decodes see larger jumps. The preview
+// still running when the audio ends delays the final decode.
 fn stream(
     engine: &mut ParakeetEngine,
     samples: &[f32],
     language: Option<Language>,
     offline: &str,
 ) -> Result<()> {
-    let tick = (PREVIEW_INTERVAL.as_secs_f64() * f64::from(SAMPLE_RATE)) as usize;
-    engine.reset_preview();
+    let rate = f64::from(SAMPLE_RATE);
     let mut times = Vec::new();
     let mut last_preview = String::new();
-    for len in (PREVIEW_MIN_SAMPLES..samples.len()).step_by(tick) {
-        let started = Instant::now();
-        last_preview = engine.preview(&samples[..len], language)?;
-        times.push(started.elapsed());
+    let mut stop_wait = Duration::ZERO;
+    let mut clock = 0.0;
+    engine.reset_preview();
+    loop {
+        let len = (clock * rate) as usize;
+        if len >= samples.len() {
+            break;
+        }
+        if len >= PREVIEW_MIN_SAMPLES {
+            let started = Instant::now();
+            last_preview = engine.preview(&samples[..len], language)?;
+            let elapsed = started.elapsed();
+            times.push(elapsed);
+            clock += elapsed.as_secs_f64();
+            let overrun = clock - samples.len() as f64 / rate;
+            if overrun > 0.0 {
+                stop_wait = Duration::from_secs_f64(overrun);
+                break;
+            }
+        }
+        clock += PREVIEW_INTERVAL.as_secs_f64();
     }
     let started = Instant::now();
     let text = engine.transcribe(samples, language)?;
@@ -179,6 +198,7 @@ fn stream(
         );
     }
     println!("stream last preview: {last_preview}");
+    println!("stream wait for the last preview: {:.1} ms", ms(stop_wait));
     println!("stream final decode: {:.1} ms", ms(final_decode));
     println!("stream transcript: {text}");
     println!(

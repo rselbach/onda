@@ -101,11 +101,11 @@ pub trait SpeechEngine: Send {
     ) -> Result<String, AsrError>;
 
     /// Streaming decode for the live preview (ASR-15..ASR-17). Called
-    /// repeatedly with the whole recording so far. Parakeet TDT re-decodes
-    /// all of it; a streaming engine decodes only the audio it has not seen
-    /// and resets itself when `samples` is shorter than what it streamed (a
-    /// new recording; see
-    /// [`UnifiedStream`](onda_domain::preview::UnifiedStream)).
+    /// repeatedly with the whole recording so far. Parakeet TDT decodes
+    /// again only the windows whose audio changed since its last preview; a
+    /// streaming engine decodes only the audio it has not seen. Both start
+    /// over when `samples` is shorter than the last call (a new recording;
+    /// see [`UnifiedStream`](onda_domain::preview::UnifiedStream)).
     fn preview(&mut self, samples: &[f32], language: Option<Language>) -> Result<String, AsrError>;
 
     /// Forgets the preview stream so the next call starts a new recording

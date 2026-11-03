@@ -9,8 +9,8 @@ use onda_asr::{AsrError, LoadProgress, SpeechEngine};
 use onda_domain::languages::Language;
 use onda_domain::models::ModelId;
 
-use crate::chunk::WindowRequest;
 use crate::chunk::{self, FRAME_SAMPLES, Layout, MAX_MODEL_SAMPLES, MIN_SAMPLES, SAMPLE_RATE};
+use crate::chunk::{PreviewWindows, WindowRequest};
 use crate::coreml::{Array, ComputeUnits, Features, Model};
 use crate::language::TokenFilter;
 use crate::recovery::{self, LengthPolicy, RECOVERY_POLICIES};
@@ -162,12 +162,14 @@ static JAPANESE: TdtSpec = TdtSpec {
     splice_guard: false,
 };
 
-/// A Parakeet TDT model: every decode, preview or final, decodes the whole
-/// recording from scratch (ASR-17).
+/// A Parakeet TDT model. The final decode decodes the whole recording from
+/// scratch; a preview decodes again only the windows that changed since the
+/// last preview (ASR-17).
 struct TdtEngine {
     spec: &'static TdtSpec,
     dir: PathBuf,
     loaded: Option<Loaded>,
+    preview_windows: PreviewWindows,
 }
 
 impl TdtEngine {
@@ -176,10 +178,18 @@ impl TdtEngine {
             spec,
             dir,
             loaded: None,
+            preview_windows: PreviewWindows::default(),
         }
     }
 
-    fn decode(&mut self, samples: &[f32], language: Option<Language>) -> Result<String, AsrError> {
+    /// Decodes `samples`, through the preview's windows when `preview`.
+    /// Returns the text and how many windows ran.
+    fn decode(
+        &mut self,
+        samples: &[f32],
+        language: Option<Language>,
+        preview: bool,
+    ) -> Result<(String, usize), AsrError> {
         let loaded = self.loaded.as_mut().ok_or(AsrError::NotReady)?;
         if samples.len() < MIN_SAMPLES {
             return Err(AsrError::TranscriptionFailed {
@@ -201,19 +211,20 @@ impl TdtEngine {
             None => None,
         };
         let runtime = &mut loaded.runtime;
-        let tokens = if samples.len() <= MAX_MODEL_SAMPLES {
-            runtime.decode_window(
-                samples,
-                &chunk::single_window(samples.len()),
-                filter.as_ref(),
-            )?
-        } else {
-            chunk::transcribe_long(samples, &loaded.vocab, self.spec.layout, |request| {
-                runtime.decode_window(samples, request, filter.as_ref())
-            })?
+        let mut decoded = 0;
+        let decode = |request: &WindowRequest| {
+            decoded += 1;
+            runtime.decode_window(samples, request, filter.as_ref())
+        };
+        let (vocab, layout) = (&loaded.vocab, self.spec.layout);
+        let tokens = match preview {
+            true => self
+                .preview_windows
+                .transcribe(samples, language, vocab, layout, decode)?,
+            false => chunk::transcribe(samples, vocab, layout, decode)?,
         };
         let ids: Vec<usize> = tokens.iter().map(|token| token.id).collect();
-        Ok(loaded.vocab.detokenize(&ids))
+        Ok((vocab.detokenize(&ids), decoded))
     }
 }
 
@@ -235,19 +246,22 @@ impl SpeechEngine for TdtEngine {
 
     fn unload(&mut self) {
         self.loaded = None;
+        self.reset_preview();
     }
 
     fn supports_preview(&self) -> bool {
         true
     }
 
+    // the final decode ends the recording's preview stream
     fn transcribe(
         &mut self,
         samples: &[f32],
         language: Option<Language>,
     ) -> Result<String, AsrError> {
+        self.reset_preview();
         let started = Instant::now();
-        let text = self.decode(samples, language)?;
+        let (text, _) = self.decode(samples, language, false)?;
         tracing::debug!(
             audio_s = samples.len() as f64 / SAMPLE_RATE as f64,
             decode_ms = started.elapsed().as_secs_f64() * 1e3,
@@ -258,16 +272,19 @@ impl SpeechEngine for TdtEngine {
 
     fn preview(&mut self, samples: &[f32], language: Option<Language>) -> Result<String, AsrError> {
         let started = Instant::now();
-        let text = self.decode(samples, language)?;
+        let (text, windows_decoded) = self.decode(samples, language, true)?;
         tracing::info!(
             audio_s = samples.len() as f64 / SAMPLE_RATE as f64,
             decode_ms = started.elapsed().as_secs_f64() * 1e3,
+            windows_decoded,
             "preview decode"
         );
         Ok(text)
     }
 
-    fn reset_preview(&mut self) {}
+    fn reset_preview(&mut self) {
+        self.preview_windows = PreviewWindows::default();
+    }
 }
 
 /// A loaded model: the vocabulary and the CoreML runtime.

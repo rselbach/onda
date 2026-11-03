@@ -139,6 +139,51 @@ fn survives_growing_preview_prefixes() {
     }
 }
 
+/// ASR-17: a preview decodes again only the windows that changed since the
+/// last one, and reads exactly as a preview of the same audio decoded from
+/// scratch.
+#[test]
+#[ignore = "needs ONDA_TEST_MODEL_DIR and the downloaded model"]
+fn previews_reuse_unchanged_windows() {
+    let cases = [
+        (ModelId::ParakeetTdtV2, None),
+        (ModelId::ParakeetUltra, language("en")),
+    ];
+    for (model, language) in cases {
+        let Some(mut engine) = loaded(model) else {
+            continue;
+        };
+        let speech = speak(
+            "Samantha",
+            "Troy Barnes and Abed Nadir study Spanish at Greendale Community \
+             College. Annie Edison keeps a color coded binder for every class. \
+             Dean Craig Pelton announces a new mascot every semester.",
+        );
+        let mut recording = Vec::new();
+        while recording.len() < 70 * 16_000 {
+            recording.extend_from_slice(&speech);
+            recording.resize(recording.len() + 8_000, 0.0);
+        }
+        // a preview every 0.4 s of audio, checked every 4 s
+        let mut checked = Vec::new();
+        for (tick, len) in (8_000..=recording.len()).step_by(6_400).enumerate() {
+            let text = engine
+                .preview(&recording[..len], language)
+                .expect("preview");
+            if tick % 10 == 0 {
+                checked.push((len, text));
+            }
+        }
+        for (len, want) in checked {
+            engine.reset_preview();
+            let got = engine
+                .preview(&recording[..len], language)
+                .expect("preview");
+            assert_eq!(got, want, "{}: {len}", model.as_str());
+        }
+    }
+}
+
 /// ASR-12: the language is a script hint. Polish keeps Latin letters and
 /// Russian Cyrillic ones; a recording past one window is merged.
 #[test]
