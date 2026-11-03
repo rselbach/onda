@@ -822,6 +822,41 @@ async fn dl_9_cancelling_the_confirmation_deletes_nothing() {
     assert_eq!(speech(&h).alert, None);
 }
 
+#[tokio::test(start_paused = true)]
+async fn dl_10_a_completed_delete_preserves_a_newer_selection() {
+    let h = Harness::new().await;
+    *lock(&h.models.downloaded) = vec![V2, ULTRA, UNIFIED];
+    h.app.page_appeared(MainWindowSection::Speech);
+    sleep(10).await;
+    h.app.request_delete_model(V2);
+    sleep(1).await;
+    let alert = speech(&h).alert.expect("the confirmation");
+    let hold = common::Hold::new();
+    *lock(&h.models.hold_delete) = Some(hold.clone());
+    h.app.confirm_speech_alert(alert.id);
+    eventually("deletion started", || hold.started()).await;
+    h.app.select_model(UNIFIED);
+    eventually("the newer selection", || {
+        h.log.count("settings:selected parakeet-unified") == 1
+    })
+    .await;
+    hold.release();
+    eventually("deletion finished", || {
+        !lock(&h.models.downloaded).contains(&V2)
+    })
+    .await;
+    sleep(10).await;
+    assert_eq!(
+        h.log.with("settings:selected"),
+        vec!["settings:selected parakeet-unified"]
+    );
+    assert!(
+        h.log
+            .with("delete:")
+            .contains(&"delete:parakeet-tdt-v2".to_owned())
+    );
+}
+
 // ---------------------------------------------------------------------------
 // status menu (UI-6..UI-11, LANG-8..LANG-10, DL-11, HIS-28)
 
@@ -1602,6 +1637,61 @@ async fn his_17_shortening_retention_asks_first() {
     sleep(10).await;
     assert_eq!(history(&h).dialog, None);
     assert_eq!(history(&h).retention, HistoryRetention::Forever);
+}
+
+#[tokio::test(start_paused = true)]
+async fn his_22_copy_feedback_waits_for_the_clipboard_result() {
+    for copy_ok in [true, false] {
+        let h = Harness::new().await;
+        let troy = entry("Troy Barnes", None, None, 1.hours());
+        let id = troy.id;
+        *lock(&h.history.stored) = vec![troy];
+        h.app.page_appeared(MainWindowSection::History);
+        sleep(10).await;
+        h.text.copy_ok.store(copy_ok, Ordering::SeqCst);
+        let hold = common::Hold::new();
+        *lock(&h.text.hold_commit) = Some(hold.clone());
+        h.app.copy_history_entry(id);
+        eventually("clipboard copy started", || hold.started()).await;
+        let pending = history(&h);
+        hold.release();
+        eventually("clipboard result", || {
+            let page = history(&h);
+            page.copied_entry.is_some() || page.error.is_some()
+        })
+        .await;
+        assert_eq!(pending.copied_entry, None, "copy is still pending");
+        let page = history(&h);
+        assert_eq!(page.copied_entry, copy_ok.then(|| id.to_string()));
+        assert_eq!(
+            page.error.map(|error| error.message),
+            (!copy_ok).then(|| "Could not copy transcription to clipboard.".to_owned())
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn his_22_an_older_copy_result_does_not_replace_the_latest_feedback() {
+    let h = Harness::new().await;
+    let troy = entry("Troy Barnes", None, None, 1.hours());
+    let abed = entry("Abed Nadir", None, None, 2.hours());
+    let (troy_id, abed_id) = (troy.id, abed.id);
+    *lock(&h.history.stored) = vec![troy, abed];
+    h.app.page_appeared(MainWindowSection::History);
+    sleep(10).await;
+    let hold = common::Hold::new();
+    *lock(&h.text.hold_commit) = Some(hold.clone());
+    h.app.copy_history_entry(troy_id);
+    eventually("first copy started", || hold.started()).await;
+    h.app.copy_history_entry(abed_id);
+    eventually("second copy finished", || {
+        history(&h).copied_entry == Some(abed_id.to_string())
+    })
+    .await;
+    hold.release();
+    eventually("first copy finished", || lock(&h.text.copied).len() == 2).await;
+    sleep(10).await;
+    assert_eq!(history(&h).copied_entry, Some(abed_id.to_string()));
 }
 
 #[tokio::test(start_paused = true)]

@@ -5,9 +5,9 @@ use std::sync::{Arc, Mutex};
 
 use jiff::Timestamp;
 use onda_domain::history::{
-    AUDIO_FILENAME, EntryAudio, HistoryEntry, MAX_AUDIO_RECORDINGS, MAX_ENTRIES, METADATA_FILENAME,
-    MISSING_RECORDING_ERROR, NewEntry, PathComponent, decode_metadata, encode_metadata, encode_wav,
-    entry_directory_name,
+    AUDIO_FILENAME, EntryAudio, HistoryEntry, MAX_AUDIO_BYTES, MAX_AUDIO_RECORDINGS, MAX_ENTRIES,
+    METADATA_FILENAME, MISSING_RECORDING_ERROR, NewEntry, PathComponent, decode_metadata,
+    encode_metadata, encode_wav, entry_directory_name,
 };
 use onda_domain::types::HistoryRetention;
 use uuid::Uuid;
@@ -177,6 +177,44 @@ fn replace_key(bytes: &[u8], key: &str, value: &str) -> Vec<u8> {
 fn read_entry(folder: &Path) -> HistoryEntry {
     let bytes = std::fs::read(folder.join(METADATA_FILENAME)).expect("metadata");
     decode_metadata(&bytes).expect("decodes")
+}
+
+#[test]
+fn retention_retries_a_failed_metadata_write() {
+    let f = Fixture::new();
+    f.seed(1, 60, Some(1));
+    f.seed(2, 120, Some(MAX_AUDIO_BYTES));
+    let entries = f.store.entries().expect("load the cache");
+    let folder = entry_folder(&f.history, 2, 120);
+    let metadata = folder.join(METADATA_FILENAME);
+    let bytes = std::fs::read(&metadata).expect("read metadata");
+    std::fs::remove_file(&metadata).expect("remove metadata");
+    std::fs::create_dir(&metadata).expect("block the metadata write");
+    assert!(
+        f.store
+            .apply_retention(HistoryRetention::Month, at(NOW))
+            .is_err()
+    );
+    assert!(
+        !folder.join(AUDIO_FILENAME).exists(),
+        "audio was removed first"
+    );
+    assert_eq!(f.store.entries().expect("cached entries"), entries);
+
+    std::fs::remove_dir(&metadata).expect("unblock the metadata write");
+    std::fs::write(&metadata, bytes).expect("restore the old metadata");
+    assert!(
+        f.store
+            .apply_retention(HistoryRetention::Month, at(NOW))
+            .expect("retry")
+    );
+    assert!(!read_entry(&folder).has_audio());
+    assert!(!f.reopen().entries().expect("reloaded entries")[1].has_audio());
+    assert!(
+        !f.store
+            .apply_retention(HistoryRetention::Month, at(NOW))
+            .expect("no more work")
+    );
 }
 
 #[test]

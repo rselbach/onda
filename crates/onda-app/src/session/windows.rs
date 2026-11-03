@@ -23,7 +23,7 @@ use super::rules_editor::ReplacementsEditor;
 use super::{Actor, Msg, PermissionSnapshot, Task, blocking_send};
 use crate::effects::Effect;
 use crate::events::Event;
-use crate::ports::PrivacyPane;
+use crate::ports::{CopyOutcome, PrivacyPane};
 use crate::seams::{InputDeviceInfo, SettingChange};
 use crate::views::{
     AboutPage, GeneralInputs, GeneralPage, GettingStartedPage, HistoryPage, HotkeyPage,
@@ -156,6 +156,11 @@ pub(crate) enum UiMsg {
         result: Result<Vec<onda_domain::history::HistoryEntry>, String>,
     },
     HistoryOpDone(Result<(), String>),
+    HistoryCopied {
+        id: Uuid,
+        generation: u64,
+        outcome: CopyOutcome,
+    },
     ModelDeleted {
         model: ModelId,
         reselect: Option<ModelId>,
@@ -429,6 +434,11 @@ impl Actor {
                 result,
             } => self.history_loaded(generation, read, result),
             UiMsg::HistoryOpDone(result) => self.history_op_done(result),
+            UiMsg::HistoryCopied {
+                id,
+                generation,
+                outcome,
+            } => self.history_copied(id, generation, outcome),
             UiMsg::ModelDeleted {
                 model,
                 reselect,

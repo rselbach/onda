@@ -11,6 +11,7 @@ use onda_domain::history::{
     Confirmation, HistoryEntry, clear_history_confirmation, copy_text, original_transcript,
     retention_change_confirmation,
 };
+use onda_domain::messages::UserMessage;
 use onda_domain::types::HistoryRetention;
 use tokio::task::spawn_blocking;
 use uuid::Uuid;
@@ -225,16 +226,42 @@ impl Actor {
             return;
         };
         let output = self.ports.text_output.clone();
-        // a history copy belongs to no session, so nothing cancels it
-        spawn_blocking(move || {
-            if output.copy(&text, &Delivery::new()) != CopyOutcome::Copied {
-                tracing::warn!("could not copy a history entry");
-            }
-        });
         let history = &mut self.ui.history;
-        history.copied = Some(id);
+        history.copied = None;
+        history.copied_timer = None;
         history.copied_generation += 1;
         let generation = history.copied_generation;
+        let messages = self.messages.clone();
+        // a history copy belongs to no session, so nothing cancels it
+        tokio::spawn(async move {
+            let outcome = spawn_blocking(move || output.copy(&text, &Delivery::new()))
+                .await
+                .unwrap_or(CopyOutcome::Failed);
+            let _ = messages.send(Msg::Ui(UiMsg::HistoryCopied {
+                id,
+                generation,
+                outcome,
+            }));
+        });
+    }
+
+    pub(super) fn history_copied(&mut self, id: Uuid, generation: u64, outcome: CopyOutcome) {
+        if generation != self.ui.history.copied_generation {
+            return;
+        }
+        match outcome {
+            CopyOutcome::Copied => {}
+            CopyOutcome::Cancelled => return,
+            CopyOutcome::Failed => {
+                tracing::warn!("could not copy a history entry");
+                self.ui.history.error = Some(
+                    UserMessage::CopyFailed.body(&self.ports.tray_term, self.ports.privacy_naming),
+                );
+                return;
+            }
+        }
+        let history = &mut self.ui.history;
+        history.copied = Some(id);
         self.ui.history.copied_timer =
             Some(self.timer(COPIED_DURATION, Msg::Ui(UiMsg::CopiedElapsed(generation))));
     }

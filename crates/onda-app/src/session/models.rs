@@ -385,9 +385,11 @@ impl Actor {
             return;
         }
         self.downloaded.retain(|m| *m != model);
-        if let Some(next) = reselect {
+        self.refresh_settings();
+        if let Some(next) = reselect
+            && self.settings.selected_model == model
+        {
             // the selected model is gone: select and reload another (DL-10)
-            self.refresh_settings();
             self.pending.clear();
             self.switch_model(next, true);
         }

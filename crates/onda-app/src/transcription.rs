@@ -130,15 +130,16 @@ impl TranscriptionService {
         if slot.engine.is_some() {
             // a different model goes before the new one loads, so two are
             // never resident at once (ASR-3)
+            let service = self.clone();
             blocking(move || {
                 if let Some(engine) = slot.engine.as_mut() {
                     engine.unload();
                 }
                 *slot = Slot::default();
+                service.mark_unloaded();
+                (service.inner.publish)(ModelState::NotReady);
             })
             .await;
-            self.mark_unloaded();
-            (inner.publish)(ModelState::NotReady);
         } else {
             drop(slot);
         }
@@ -221,13 +222,13 @@ impl TranscriptionService {
         let min_samples = engine.min_samples();
         slot.engine = Some(engine);
         slot.model = Some(model);
-        drop(slot);
         *lock(&inner.loaded) = Some(model);
         inner
             .supports_preview
             .store(supports_preview, Ordering::SeqCst);
         inner.min_samples.store(min_samples, Ordering::SeqCst);
         (inner.publish)(ModelState::Ready);
+        drop(slot);
         Ok(())
     }
 
@@ -236,15 +237,16 @@ impl TranscriptionService {
     pub(crate) async fn unload(&self) {
         self.inner.generation.fetch_add(1, Ordering::SeqCst);
         let mut slot = self.inner.gate.clone().lock_owned().await;
+        let service = self.clone();
         blocking(move || {
             if let Some(engine) = slot.engine.as_mut() {
                 engine.unload();
             }
             *slot = Slot::default();
+            service.mark_unloaded();
+            (service.inner.publish)(ModelState::NotReady);
         })
         .await;
-        self.mark_unloaded();
-        (self.inner.publish)(ModelState::NotReady);
     }
 
     /// One live-preview decode of the recording so far (ASR-15..ASR-17).
@@ -746,6 +748,52 @@ mod tests {
         assert_eq!(
             service.transcribe(Arc::from(vec![0.0; 16]), None).await,
             Err(AsrError::NotReady)
+        );
+    }
+
+    #[tokio::test]
+    async fn readiness_publication_cannot_be_overtaken_by_engine_calls() {
+        let inner = Arc::new(std::sync::OnceLock::<std::sync::Weak<Inner>>::new());
+        let snapshots = Arc::new(StdMutex::new(Vec::new()));
+        let publish = {
+            let inner = inner.clone();
+            let snapshots = snapshots.clone();
+            Arc::new(move |state| {
+                if !matches!(state, ModelState::Ready | ModelState::NotReady) {
+                    return;
+                }
+                let inner = inner
+                    .get()
+                    .expect("service initialized")
+                    .upgrade()
+                    .expect("service alive");
+                let serialized = inner.gate.try_lock().is_err();
+                lock(&snapshots).push((
+                    state,
+                    serialized,
+                    *lock(&inner.loaded),
+                    inner.supports_preview.load(Ordering::SeqCst),
+                    inner.min_samples.load(Ordering::SeqCst),
+                ));
+            })
+        };
+        let service = TranscriptionService::new(Arc::new(Store::with(&[V2, UNIFIED])), publish);
+        inner
+            .set(Arc::downgrade(&service.inner))
+            .expect("set service");
+        service.set_desired(V2);
+        assert_eq!(service.ensure_loaded().await, Ok(()));
+        service.set_desired(UNIFIED);
+        assert_eq!(service.ensure_loaded().await, Ok(()));
+        service.unload().await;
+        assert_eq!(
+            *lock(&snapshots),
+            vec![
+                (ModelState::Ready, true, Some(V2), true, 4_800),
+                (ModelState::NotReady, true, None, false, 0),
+                (ModelState::Ready, true, Some(UNIFIED), false, 0),
+                (ModelState::NotReady, true, None, false, 0),
+            ]
         );
     }
 

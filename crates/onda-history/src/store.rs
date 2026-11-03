@@ -316,11 +316,11 @@ impl HistoryStore {
                 remove_descendant(&self.directory, &audio)?;
             }
             let updated = stripped.without_audio();
+            write_metadata(&self.entry_folder(&updated), &updated)?;
             if let Some(slot) = entries.iter_mut().find(|entry| entry.id == stripped.id) {
-                *slot = updated.clone();
+                *slot = updated;
             }
             *changed = true;
-            write_metadata(&self.entry_folder(&updated), &updated)?;
         }
         tracing::info!(
             deleted = plan.delete.len(),

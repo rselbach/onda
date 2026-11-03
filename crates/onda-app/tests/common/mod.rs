@@ -699,6 +699,7 @@ pub struct FakeModels {
     pub script: Arc<Script>,
     pub downloaded: Mutex<Vec<ModelId>>,
     pub delete_error: Mutex<Option<String>>,
+    pub hold_delete: Mutex<Option<Arc<Hold>>>,
     /// Serves `system-speech` with the real adapter when set.
     pub system_speech: Mutex<Option<SystemEngineParts>>,
 }
@@ -735,6 +736,7 @@ impl ModelStore for FakeModels {
 
     fn delete(&self, model: ModelId) -> Result<(), String> {
         self.log.push(format!("delete:{model}"));
+        wait_at(&self.hold_delete);
         if let Some(error) = lock(&self.delete_error).clone() {
             return Err(error);
         }
@@ -1224,6 +1226,7 @@ impl Harness {
             script: script.clone(),
             downloaded: Mutex::new(vec![ModelId::ParakeetTdtV2]),
             delete_error: Mutex::default(),
+            hold_delete: Mutex::default(),
             system_speech: Mutex::default(),
         });
         let history = Arc::new(FakeHistory::default());

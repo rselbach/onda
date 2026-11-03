@@ -306,7 +306,9 @@ async fn key_transcript_and_response_stay_out_of_errors_and_logs_cln_8_log_2() {
             move || logs.clone()
         })
         .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    // parallel tests and spawned HTTP tasks share callsites, so they must
+    // see the same subscriber when those callsites first register
+    tracing::subscriber::set_global_default(subscriber).expect("install the test logger");
 
     let mut printed = Vec::new();
     let replies = [
