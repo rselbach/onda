@@ -19,9 +19,9 @@ use std::path::{Path, PathBuf};
 
 use jiff::Timestamp;
 use onda_app::ports::{
-    Cue, Delivery, FieldText, Files, HotkeySource, InsertOutcome, LoginItem, MediaControl,
-    Notifier, NowPlaying, Permissions, Power, PrivacyPane, SoundPlayer, SystemSpeech, Target,
-    TextOutput, Updater,
+    CopyOutcome, Cue, Delivery, FieldText, Files, HotkeySource, InsertOutcome, LoginItem,
+    MediaControl, Notifier, NowPlaying, Permissions, Power, PrivacyPane, SoundPlayer, SystemSpeech,
+    Target, TextOutput, Updater,
 };
 use onda_app::seams::{
     AudioSource, BoxFuture, CaptureInfo, CleanupTransport, DownloadUpdate, DownloadUpdateKind,
@@ -168,7 +168,8 @@ pub struct FakeText {
     pub copy_ok: AtomicBool,
     /// Holds the next field read (OUT-2).
     pub hold_field: Mutex<Option<Arc<Hold>>>,
-    /// Holds the next insert before it commits, like a consent prompt.
+    /// Holds the next insert or copy before it commits, like a consent
+    /// prompt or a lock another output holds.
     pub hold_commit: Mutex<Option<Arc<Hold>>>,
     /// Holds the next insert after it commits: the output is underway.
     pub hold_insert: Mutex<Option<Arc<Hold>>>,
@@ -203,10 +204,18 @@ impl TextOutput for FakeText {
         *lock(&self.insert_outcome)
     }
 
-    fn copy(&self, text: &str) -> bool {
+    fn copy(&self, text: &str, delivery: &Delivery) -> CopyOutcome {
         self.log.push("text:copy");
+        wait_at(&self.hold_commit);
+        if !delivery.commit() {
+            self.log.push("text:cancelled");
+            return CopyOutcome::Cancelled;
+        }
         lock(&self.copied).push(text.to_owned());
-        self.copy_ok.load(Ordering::SeqCst)
+        match self.copy_ok.load(Ordering::SeqCst) {
+            true => CopyOutcome::Copied,
+            false => CopyOutcome::Failed,
+        }
     }
 }
 

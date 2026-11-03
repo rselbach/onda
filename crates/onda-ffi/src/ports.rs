@@ -7,8 +7,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use onda_app::ports::{
-    Cue, FieldText, Files, HotkeySource, InsertOutcome, LoginItem, MediaControl, Notifier,
-    NowPlaying, Permissions, Power, PrivacyPane, SoundPlayer, Target, TextOutput,
+    CopyOutcome, Cue, FieldText, Files, HotkeySource, InsertOutcome, LoginItem, MediaControl,
+    Notifier, NowPlaying, Permissions, Power, PrivacyPane, SoundPlayer, Target, TextOutput,
 };
 use onda_domain::hotkey::{GlobeKeyAction, ModifierSet, Shortcut};
 use onda_domain::messages::{LoginItemRegistryStatus, NotificationAuthorization};
@@ -187,8 +187,9 @@ pub trait TextOutputPort: Send + Sync {
         delivery: Arc<Delivery>,
     ) -> InsertResult;
 
-    /// Replaces the clipboard with `text`. False when copying failed. The
-    /// core commits the delivery before calling it.
+    /// Replaces the clipboard with `text` without waiting on anything.
+    /// False when copying failed. The core commits the delivery right
+    /// before calling it.
     fn copy(&self, text: String) -> bool;
 }
 
@@ -462,8 +463,16 @@ impl TextOutput for Shell {
         }
     }
 
-    fn copy(&self, text: &str) -> bool {
-        self.text.copy(text.to_owned())
+    fn copy(&self, text: &str, delivery: &onda_app::ports::Delivery) -> CopyOutcome {
+        // the shell copies at once, so committing here is right before the
+        // clipboard write
+        if !delivery.commit() {
+            return CopyOutcome::Cancelled;
+        }
+        match self.text.copy(text.to_owned()) {
+            true => CopyOutcome::Copied,
+            false => CopyOutcome::Failed,
+        }
     }
 }
 

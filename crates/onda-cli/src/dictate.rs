@@ -28,8 +28,8 @@ use onda_adapters::{
     forward_audio_events,
 };
 use onda_app::ports::{
-    Cue, Delivery, FieldText, Files, HotkeySource, InsertOutcome, LoginItem, Notifier, Permissions,
-    Power, PrivacyPane, SoundPlayer, Target, TextOutput, Updater,
+    CopyOutcome, Cue, Delivery, FieldText, Files, HotkeySource, InsertOutcome, LoginItem, Notifier,
+    Permissions, Power, PrivacyPane, SoundPlayer, Target, TextOutput, Updater,
 };
 use onda_app::seams::{ModelStore, SecretSource, SettingsSource};
 use onda_app::views::UpdaterState;
@@ -420,9 +420,12 @@ impl TextOutput for Terminal {
         InsertOutcome::Inserted
     }
 
-    fn copy(&self, text: &str) -> bool {
+    fn copy(&self, text: &str, delivery: &Delivery) -> CopyOutcome {
+        if !delivery.commit() {
+            return CopyOutcome::Cancelled;
+        }
         println!("{text}");
-        true
+        CopyOutcome::Copied
     }
 }
 

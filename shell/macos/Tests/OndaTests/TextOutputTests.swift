@@ -42,9 +42,11 @@ struct UnicodeEventTests {
         let chunks = unicodeChunks(text: text)
         var posted: [(type: CGEventType, units: [UInt16])] = []
 
-        let ok = TextOutput.postUnicode(chunks) { posted.append(($0.type, Self.units(of: $0))) }
+        let result = TextOutput.postUnicode(chunks, delivery: Delivery()) {
+            posted.append(($0.type, Self.units(of: $0)))
+        }
 
-        #expect(ok)
+        #expect(result == .posted)
         #expect(posted.map(\.type) == Array(repeating: [CGEventType.keyDown, .keyUp], count: chunks.count).flatMap(\.self))
         #expect(posted.filter { $0.type == .keyDown }.flatMap(\.units) == Array(text.utf16))
     }
@@ -71,6 +73,50 @@ struct DeliveryCancellationTests {
         #expect(result == .cancelled)
         #expect(!delivery.commit())
         #expect(NSPasteboard.general.changeCount == before)
+    }
+}
+
+struct UnicodePostCommitTests {
+    struct Case: Sendable, CustomTestStringConvertible {
+        let name: String
+        let eventsFail: Bool
+        let cancelled: Bool
+        let want: TextOutput.Posted
+        var testDescription: String {
+            name
+        }
+    }
+
+    @Test(
+        arguments: [
+            Case(name: "posts after the commit", eventsFail: false, cancelled: false, want: .posted),
+            Case(name: "a cancel first posts nothing", eventsFail: false, cancelled: true, want: .cancelled),
+            Case(
+                name: "failed events leave the delivery cancellable",
+                eventsFail: true, cancelled: false, want: .unavailable
+            )
+        ]
+    )
+    func `DICT-19: commits only once every event exists, right before posting`(tc: Case) {
+        let chunks = unicodeChunks(text: "Troy Barnes")
+        let delivery = Delivery()
+        if tc.cancelled {
+            delivery.cancel()
+        }
+        var posted = 0
+
+        let result = TextOutput.postUnicode(
+            chunks,
+            delivery: delivery,
+            events: { tc.eventsFail ? nil : TextOutput.unicodeEvents($0) },
+            { _ in posted += 1 }
+        )
+
+        #expect(result == tc.want)
+        #expect(posted == (tc.want == .posted ? chunks.count * 2 : 0))
+        // a later cancel still works unless output started
+        delivery.cancel()
+        #expect(delivery.commit() == (tc.want == .posted))
     }
 }
 

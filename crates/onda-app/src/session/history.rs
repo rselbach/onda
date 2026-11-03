@@ -17,6 +17,7 @@ use uuid::Uuid;
 
 use super::{Actor, Msg, Task, UiMsg};
 use crate::events::Event;
+use crate::ports::{CopyOutcome, Delivery};
 use crate::seams::{HistorySink, SettingChange};
 use crate::views::{HistoryInputs, HistoryPage, MainWindowSection, history_page};
 
@@ -224,8 +225,9 @@ impl Actor {
             return;
         };
         let output = self.ports.text_output.clone();
+        // a history copy belongs to no session, so nothing cancels it
         spawn_blocking(move || {
-            if !output.copy(&text) {
+            if output.copy(&text, &Delivery::new()) != CopyOutcome::Copied {
                 tracing::warn!("could not copy a history entry");
             }
         });

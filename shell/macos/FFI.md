@@ -238,7 +238,7 @@ close it.
 
 | Port | Methods |
 | --- | --- |
-| `TextOutputPort` | focused target, field text, `insert(text:target:delivery:)`, copy; `insert` calls `delivery.commit()` right before its first keystroke, accessibility write, or clipboard write and returns `.cancelled` with no output when it is false (DICT-19); the core commits before `copy` |
+| `TextOutputPort` | focused target, field text, `insert(text:target:delivery:)`, copy; `insert` calls `delivery.commit()` right before its first keystroke, accessibility write, or clipboard write and returns `.cancelled` with no output when it is false (DICT-19); `copy` must write at once, because the core commits right before calling it |
 | `PermissionsPort` | microphone status/request, Accessibility trust/prompt, `openSettings(pane:)` (PERM-3 deep link, general pane fallback) |
 | `SoundPort`, `PowerPort` | cues, idle-sleep prevention |
 | `HotkeyPort` | register/unregister, Escape, stream re-enable, `globeKeyUsage()` (synchronize `com.apple.HIToolbox` before reading `AppleFnUsageType`, HOT-35), `openKeyboardSettings()` |

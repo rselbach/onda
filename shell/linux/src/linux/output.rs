@@ -11,7 +11,7 @@ use ashpd::desktop::{
     PersistMode, Session,
     remote_desktop::{DeviceType, KeyState, RemoteDesktop, SelectDevicesOptions},
 };
-use onda_app::ports::{Delivery, FieldText, InsertOutcome, Target, TextOutput};
+use onda_app::ports::{CopyOutcome, Delivery, FieldText, InsertOutcome, Target, TextOutput};
 use tokio::sync::OwnedMutexGuard;
 
 use super::{hotkeys::HeldKeys, process};
@@ -78,22 +78,12 @@ impl Output {
         if virtual_keyboard() && process::available("wtype") {
             return Some(Ok(Keyboard::Wtype));
         }
-        // The grant opens in its own task, so a cancel stops the wait while
-        // a prompt the user is still answering yields a grant for later.
-        let opening = self
-            .runtime
-            .spawn(grant(self.portal.clone(), self.token.clone()));
-        self.runtime.block_on(async {
-            tokio::select! {
-                opened = opening => Some(
-                    opened
-                        .map_err(anyhow::Error::from)
-                        .and_then(|opened| opened)
-                        .map(Keyboard::Portal),
-                ),
-                () = delivery.cancelled() => None,
-            }
-        })
+        unless_cancelled(
+            &self.runtime,
+            grant(self.portal.clone(), self.token.clone()),
+            delivery,
+        )
+        .map(|opened| opened.map(Keyboard::Portal))
     }
 
     fn press(&self, keyboard: Keyboard, shift: bool) -> anyhow::Result<()> {
@@ -170,6 +160,27 @@ impl Output {
             Ok(())
         })
     }
+}
+
+// Runs `opening` in its own task and waits for it unless the delivery is
+// cancelled first. A cancel stops only the wait: a consent prompt the user
+// is still answering yields a grant for later.
+fn unless_cancelled<T: Send + 'static>(
+    runtime: &tokio::runtime::Handle,
+    opening: impl Future<Output = anyhow::Result<T>> + Send + 'static,
+    delivery: &Delivery,
+) -> Option<anyhow::Result<T>> {
+    let opening = runtime.spawn(opening);
+    runtime.block_on(async {
+        tokio::select! {
+            opened = opening => Some(
+                opened
+                    .map_err(anyhow::Error::from)
+                    .and_then(|opened| opened),
+            ),
+            () = delivery.cancelled() => None,
+        }
+    })
 }
 
 enum Keyboard {
@@ -316,13 +327,17 @@ impl TextOutput for Output {
             }
         }
     }
-    fn copy(&self, text: &str) -> bool {
+    fn copy(&self, text: &str, delivery: &Delivery) -> CopyOutcome {
+        // an insert holding the lock can wait on a consent prompt for long
         let _serial = self.serial.lock().unwrap_or_else(|e| e.into_inner());
+        if !delivery.commit() {
+            return CopyOutcome::Cancelled;
+        }
         match self.copy_text(text) {
-            Ok(()) => true,
+            Ok(()) => CopyOutcome::Copied,
             Err(error) => {
                 tracing::warn!(%error, "clipboard write failed");
-                false
+                CopyOutcome::Failed
             }
         }
     }
@@ -380,7 +395,61 @@ fn virtual_keyboard() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::wtype_arguments;
+    use super::*;
+
+    #[test]
+    // DICT-19: the consent prompt comes before the commit; cancelling ends
+    // the wait at once, and the answer still lands for the next delivery
+    fn a_cancel_ends_the_consent_wait_and_keeps_the_grant() {
+        let runtime = tokio::runtime::Runtime::new().expect("test runtime");
+        let portal = Arc::new(tokio::sync::Mutex::new(None));
+        let (answer, answered) = tokio::sync::oneshot::channel();
+        let opening = {
+            let portal = portal.clone();
+            async move {
+                let mut grant = portal.lock_owned().await;
+                *grant = Some(answered.await?);
+                Ok::<_, anyhow::Error>(grant)
+            }
+        };
+        let delivery = Delivery::new();
+        let waiting = std::thread::spawn({
+            let runtime = runtime.handle().clone();
+            let delivery = delivery.clone();
+            move || unless_cancelled(&runtime, opening, &delivery).is_none()
+        });
+        delivery.cancel();
+        assert!(waiting.join().expect("waiting thread"), "the wait ended");
+
+        assert!(answer.send("Troy Barnes consents").is_ok());
+        let kept = runtime.block_on(async { *portal.lock().await });
+        assert_eq!(kept, Some("Troy Barnes consents"));
+    }
+
+    #[test]
+    // DICT-19: a copy queued behind an insert that waits on consent commits
+    // only once it holds the lock, so a cancel meanwhile copies nothing
+    fn a_copy_cancelled_while_queued_copies_nothing() {
+        let runtime = tokio::runtime::Runtime::new().expect("test runtime");
+        let output = Arc::new(Output::new(
+            runtime.handle().clone(),
+            Path::new("/nonexistent/greendale"),
+            Arc::default(),
+        ));
+        let inserting = output.serial.lock().expect("serial lock");
+        let delivery = Delivery::new();
+        let copying = std::thread::spawn({
+            let output = output.clone();
+            let delivery = delivery.clone();
+            move || output.copy("Troy Barnes", &delivery)
+        });
+        delivery.cancel();
+        drop(inserting);
+        assert_eq!(
+            copying.join().expect("copying thread"),
+            CopyOutcome::Cancelled
+        );
+    }
 
     #[test]
     fn paste_keymap_matches_the_compositor_and_gtk() {

@@ -42,18 +42,23 @@ final class TextOutput: TextOutputPort, @unchecked Sendable {
     func insert(text: String, target: TargetApp?, delivery: Delivery) -> InsertResult {
         let chunks = unicodeChunks(text: text)
         if let pid = Self.livePid(target) {
-            guard delivery.commit() else { return .cancelled }
-            if Self.postUnicode(chunks, { $0.postToPid(pid) }) {
-                return .inserted
+            switch Self.postUnicode(chunks, delivery: delivery, { $0.postToPid(pid) }) {
+            case .posted: return .inserted
+            case .cancelled: return .cancelled
+            case .unavailable: break
             }
         }
+        // a failed accessibility write has already committed: the OS gives
+        // no earlier point, so a cancel can no longer stop the fallbacks
         if insertViaAccessibility(text, target: target, delivery: delivery) {
             return .inserted
         }
-        guard delivery.commit() else { return .cancelled }
-        if Self.postUnicode(chunks, { $0.post(tap: .cghidEventTap) }) {
-            return .inserted
+        switch Self.postUnicode(chunks, delivery: delivery, { $0.post(tap: .cghidEventTap) }) {
+        case .posted: return .inserted
+        case .cancelled: return .cancelled
+        case .unavailable: break
         }
+        guard delivery.commit() else { return .cancelled }
         return pasteWithRestore(text)
     }
 
@@ -81,19 +86,35 @@ final class TextOutput: TextOutputPort, @unchecked Sendable {
         return pid
     }
 
-    /// Strategies 1 and 3. Builds every event before posting any, so a
-    /// failed allocation never leaves half the text typed before a fallback
-    /// types all of it again.
-    static func postUnicode(_ chunks: [[UInt16]], _ post: (CGEvent) -> Void) -> Bool {
-        guard let events = unicodeEvents(chunks) else {
+    /// How posting Unicode key events ended.
+    enum Posted: Equatable {
+        case posted
+        /// An event could not be created; nothing was posted or committed.
+        case unavailable
+        /// The delivery was cancelled first; nothing was posted.
+        case cancelled
+    }
+
+    /// Strategies 1 and 3. Builds every event before committing and posting
+    /// any, so a failed allocation leaves nothing typed and the delivery
+    /// still cancellable before a fallback, and never half the text typed
+    /// before a fallback types all of it again.
+    static func postUnicode(
+        _ chunks: [[UInt16]],
+        delivery: Delivery,
+        events makeEvents: ([[UInt16]]) -> [(down: CGEvent, up: CGEvent)]? = unicodeEvents,
+        _ post: (CGEvent) -> Void
+    ) -> Posted {
+        guard let events = makeEvents(chunks) else {
             Log.output.error("Could not create a Unicode key event")
-            return false
+            return .unavailable
         }
+        guard delivery.commit() else { return .cancelled }
         for event in events {
             post(event.down)
             post(event.up)
         }
-        return true
+        return .posted
     }
 
     /// A key-down and key-up per chunk carrying its UTF-16 units; nil when

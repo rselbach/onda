@@ -66,6 +66,17 @@ impl InsertOutcome {
     }
 }
 
+/// How a copy to the clipboard ended (OUT-1, OUT-7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyOutcome {
+    /// The clipboard holds the text.
+    Copied,
+    /// Copying failed (OUT-6).
+    Failed,
+    /// The delivery was cancelled before the clipboard was touched.
+    Cancelled,
+}
+
 /// One delivery's commit point (DICT-19, DICT-20).
 ///
 /// Output starts only after a successful [`Delivery::commit`]. A cancel
@@ -164,9 +175,12 @@ pub trait TextOutput: Send + Sync {
     fn insert(&self, text: &str, target: Option<&Target>, delivery: &Delivery) -> InsertOutcome;
 
     /// Replaces the clipboard with `text`, with no paste and no restore
-    /// (OUT-1, OUT-7). Returns false when copying failed. The core commits
-    /// the delivery right before calling it.
-    fn copy(&self, text: &str) -> bool;
+    /// (OUT-1, OUT-7).
+    ///
+    /// Commits `delivery` like [`TextOutput::insert`]: after any wait (a
+    /// lock another output holds) and right before the clipboard write,
+    /// returning [`CopyOutcome::Cancelled`] untouched when that fails.
+    fn copy(&self, text: &str, delivery: &Delivery) -> CopyOutcome;
 }
 
 /// Privacy permissions (PERM-1, PERM-4).

@@ -20,7 +20,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::{JoinHandle, spawn_blocking};
 use tokio::time::Instant;
 
-use crate::ports::{Delivery, Permissions, Target, TextOutput};
+use crate::ports::{CopyOutcome, Delivery, Permissions, Target, TextOutput};
 use crate::seams::{AudioSource, CleanupTransport, SecretSource};
 use crate::session::{Msg, SessionId};
 use crate::transcription::TranscriptionService;
@@ -346,15 +346,13 @@ pub(crate) async fn deliver(
         let route = delivery_route(mode, permissions.accessibility_trusted());
         match route {
             DeliveryRoute::Copy | DeliveryRoute::CopyWithNotice => {
-                if !delivery.commit() {
-                    return vec![];
-                }
-                match (text_output.copy(&text), route) {
-                    (false, _) => vec![UserMessage::CopyFailed],
-                    (true, DeliveryRoute::CopyWithNotice) => {
+                match (text_output.copy(&text, &delivery), route) {
+                    (CopyOutcome::Cancelled, _) => vec![],
+                    (CopyOutcome::Failed, _) => vec![UserMessage::CopyFailed],
+                    (CopyOutcome::Copied, DeliveryRoute::CopyWithNotice) => {
                         vec![UserMessage::TranscriptCopiedToClipboard]
                     }
-                    (true, _) => vec![],
+                    (CopyOutcome::Copied, _) => vec![],
                 }
             }
             DeliveryRoute::Insert => {
@@ -437,9 +435,12 @@ mod tests {
             InsertOutcome::Inserted
         }
 
-        fn copy(&self, text: &str) -> bool {
+        fn copy(&self, text: &str, delivery: &Delivery) -> CopyOutcome {
+            if !delivery.commit() {
+                return CopyOutcome::Cancelled;
+            }
             self.push(format!("copy {text}"));
-            true
+            CopyOutcome::Copied
         }
     }
 

@@ -168,6 +168,7 @@ pub(crate) enum Msg {
     RedeliveryChecked {
         text: String,
         report: CheckReport,
+        delivery: Delivery,
     },
     Fallback(UserMessage),
     ModelState(ModelState),
@@ -607,7 +608,11 @@ impl Actor {
             Msg::Cleaned { id, outcome } => self.cleaned(id, outcome),
             Msg::Saved { id, saved } => self.saved(id, saved),
             Msg::Delivered { id, notices } => self.delivered(id, notices),
-            Msg::RedeliveryChecked { text, report } => self.redelivery_checked(text, report),
+            Msg::RedeliveryChecked {
+                text,
+                report,
+                delivery,
+            } => self.redelivery_checked(text, report, delivery),
             Msg::Fallback(message) => self.show_notice(&message),
             Msg::ModelState(state) => {
                 self.model_state = state;
@@ -1529,6 +1534,11 @@ impl Actor {
             return;
         }
         self.refresh_settings();
+        // the request owns the output from now on, so a newer request, a
+        // session, or quitting cancels it even while its check still runs
+        // (DICT-26, DICT-27)
+        let delivery = Delivery::new();
+        self.redelivery = Some(Outgoing(delivery.clone()));
         let check = pipeline::check(
             self.ports.permissions.clone(),
             self.ports.text_output.clone(),
@@ -1536,31 +1546,31 @@ impl Actor {
         );
         tokio::spawn(send_when(self.messages.clone(), async move {
             let report = check.await;
-            Msg::RedeliveryChecked { text, report }
+            Msg::RedeliveryChecked {
+                text,
+                report,
+                delivery,
+            }
         }));
     }
 
-    fn redelivery_checked(&mut self, text: String, report: CheckReport) {
-        // a session that started during the check owns the output now
-        // (DICT-26, DICT-27)
-        if !matches!(self.phase, Phase::Idle) {
+    fn redelivery_checked(&mut self, text: String, report: CheckReport, delivery: Delivery) {
+        // replaced during the check, even by a session that already ended
+        if delivery.is_cancelled() || !matches!(self.phase, Phase::Idle) {
             return;
         }
         let settings = self.settings.clone();
         if !self.output_ready(&settings, report.accessibility) {
             return;
         }
-        let delivery = Delivery::new();
         let deliver = pipeline::deliver(
             self.ports.text_output.clone(),
             self.ports.permissions.clone(),
             text,
             report.target,
             settings.output_mode,
-            delivery.clone(),
+            delivery,
         );
-        // a later re-delivery or session replaces this one's pending output
-        self.redelivery = Some(Outgoing(delivery));
         tokio::spawn(send_when(self.messages.clone(), async move {
             let notices = deliver.await;
             Msg::Delivered { id: None, notices }

@@ -1911,6 +1911,116 @@ async fn dict_26_a_newer_redelivery_replaces_one_that_has_not_output() {
 }
 
 #[tokio::test(start_paused = true)]
+// a re-delivery owns its output from the request on, so whatever replaces
+// it while its permission and focus check is still blocked wins, even when
+// the check returns after the actor is idle again
+async fn dict_26_dict_27_a_redelivery_replaced_during_its_check_outputs_nothing() {
+    struct Case {
+        name: &'static str,
+        by_session: bool,
+        want: Vec<&'static str>,
+    }
+    let cases = [
+        Case {
+            name: "a newer request",
+            by_session: false,
+            want: vec!["Greendale Community College"],
+        },
+        Case {
+            name: "a session that starts and ends",
+            by_session: true,
+            want: vec!["hello world"],
+        },
+    ];
+    for tc in cases {
+        let h = Harness::with(|s| s.activation_mode = ActivationMode::Toggle).await;
+        let hold = Hold::new();
+        *lock(&h.text.hold_focus) = Some(hold.clone());
+        h.app.deliver_transcript("six seasons and a movie");
+        eventually("the held re-delivery check", || hold.started()).await;
+        match tc.by_session {
+            true => {
+                h.tap();
+                eventually("recording", || h.tray().icon == TrayIcon::Recording).await;
+                h.stop_now();
+            }
+            false => h.app.deliver_transcript("Greendale Community College"),
+        }
+        // the held check is a blocking task, so the paused clock stands
+        // still until it is released
+        eventually("the replacement", || h.typed().len() == 1).await;
+        eventually("idle", || h.idle()).await;
+        hold.release();
+        sleep(1_000).await;
+        assert_eq!(h.typed(), tc.want, "{}", tc.name);
+        assert_eq!(h.log.count("text:insert"), 1, "{}", tc.name);
+        assert!(h.notices().is_empty(), "{}", tc.name);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+// OUT-1: the clipboard port commits only once it may write, so a copy that
+// waits there (behind a lock an insert holds) copies nothing when the
+// session or a re-delivery is cancelled meanwhile
+async fn dict_19_a_copy_cancelled_while_waiting_in_the_port_copies_nothing() {
+    struct Case {
+        name: &'static str,
+        cancel_by_session: bool,
+    }
+    let cases = [
+        Case {
+            name: "a cancelled session",
+            cancel_by_session: true,
+        },
+        Case {
+            name: "a re-delivery a session replaces",
+            cancel_by_session: false,
+        },
+    ];
+    for tc in cases {
+        let h = Harness::with(|s| {
+            s.activation_mode = ActivationMode::Toggle;
+            s.output_mode = OutputMode::Clipboard;
+        })
+        .await;
+        h.script.finals(vec![
+            Ok("Troy Barnes".to_owned()),
+            Ok("Abed Nadir".to_owned()),
+        ]);
+        let hold = Hold::new();
+        *lock(&h.text.hold_commit) = Some(hold.clone());
+        match tc.cancel_by_session {
+            true => {
+                h.tap();
+                sleep(500).await;
+                h.stop_now();
+                eventually("the held copy", || hold.started()).await;
+                h.app.cancel_dictation();
+                eventually("idle", || h.idle()).await;
+            }
+            false => {
+                h.app.deliver_transcript("six seasons and a movie");
+                eventually("the held copy", || hold.started()).await;
+            }
+        }
+        let want = match tc.cancel_by_session {
+            true => "Abed Nadir",
+            false => "Troy Barnes",
+        };
+        h.tap();
+        eventually("recording", || h.tray().icon == TrayIcon::Recording).await;
+        hold.release();
+        h.tap();
+        sleep(1_000).await;
+        assert_eq!(*lock(&h.text.copied), vec![want], "{}", tc.name);
+        assert_eq!(h.log.count("text:copy"), 2, "{}", tc.name);
+        assert_eq!(h.log.count("text:cancelled"), 1, "{}", tc.name);
+        assert!(h.notices().is_empty(), "{}", tc.name);
+        assert!(h.idle(), "{}", tc.name);
+    }
+}
+
+#[tokio::test(start_paused = true)]
 async fn dict_16_text_goes_to_the_app_focused_at_start() {
     let h = Harness::with(|s| s.cleanup_enabled = true).await;
     h.cleanup.respond(vec![Ok("Hello world.".to_owned())]);
