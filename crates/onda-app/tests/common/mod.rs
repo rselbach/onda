@@ -739,10 +739,28 @@ pub struct FakeHistory {
     pub ops: Mutex<Vec<String>>,
     pub op_error: Mutex<Option<String>>,
     pub hold_save: Mutex<Option<Arc<Hold>>>,
+    /// Holds the next page read after it took its snapshot.
+    pub hold_entries: Mutex<Option<Arc<Hold>>>,
+    /// Holds the next menu read after it took its snapshot.
+    pub hold_recent: Mutex<Option<Arc<Hold>>>,
+    /// What page reads fail with.
+    pub entries_error: Mutex<Option<String>>,
     pub fail: AtomicBool,
 }
 
 impl FakeHistory {
+    pub fn hold_next_entries(&self) -> Arc<Hold> {
+        let hold = Hold::new();
+        *lock(&self.hold_entries) = Some(hold.clone());
+        hold
+    }
+
+    pub fn hold_next_recent(&self) -> Arc<Hold> {
+        let hold = Hold::new();
+        *lock(&self.hold_recent) = Some(hold.clone());
+        hold
+    }
+
     pub fn entries(&self) -> Vec<NewEntry> {
         lock(&self.entries).iter().map(|(e, _)| e.clone()).collect()
     }
@@ -766,11 +784,24 @@ impl HistorySink for FakeHistory {
     }
 
     fn recent_transcripts(&self) -> Vec<RecentTranscript> {
-        onda_domain::history::recent_transcripts(&lock(&self.stored), true)
+        let recent = onda_domain::history::recent_transcripts(&lock(&self.stored), true);
+        let hold = lock(&self.hold_recent).take();
+        if let Some(hold) = hold {
+            hold.wait();
+        }
+        recent
     }
 
     fn entries(&self) -> Result<Vec<HistoryEntry>, String> {
-        Ok(lock(&self.stored).clone())
+        let entries = match lock(&self.entries_error).clone() {
+            Some(error) => Err(error),
+            None => Ok(lock(&self.stored).clone()),
+        };
+        let hold = lock(&self.hold_entries).take();
+        if let Some(hold) = hold {
+            hold.wait();
+        }
+        entries
     }
 
     fn delete(&self, id: Uuid) -> Result<(), String> {

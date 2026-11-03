@@ -56,6 +56,7 @@ impl Actor {
         // also preloads the list for the tray menu
         let history = self.ports.history.clone();
         let retention = self.settings.history_retention;
+        let generation = self.ui.history.generation;
         tokio::spawn(blocking_send(self.messages.clone(), move || {
             match history.apply_retention(retention, jiff::Timestamp::now()) {
                 // HIS-10: announce what expired; the menu re-reads
@@ -65,7 +66,10 @@ impl Actor {
                     tracing::error!(%error, "could not apply history retention at launch");
                 }
             }
-            Msg::Recent(history.recent_transcripts())
+            Msg::Recent {
+                generation,
+                recent: history.recent_transcripts(),
+            }
         }));
         let plan = launch_plan(self.settings.onboarding);
         if let Some(delay) = plan.show_onboarding_after {

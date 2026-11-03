@@ -1651,6 +1651,152 @@ async fn his_20_his_22_his_24_clear_copy_and_missing_recordings() {
     );
 }
 
+fn page_texts(h: &Harness) -> Vec<String> {
+    match history(h).content {
+        HistoryContent::Sections { sections } => sections
+            .into_iter()
+            .flat_map(|section| section.rows)
+            .filter_map(|row| row.transcript)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn menu_texts(h: &Harness) -> Vec<String> {
+    h.menu()
+        .recent_transcripts
+        .map(|recent| recent.items.into_iter().map(|item| item.text).collect())
+        .unwrap_or_default()
+}
+
+#[tokio::test(start_paused = true)]
+async fn his_10_a_page_read_older_than_a_delete_does_not_bring_it_back() {
+    let h = Harness::new().await;
+    let troy = entry("Troy Barnes", None, None, 1.hours());
+    let id = troy.id;
+    *lock(&h.history.stored) = vec![troy, entry("Abed Nadir", None, None, 2.hours())];
+    h.app.page_appeared(MainWindowSection::History);
+    sleep(10).await;
+    assert_eq!(page_texts(&h), vec!["Troy Barnes", "Abed Nadir"]);
+
+    let held = h.history.hold_next_entries();
+    h.app.page_appeared(MainWindowSection::History);
+    eventually("the old read", || held.started()).await;
+    h.app.delete_history_entry(id);
+    eventually("the page after the delete", || {
+        page_texts(&h) == vec!["Abed Nadir"]
+    })
+    .await;
+
+    held.release();
+    sleep(10).await;
+    assert_eq!(
+        page_texts(&h),
+        vec!["Abed Nadir"],
+        "the old read is dropped"
+    );
+    h.app.copy_history_entry(id);
+    sleep(10).await;
+    assert!(
+        lock(&h.text.copied).is_empty(),
+        "nothing copies a deleted entry"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn his_27_a_failed_read_older_than_a_newer_one_shows_no_error() {
+    let h = Harness::new().await;
+    let troy = entry("Troy Barnes", None, None, 1.hours());
+    let id = troy.id;
+    *lock(&h.history.stored) = vec![troy, entry("Abed Nadir", None, None, 2.hours())];
+    h.app.page_appeared(MainWindowSection::History);
+    sleep(10).await;
+
+    *lock(&h.history.entries_error) = Some("Greendale's server is down".to_owned());
+    let held = h.history.hold_next_entries();
+    h.app.page_appeared(MainWindowSection::History);
+    eventually("the failing read", || held.started()).await;
+    *lock(&h.history.entries_error) = None;
+    h.app.delete_history_entry(id);
+    eventually("the page after the delete", || {
+        page_texts(&h) == vec!["Abed Nadir"]
+    })
+    .await;
+
+    held.release();
+    sleep(10).await;
+    let page = history(&h);
+    assert_eq!(page.error, None, "the old failure is dropped");
+    assert_eq!(page_texts(&h), vec!["Abed Nadir"]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn his_27_a_failed_page_read_older_than_a_successful_one_shows_no_error() {
+    let h = Harness::new().await;
+    *lock(&h.history.stored) = vec![entry("Troy Barnes", None, None, 1.hours())];
+    *lock(&h.history.entries_error) = Some("Greendale's server is down".to_owned());
+    let held = h.history.hold_next_entries();
+    h.app.page_appeared(MainWindowSection::History);
+    eventually("the failing read", || held.started()).await;
+
+    *lock(&h.history.entries_error) = None;
+    h.app.page_appeared(MainWindowSection::History);
+    eventually("the newer read", || page_texts(&h) == vec!["Troy Barnes"]).await;
+
+    held.release();
+    sleep(10).await;
+    let page = history(&h);
+    assert_eq!(page.error, None, "the old failure is dropped");
+    assert_eq!(page_texts(&h), vec!["Troy Barnes"]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn his_27_a_page_read_older_than_a_failed_one_keeps_the_error() {
+    let h = Harness::new().await;
+    *lock(&h.history.stored) = vec![entry("Troy Barnes", None, None, 1.hours())];
+    let held = h.history.hold_next_entries();
+    h.app.page_appeared(MainWindowSection::History);
+    eventually("the old read", || held.started()).await;
+
+    *lock(&h.history.entries_error) = Some("Greendale's server is down".to_owned());
+    h.app.page_appeared(MainWindowSection::History);
+    eventually("the newer failure", || history(&h).error.is_some()).await;
+
+    held.release();
+    sleep(10).await;
+    let page = history(&h);
+    assert_eq!(
+        page.error.map(|alert| alert.message).as_deref(),
+        Some("Greendale's server is down"),
+        "the newest read decides"
+    );
+    assert!(page_texts(&h).is_empty(), "the old entries are dropped");
+}
+
+#[tokio::test(start_paused = true)]
+async fn his_10_a_menu_read_older_than_a_delete_does_not_bring_it_back() {
+    let h = Harness::unstarted(|_| {});
+    let troy = entry("Troy Barnes", None, None, 1.hours());
+    let id = troy.id;
+    *lock(&h.history.stored) = vec![troy, entry("Abed Nadir", None, None, 2.hours())];
+    let held = h.history.hold_next_recent();
+    h.app.ui_ready();
+    eventually("the old menu read", || held.started()).await;
+    h.app.delete_history_entry(id);
+    eventually("the menu after the delete", || {
+        menu_texts(&h) == vec!["Abed Nadir"]
+    })
+    .await;
+
+    held.release();
+    sleep(10).await;
+    assert_eq!(
+        menu_texts(&h),
+        vec!["Abed Nadir"],
+        "the old read is dropped"
+    );
+}
+
 #[tokio::test(start_paused = true)]
 async fn his_10_a_new_dictation_refreshes_a_visible_history_page() {
     let h = Harness::new().await;

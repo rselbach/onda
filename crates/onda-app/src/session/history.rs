@@ -59,6 +59,11 @@ struct ViewKey {
 pub(super) struct HistoryState {
     entries: Vec<HistoryEntry>,
     entries_version: u64,
+    // bumped when a mutation starts or finishes, so a read begun earlier
+    // cannot overwrite the page or the menu with what it removed
+    pub(super) generation: u64,
+    // the latest page read; an earlier one landing after it is dropped
+    page_read: u64,
     pub(super) query: String,
     pub(super) dialog: Option<HistoryDialog>,
     pub(super) error: Option<String>,
@@ -72,6 +77,7 @@ impl Actor {
     /// Every history change: the menu and a visible History page re-read
     /// (HIS-10).
     pub(super) fn history_changed(&mut self) {
+        self.ui.history.generation += 1;
         self.events.emit(Event::HistoryChanged);
         self.refresh_recent();
         if self.ui.is_visible(MainWindowSection::History) {
@@ -84,6 +90,9 @@ impl Actor {
         let history = self.ports.history.clone();
         let retention = self.settings.history_retention;
         let messages = self.messages.clone();
+        let generation = self.ui.history.generation;
+        self.ui.history.page_read += 1;
+        let read = self.ui.history.page_read;
         tokio::spawn(async move {
             let loaded = spawn_blocking(move || {
                 let retained = match apply_retention {
@@ -107,11 +116,23 @@ impl Actor {
                     let _ = messages.send(Msg::Ui(UiMsg::HistoryOpDone(Err(error))));
                 }
             }
-            let _ = messages.send(Msg::Ui(UiMsg::HistoryLoaded(entries)));
+            let _ = messages.send(Msg::Ui(UiMsg::HistoryLoaded {
+                generation,
+                read,
+                result: entries,
+            }));
         });
     }
 
-    pub(super) fn history_loaded(&mut self, result: Result<Vec<HistoryEntry>, String>) {
+    pub(super) fn history_loaded(
+        &mut self,
+        generation: u64,
+        read: u64,
+        result: Result<Vec<HistoryEntry>, String>,
+    ) {
+        if generation != self.ui.history.generation || read != self.ui.history.page_read {
+            return;
+        }
         match result {
             Ok(entries) => {
                 self.ui.history.entries = entries;
@@ -124,7 +145,11 @@ impl Actor {
         }
     }
 
-    fn history_op(&self, op: impl FnOnce(&dyn HistorySink) -> Result<(), String> + Send + 'static) {
+    fn history_op(
+        &mut self,
+        op: impl FnOnce(&dyn HistorySink) -> Result<(), String> + Send + 'static,
+    ) {
+        self.ui.history.generation += 1;
         let history = self.ports.history.clone();
         let messages = self.messages.clone();
         tokio::spawn(async move {

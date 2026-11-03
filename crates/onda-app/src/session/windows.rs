@@ -150,7 +150,11 @@ pub(crate) enum UiMsg {
         provider: CleanupProvider,
         result: Result<Vec<CleanupModel>, CleanupError>,
     },
-    HistoryLoaded(Result<Vec<onda_domain::history::HistoryEntry>, String>),
+    HistoryLoaded {
+        generation: u64,
+        read: u64,
+        result: Result<Vec<onda_domain::history::HistoryEntry>, String>,
+    },
     HistoryOpDone(Result<(), String>),
     ModelDeleted {
         model: ModelId,
@@ -419,7 +423,11 @@ impl Actor {
                 provider,
                 result,
             } => self.models_listed(generation, provider, result),
-            UiMsg::HistoryLoaded(result) => self.history_loaded(result),
+            UiMsg::HistoryLoaded {
+                generation,
+                read,
+                result,
+            } => self.history_loaded(generation, read, result),
             UiMsg::HistoryOpDone(result) => self.history_op_done(result),
             UiMsg::ModelDeleted {
                 model,

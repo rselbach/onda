@@ -175,7 +175,10 @@ pub(crate) enum Msg {
     Permissions(PermissionSnapshot),
     Downloaded(Vec<ModelId>),
     LaunchChecked(Vec<ModelId>),
-    Recent(Vec<RecentTranscript>),
+    Recent {
+        generation: u64,
+        recent: Vec<RecentTranscript>,
+    },
 }
 
 /// Last known permissions, for the tray, the menu, and setup guidance.
@@ -600,7 +603,11 @@ impl Actor {
             Msg::Permissions(snapshot) => self.permissions = snapshot,
             Msg::Downloaded(models) => self.downloaded = models,
             Msg::LaunchChecked(models) => self.launch_checked(models),
-            Msg::Recent(recent) => self.recent = recent,
+            Msg::Recent { generation, recent } => {
+                if generation == self.ui.history.generation {
+                    self.recent = recent;
+                }
+            }
         }
     }
 
@@ -1747,8 +1754,10 @@ impl Actor {
 
     fn refresh_recent(&self) {
         let history = self.ports.history.clone();
-        tokio::spawn(blocking_send(self.messages.clone(), move || {
-            Msg::Recent(history.recent_transcripts())
+        let generation = self.ui.history.generation;
+        tokio::spawn(blocking_send(self.messages.clone(), move || Msg::Recent {
+            generation,
+            recent: history.recent_transcripts(),
         }));
     }
 
