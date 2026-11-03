@@ -11,15 +11,13 @@ publish.workspace = true
 keyring = "4.2.0"
 onda-domain = { path = "../onda-domain" }
 serde_json = "1.0.154"
+tempfile = "3.27.0"
 tracing = "0.1.44"
 
 # the keychain store boxes security-framework errors; downcasting recovers the
 # OSStatus for the CLN-24 copy
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3.7.0"
-
-[dev-dependencies]
-tempfile = "3.27.0"
 
 [lints]
 workspace = true

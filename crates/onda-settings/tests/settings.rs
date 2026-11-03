@@ -1,9 +1,13 @@
 //! Settings store behavior against real files in temp dirs (SET-1..SET-4).
 
 use std::collections::BTreeSet;
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::process::{Command, Stdio};
+use std::sync::{Arc, Barrier, Mutex};
+use std::thread;
+use std::time::Duration;
 
 use onda_domain::cleanup::{CLEANUP_MODELS, CleanupProvider, default_model};
 use onda_domain::hotkey::{KeyCode, Modifier, ModifierKey, ModifierSet, Shortcut};
@@ -12,7 +16,7 @@ use onda_domain::messages::UserMessage;
 use onda_domain::models::{Catalog, ModelId, SystemSpeechInfo};
 use onda_domain::replacements::{ReplacementRule, RuleId};
 use onda_domain::types::{ActivationMode, HistoryRetention, OutputMode};
-use onda_settings::{Key, Settings};
+use onda_settings::{Key, Settings, SettingsError};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -124,6 +128,24 @@ fn with_json(value: &Value) -> (TempDir, Settings) {
 
 fn stored(path: &Path) -> Value {
     serde_json::from_slice(&fs::read(path).expect("read settings")).expect("settings are JSON")
+}
+
+// files beside settings.json other than the lock file, e.g. leftover temps
+fn leftovers(path: &Path) -> Vec<String> {
+    let folder = path.parent().expect("parent");
+    let mut names: Vec<String> = fs::read_dir(folder)
+        .expect("list folder")
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .filter(|name| name != "settings.json" && name != "settings.json.lock")
+        .collect();
+    names.sort();
+    names
 }
 
 fn recorder(settings: Settings) -> (Settings, Arc<Mutex<Vec<Key>>>) {
@@ -444,16 +466,66 @@ fn whole_file_corruption_reads_as_defaults() {
     ];
     for (name, contents) in cases {
         let (dir, settings) = with_file(contents);
+        let path = settings_path(&dir);
         assert_eq!(snapshot(&settings), defaults(), "{name}");
 
         settings.set_output_mode(OutputMode::Clipboard).expect(name);
 
+        assert_eq!(stored(&path), json!({"outputMode": "clipboard"}), "{name}");
+        let backups = leftovers(&path);
+        assert_eq!(backups.len(), 1, "{name}: {backups:?}");
+        assert!(backups[0].starts_with("settings.json.corrupt-"), "{name}");
+        let backup = path.with_file_name(&backups[0]);
         assert_eq!(
-            stored(&settings_path(&dir)),
-            json!({"outputMode": "clipboard"}),
-            "{name}"
+            fs::read(backup).expect("read backup"),
+            contents,
+            "{name}: the corrupt file is kept"
         );
     }
+}
+
+#[test]
+fn corruption_after_open_is_preserved_not_merged() {
+    let (dir, settings) = with_json(&json!({"outputMode": "clipboard"}));
+    let path = settings_path(&dir);
+    fs::write(&path, b"Troy and Abed in the morning").expect("corrupt the file");
+
+    settings.set_history_enabled(false).expect("set");
+
+    assert_eq!(stored(&path), json!({"historyEnabled": false}));
+    assert_eq!(
+        settings.output_mode(),
+        OutputMode::Type,
+        "cache follows the file"
+    );
+    let backups = leftovers(&path);
+    assert_eq!(backups.len(), 1, "{backups:?}");
+    assert_eq!(
+        fs::read(path.with_file_name(&backups[0])).expect("read backup"),
+        b"Troy and Abed in the morning"
+    );
+}
+
+#[test]
+fn repeated_corruption_keeps_distinct_backups() {
+    let (dir, settings) = with_json(&json!({}));
+    let path = settings_path(&dir);
+    let contents = ["Troy Barnes at Greendale", "Abed Nadir at Greendale"];
+    for text in contents {
+        fs::write(&path, text).expect("corrupt the file");
+        settings
+            .set_history_enabled(false)
+            .expect("recover settings");
+    }
+    let mut backups: Vec<_> = leftovers(&path)
+        .into_iter()
+        .map(|name| fs::read_to_string(path.with_file_name(name)).expect("read backup"))
+        .collect();
+    backups.sort();
+    let mut want = contents.to_vec();
+    want.sort();
+    assert_eq!(backups, want);
+    assert_eq!(stored(&path), json!({"historyEnabled": false}));
 }
 
 #[test]
@@ -466,6 +538,8 @@ fn unreadable_path_reads_as_defaults() {
 
     assert_eq!(snapshot(&settings), defaults());
     assert!(settings.set_output_mode(OutputMode::Clipboard).is_err());
+    assert!(path.is_dir(), "an unreadable file is never replaced");
+    assert_eq!(leftovers(&path), Vec::<String>::new());
 }
 
 #[test]
@@ -492,17 +566,22 @@ fn unknown_keys_survive_writes() {
 fn writes_are_atomic_set_1() {
     let dir = TempDir::new().expect("temp dir");
     let path = settings_path(&dir);
-    let tmp = path.with_file_name("settings.json.tmp");
+    let lock = path.with_file_name("settings.json.lock");
     let (settings, seen) = recorder(Settings::open(&path));
 
     settings
         .set_output_mode(OutputMode::Clipboard)
         .expect("first write creates the directory");
-    assert!(!tmp.exists(), "temp file is renamed into place");
+    assert_eq!(
+        leftovers(&path),
+        Vec::<String>::new(),
+        "temp file is renamed into place"
+    );
     assert_eq!(stored(&path), json!({"outputMode": "clipboard"}));
 
-    // a directory squatting on the temp path makes the next write fail
-    fs::create_dir(&tmp).expect("block the temp path");
+    // a directory squatting on the lock path makes the next write fail
+    fs::remove_file(&lock).expect("remove the lock file");
+    fs::create_dir(&lock).expect("block the lock path");
     let before = fs::read(&path).expect("read");
 
     let result = settings.set_history_enabled(false);
@@ -517,12 +596,212 @@ fn writes_are_atomic_set_1() {
         "failed write is not reported"
     );
 
-    fs::remove_dir(&tmp).expect("unblock");
+    fs::remove_dir(&lock).expect("unblock");
     settings.set_history_enabled(false).expect("write recovers");
     assert_eq!(
         stored(&path),
         json!({"outputMode": "clipboard", "historyEnabled": false})
     );
+}
+
+#[test]
+fn a_stale_fixed_temp_path_does_not_block_writes() {
+    let dir = TempDir::new().expect("temp dir");
+    let path = settings_path(&dir);
+    let stale = path.with_file_name("settings.json.tmp");
+    fs::create_dir_all(&stale).expect("an old version's temp path, squatted");
+    let settings = Settings::open(&path);
+
+    settings
+        .set_output_mode(OutputMode::Clipboard)
+        .expect("set");
+
+    assert_eq!(stored(&path), json!({"outputMode": "clipboard"}));
+    assert!(stale.is_dir(), "someone else's temp path is left alone");
+    assert_eq!(leftovers(&path), vec!["settings.json.tmp".to_owned()]);
+}
+
+#[test]
+fn independent_instances_keep_each_others_writes() {
+    let dir = TempDir::new().expect("temp dir");
+    let path = settings_path(&dir);
+    let gui = Settings::open(&path);
+    let cli = Settings::open(&path);
+
+    cli.set_history_enabled(false)
+        .expect("cli turns history off");
+    cli.set_history_keeps_audio(true).expect("cli keeps audio");
+    gui.set_output_mode(OutputMode::Clipboard)
+        .expect("gui write");
+
+    let reopened = Settings::open(&path);
+    assert!(!reopened.history_enabled(), "privacy setting survives");
+    assert!(reopened.history_keeps_audio());
+    assert_eq!(reopened.output_mode(), OutputMode::Clipboard);
+    assert!(!gui.history_enabled(), "a write refreshes the cache");
+
+    cli.remove(Key::HistoryKeepsAudio)
+        .expect("cli removes a key");
+    gui.set_sound_feedback_enabled(false).expect("gui write");
+    assert!(
+        !Settings::open(&path).history_keeps_audio(),
+        "removal survives"
+    );
+    let want = json!({
+        "historyEnabled": false,
+        "outputMode": "clipboard",
+        "soundFeedbackEnabled": false,
+    });
+    assert_eq!(stored(&path), want);
+}
+
+#[test]
+fn a_write_matching_the_file_saves_and_reports_nothing() {
+    let dir = TempDir::new().expect("temp dir");
+    let path = settings_path(&dir);
+    let (gui, seen) = recorder(Settings::open(&path));
+    let cli = Settings::open(&path);
+    cli.set_output_mode(OutputMode::Clipboard)
+        .expect("cli write");
+    let before = fs::read(&path).expect("read");
+
+    gui.set_output_mode(OutputMode::Clipboard)
+        .expect("same as the file");
+
+    assert_eq!(fs::read(&path).expect("read"), before);
+    assert!(seen.lock().expect("lock").is_empty(), "nothing changed");
+    assert_eq!(gui.output_mode(), OutputMode::Clipboard);
+}
+
+#[test]
+fn canonicalize_reads_the_file_it_rewrites() {
+    let (dir, settings) = with_json(&json!({"outputMode": "clipboard"}));
+    let path = settings_path(&dir);
+    Settings::open(&path)
+        .set_activation_mode(ActivationMode::Toggle)
+        .expect("other writer");
+    let mut file = stored(&path);
+    file["outputMode"] = json!("paste");
+    fs::write(&path, file.to_string()).expect("stale value from another writer");
+
+    let changed = settings.canonicalize().expect("canonicalize");
+
+    assert_eq!(changed, vec![Key::OutputMode]);
+    assert_eq!(
+        stored(&path),
+        json!({"outputMode": "type", "hotkeyActivationMode": "toggle"})
+    );
+}
+
+// each concurrent writer owns one key and flips it before settling on the
+// value in `want_written`
+type Writer = fn(&Settings, bool) -> Result<(), SettingsError>;
+
+const WRITERS: [Writer; 4] = [
+    |settings, settle| settings.set_history_enabled(!settle),
+    |settings, settle| settings.set_history_keeps_audio(settle),
+    |settings, settle| settings.set_sound_feedback_enabled(!settle),
+    |settings, settle| settings.set_pause_media_during_recording(settle),
+];
+
+const ROUNDS: usize = 25;
+
+fn want_written() -> Value {
+    json!({
+        "historyEnabled": false,
+        "historyKeepsAudio": true,
+        "soundFeedbackEnabled": false,
+        "pauseMediaDuringRecording": true,
+        "futureSetting": "Greendale",
+    })
+}
+
+fn run_writer(path: &Path, writer: Writer) {
+    let settings = Settings::open(path);
+    for _ in 0..ROUNDS {
+        writer(&settings, false).expect("flip");
+        writer(&settings, true).expect("settle");
+    }
+}
+
+fn shared_file() -> (TempDir, PathBuf) {
+    let (dir, _settings) = with_json(&json!({"futureSetting": "Greendale"}));
+    let path = settings_path(&dir);
+    (dir, path)
+}
+
+#[test]
+fn concurrent_instances_keep_each_others_writes() {
+    let (_dir, path) = shared_file();
+    let start = Arc::new(Barrier::new(WRITERS.len()));
+
+    let handles: Vec<_> = WRITERS
+        .into_iter()
+        .map(|writer| {
+            let path = path.clone();
+            let start = Arc::clone(&start);
+            thread::spawn(move || {
+                start.wait();
+                run_writer(&path, writer);
+            })
+        })
+        .collect();
+    for handle in handles {
+        handle.join().expect("writer thread");
+    }
+
+    assert_eq!(stored(&path), want_written());
+    assert_eq!(leftovers(&path), Vec::<String>::new(), "no temp files left");
+}
+
+const CHILD_PATH: &str = "ONDA_SETTINGS_TEST_PATH";
+const CHILD_WRITER: &str = "ONDA_SETTINGS_TEST_WRITER";
+
+#[test]
+fn concurrent_processes_keep_each_others_writes() {
+    // a child process runs this test again to be one of the writers
+    if let Some(path) = env::var_os(CHILD_PATH) {
+        let index: usize = env::var(CHILD_WRITER)
+            .expect("writer index")
+            .parse()
+            .expect("number");
+        let path = PathBuf::from(path);
+        let go = path.with_file_name("go");
+        while !go.exists() {
+            thread::sleep(Duration::from_millis(1));
+        }
+        run_writer(&path, WRITERS[index]);
+        return;
+    }
+    let (_dir, path) = shared_file();
+    let exe = env::current_exe().expect("test binary");
+
+    let children: Vec<_> = (0..WRITERS.len())
+        .map(|index| {
+            Command::new(&exe)
+                .args([
+                    "--exact",
+                    "concurrent_processes_keep_each_others_writes",
+                    "--test-threads=1",
+                    "--quiet",
+                ])
+                .env(CHILD_PATH, &path)
+                .env(CHILD_WRITER, index.to_string())
+                .stdout(Stdio::null())
+                .spawn()
+                .expect("spawn writer")
+        })
+        .collect();
+    let go = path.with_file_name("go");
+    fs::write(&go, b"").expect("start the writers");
+    for mut child in children {
+        let status = child.wait().expect("wait for writer");
+        assert!(status.success(), "writer failed: {status}");
+    }
+    fs::remove_file(&go).expect("remove start file");
+
+    assert_eq!(stored(&path), want_written());
+    assert_eq!(leftovers(&path), Vec::<String>::new(), "no temp files left");
 }
 
 #[test]

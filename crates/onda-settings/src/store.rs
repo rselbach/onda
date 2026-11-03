@@ -1,7 +1,7 @@
 //! The settings store over `settings.json` (SET-1..SET-4).
 
 use std::fmt;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -25,11 +25,15 @@ type Observer = Box<dyn Fn(Key) + Send + Sync>;
 
 /// Typed access to `<data>/settings.json`.
 ///
-/// The file is read once at [`Settings::open`] and cached; every setter
-/// rewrites it atomically (temp file plus rename) and keeps keys this
-/// version does not know. Getters never write and never fail: a missing key
-/// is the default, a corrupt value is the default plus a log line (SET-2),
-/// and a corrupt or unreadable file reads as empty.
+/// The file is read at [`Settings::open`] and cached. Every setter takes an
+/// exclusive lock on the sibling `settings.json.lock`, rereads the file,
+/// applies only its own keys, and replaces the file atomically through a
+/// uniquely named temp file. Other instances and processes may write the same
+/// file: a write never undoes theirs, keys this version does not know are
+/// kept, and the cache picks up the file's latest contents on each write.
+/// Getters never write and never fail: a missing key is the default, a
+/// corrupt value is the default plus a log line (SET-2), and a corrupt or
+/// unreadable file reads as empty.
 ///
 /// `Settings` is `Send + Sync`; share it behind an `Arc`.
 pub struct Settings {
@@ -46,11 +50,12 @@ impl fmt::Debug for Settings {
     }
 }
 
-/// A setter could not save `settings.json`. The stored and cached values are
+/// A setter could not save `settings.json`. The stored values are
 /// unchanged.
 #[derive(Debug)]
 pub enum SettingsError {
-    /// Creating, writing, syncing, or renaming the file failed.
+    /// Locking, reading, creating, writing, syncing, or renaming the file
+    /// failed. An unreadable file is never replaced.
     Io(io::Error),
     /// A value could not be encoded as JSON.
     Encode(serde_json::Error),
@@ -85,8 +90,10 @@ impl Settings {
     ///
     /// Never fails. A missing file is empty settings. An unreadable file, a
     /// file that is not JSON, or JSON that is not an object is logged and
-    /// read as empty; the next setter replaces it. The parent directory is
-    /// created on first write.
+    /// read as empty. The next setter copies a corrupt file to
+    /// `settings.json.corrupt-<random>` before replacing it, and fails rather than
+    /// replace a file it cannot read. The parent directory is created on
+    /// first write.
     pub fn open(path: impl Into<PathBuf>) -> Settings {
         let path = path.into();
         let values = load(&path);
@@ -99,9 +106,10 @@ impl Settings {
 
     /// Calls `observer` with each key whose stored value a setter, reset, or
     /// [`Settings::canonicalize`] changed, after the file is saved. Setting
-    /// a key to the value it already has saves nothing and reports nothing.
-    /// The observer runs on the caller's thread without the store locked, so
-    /// it may read settings.
+    /// a key to the value the file already has saves nothing and reports
+    /// nothing; keys other writers changed are not reported. The observer
+    /// runs on the caller's thread without the store or file locked, so it
+    /// may read and write settings.
     pub fn on_change(mut self, observer: impl Fn(Key) + Send + Sync + 'static) -> Settings {
         self.observer = Some(Box::new(observer));
         self
@@ -114,7 +122,7 @@ impl Settings {
 
     /// Removes `key`, so it reads as its default again.
     pub fn remove(&self, key: Key) -> Result<(), SettingsError> {
-        self.apply(vec![(key, None)])
+        self.apply(|| vec![(key, None)]).map(drop)
     }
 
     /// Rewrites stale enum-like values to their canonical form at launch
@@ -123,24 +131,23 @@ impl Settings {
     /// ones to the default; CLN-21). Unset keys stay unset. Idempotent:
     /// returns the keys it rewrote, empty once everything is canonical.
     pub fn canonicalize(&self) -> Result<Vec<Key>, SettingsError> {
-        let model = self.cleanup_model(CleanupProvider::OpenRouter);
-        let canonical = [
-            (Key::OutputMode, self.output_mode().as_setting()),
-            (
-                Key::HotkeyActivationMode,
-                self.activation_mode().as_setting(),
-            ),
-            (Key::HistoryRetention, self.history_retention().as_setting()),
-            (Key::OpenRouterModel, model.slug.as_ref()),
-        ];
-        let changes: Vec<(Key, Option<Value>)> = canonical
-            .into_iter()
-            .filter(|(key, value)| self.raw(*key).is_some_and(|raw| raw != *value))
-            .map(|(key, value)| (key, Some(Value::from(value))))
-            .collect();
-        let keys = changes.iter().map(|(key, _)| *key).collect();
-        self.apply(changes)?;
-        Ok(keys)
+        self.apply(|| {
+            let model = self.cleanup_model(CleanupProvider::OpenRouter);
+            let canonical = [
+                (Key::OutputMode, self.output_mode().as_setting()),
+                (
+                    Key::HotkeyActivationMode,
+                    self.activation_mode().as_setting(),
+                ),
+                (Key::HistoryRetention, self.history_retention().as_setting()),
+                (Key::OpenRouterModel, model.slug.as_ref()),
+            ];
+            canonical
+                .into_iter()
+                .filter(|(key, value)| self.raw(*key).is_some_and(|raw| raw != *value))
+                .map(|(key, value)| (key, Some(Value::from(value))))
+                .collect()
+        })
     }
 
     /// The stored `selectedModel` id, or the recommended model for the
@@ -190,16 +197,21 @@ impl Settings {
     /// stores `auto` and returns the "Invalid Language Setting" warning for
     /// the caller to post. `None` when nothing needed resetting.
     pub fn reset_invalid_language(&self) -> Result<Option<UserMessage>, SettingsError> {
-        let Some(stored) = self.string(Key::SelectedLanguage) else {
+        let mut invalid = None;
+        self.apply(|| {
+            let stored = self.string(Key::SelectedLanguage);
+            let Some(StoredLanguage::Invalid { code }) =
+                stored.as_deref().map(resolve_stored_language)
+            else {
+                return Vec::new();
+            };
+            invalid = Some(code);
+            let auto = Value::from(LanguageSetting::Auto.code());
+            vec![(Key::SelectedLanguage, Some(auto))]
+        })?;
+        let Some(code) = invalid else {
             return Ok(None);
         };
-        let StoredLanguage::Invalid { code } = resolve_stored_language(&stored) else {
-            return Ok(None);
-        };
-        self.put(
-            Key::SelectedLanguage,
-            Value::from(LanguageSetting::Auto.code()),
-        )?;
         tracing::warn!(key = %Key::SelectedLanguage, "reset an unrecognized language code to auto");
         Ok(Some(UserMessage::InvalidLanguageSetting { code }))
     }
@@ -403,10 +415,13 @@ impl Settings {
 
     /// Finishing onboarding sets both flags in one write (SET-4).
     pub fn complete_onboarding(&self) -> Result<(), SettingsError> {
-        self.apply(vec![
-            (Key::OnboardingCompleted, Some(Value::Bool(true))),
-            (Key::DidShowFirstRunSetup, Some(Value::Bool(true))),
-        ])
+        self.apply(|| {
+            vec![
+                (Key::OnboardingCompleted, Some(Value::Bool(true))),
+                (Key::DidShowFirstRunSetup, Some(Value::Bool(true))),
+            ]
+        })
+        .map(drop)
     }
 
     /// Stores both onboarding flags in one write, e.g. the outcome of closing
@@ -416,16 +431,19 @@ impl Settings {
         onboarding_completed: bool,
         did_show_first_run_setup: bool,
     ) -> Result<(), SettingsError> {
-        self.apply(vec![
-            (
-                Key::OnboardingCompleted,
-                Some(Value::Bool(onboarding_completed)),
-            ),
-            (
-                Key::DidShowFirstRunSetup,
-                Some(Value::Bool(did_show_first_run_setup)),
-            ),
-        ])
+        self.apply(|| {
+            vec![
+                (
+                    Key::OnboardingCompleted,
+                    Some(Value::Bool(onboarding_completed)),
+                ),
+                (
+                    Key::DidShowFirstRunSetup,
+                    Some(Value::Bool(did_show_first_run_setup)),
+                ),
+            ]
+        })
+        .map(drop)
     }
 
     /// "Run Setup Again" clears only `onboardingCompleted` (SET-4), so first
@@ -498,21 +516,29 @@ impl Settings {
     }
 
     fn put(&self, key: Key, value: Value) -> Result<(), SettingsError> {
-        self.apply(vec![(key, Some(value))])
+        self.apply(|| vec![(key, Some(value))]).map(drop)
     }
 
     fn put_enum<E: SettingEnum>(&self, value: E) -> Result<(), SettingsError> {
         self.put(E::KEY, Value::from(value.as_setting()))
     }
 
-    // `None` removes the key. Saves only when something changed, and updates
-    // the cache only after the file is saved.
-    fn apply(&self, changes: Vec<(Key, Option<Value>)>) -> Result<(), SettingsError> {
+    // Under the file lock: reread the file into the cache, ask `changes` for
+    // this write's keys (it may call getters, which now see the file), and
+    // save only if one differs from the file. `None` removes the key. Returns
+    // the changed keys, which are reported after both locks are released.
+    fn apply(
+        &self,
+        changes: impl FnOnce() -> Vec<(Key, Option<Value>)>,
+    ) -> Result<Vec<Key>, SettingsError> {
         let changed = {
-            let mut values = self.lock();
-            let mut next = values.clone();
+            let _file_lock = lock_file(&self.path)?;
+            let stored = reload(&self.path)?;
+            let corrupt = stored.is_none();
+            let mut next = stored.unwrap_or_default();
+            *self.lock() = next.clone();
             let mut changed = Vec::new();
-            for (key, value) in changes {
+            for (key, value) in changes() {
                 if next.get(key.as_str()) == value.as_ref() {
                     continue;
                 }
@@ -523,20 +549,20 @@ impl Settings {
                 changed.push(key);
             }
             if changed.is_empty() {
-                return Ok(());
+                return Ok(changed);
             }
-            if let Err(error) = write_atomic(&self.path, &next) {
+            if let Err(error) = save(&self.path, &next, corrupt) {
                 let keys: Vec<&str> = changed.iter().map(|key| key.as_str()).collect();
                 tracing::error!(path = %self.path.display(), ?keys, %error, "couldn't save settings");
                 return Err(error);
             }
-            *values = next;
+            *self.lock() = next;
             changed
         };
         if let Some(observer) = &self.observer {
-            changed.into_iter().for_each(observer);
+            changed.iter().copied().for_each(observer);
         }
-        Ok(())
+        Ok(changed)
     }
 }
 
@@ -561,53 +587,98 @@ fn wrong_type(key: Key, value: &Value) {
 }
 
 fn load(path: &Path) -> Map<String, Value> {
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Map::new(),
-        Err(error) => {
-            tracing::error!(path = %path.display(), %error, "couldn't read settings; using defaults");
-            return Map::new();
-        }
-    };
-    match serde_json::from_slice::<Value>(&bytes) {
-        Ok(Value::Object(values)) => values,
-        Ok(_) => {
-            tracing::error!(path = %path.display(), "settings are not a JSON object; using defaults");
+    match read(path) {
+        Ok(Ok(values)) => values,
+        Ok(Err(problem)) => {
+            tracing::error!(path = %path.display(), problem, "corrupt settings; using defaults");
             Map::new()
         }
         Err(error) => {
-            tracing::error!(path = %path.display(), %error, "settings are not valid JSON; using defaults");
+            tracing::error!(path = %path.display(), %error, "couldn't read settings; using defaults");
             Map::new()
         }
     }
 }
 
-fn write_atomic(path: &Path, values: &Map<String, Value>) -> Result<(), SettingsError> {
-    let bytes = serde_json::to_vec_pretty(values).map_err(SettingsError::Encode)?;
+// the file's settings for a write: `None` when it is corrupt, an error when
+// it cannot be read, since replacing it would lose settings we never saw
+fn reload(path: &Path) -> Result<Option<Map<String, Value>>, SettingsError> {
+    match read(path) {
+        Ok(Ok(values)) => Ok(Some(values)),
+        Ok(Err(problem)) => {
+            tracing::error!(path = %path.display(), problem, "corrupt settings; replacing them");
+            Ok(None)
+        }
+        Err(error) => {
+            tracing::error!(path = %path.display(), %error, "couldn't reread settings; not saving");
+            Err(SettingsError::Io(error))
+        }
+    }
+}
+
+// the outer error is I/O; the inner one says why the contents are corrupt
+fn read(path: &Path) -> io::Result<Result<Map<String, Value>, &'static str>> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Ok(Map::new())),
+        Err(error) => return Err(error),
+    };
+    Ok(match serde_json::from_slice::<Value>(&bytes) {
+        Ok(Value::Object(values)) => Ok(values),
+        Ok(_) => Err("not a JSON object"),
+        Err(_) => Err("not valid JSON"),
+    })
+}
+
+// an exclusive lock on `settings.json.lock`, held until the file is dropped;
+// the lock file is never removed, so every writer locks the same inode
+fn lock_file(path: &Path) -> Result<File, SettingsError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let tmp = temp_path(path);
-    let result = write_and_rename(&tmp, path, &bytes);
-    if result.is_err()
-        && let Err(error) = fs::remove_file(&tmp)
-        && error.kind() != io::ErrorKind::NotFound
-    {
-        tracing::warn!(path = %tmp.display(), %error, "couldn't remove temporary settings file");
+    let lock_path = sibling(path, ".lock");
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock_path)?;
+    file.lock()?;
+    Ok(file)
+}
+
+// replaces the file through a uniquely named sibling temp file, first copying
+// corrupt contents to a unique backup without moving the original
+fn save(path: &Path, values: &Map<String, Value>, corrupt: bool) -> Result<(), SettingsError> {
+    let bytes = serde_json::to_vec_pretty(values).map_err(SettingsError::Encode)?;
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let prefix = sibling(path, ".");
+    let mut tmp = tempfile::Builder::new()
+        .prefix(prefix.file_name().unwrap_or_default())
+        .suffix(".tmp")
+        .tempfile_in(parent)?;
+    tmp.write_all(&bytes)?;
+    tmp.as_file().sync_all()?;
+    if corrupt {
+        let backup_prefix = sibling(path, ".corrupt-");
+        let mut backup = tempfile::Builder::new()
+            .prefix(backup_prefix.file_name().unwrap_or_default())
+            .tempfile_in(parent)?;
+        let mut original = File::open(path)?;
+        io::copy(&mut original, &mut backup)?;
+        backup.as_file().sync_all()?;
+        let (_, backup_path) = backup.keep().map_err(|error| error.error)?;
+        tracing::warn!(path = %backup_path.display(), "preserved corrupt settings");
     }
-    result.map_err(SettingsError::Io)
+    tmp.persist(path).map_err(|error| error.error)?;
+    Ok(())
 }
 
-fn write_and_rename(tmp: &Path, path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let mut file = File::create(tmp)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    fs::rename(tmp, path)
-}
-
-fn temp_path(path: &Path) -> PathBuf {
+fn sibling(path: &Path, suffix: &str) -> PathBuf {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
-    name.push(".tmp");
+    name.push(suffix);
     path.with_file_name(name)
 }
 
@@ -711,8 +782,8 @@ mod tests {
     }
 
     #[test]
-    fn temp_path_is_a_sibling() {
-        let got = temp_path(Path::new("/greendale/Onda/settings.json"));
-        assert_eq!(got, PathBuf::from("/greendale/Onda/settings.json.tmp"));
+    fn sibling_shares_the_folder() {
+        let got = sibling(Path::new("/greendale/Onda/settings.json"), ".lock");
+        assert_eq!(got, PathBuf::from("/greendale/Onda/settings.json.lock"));
     }
 }
