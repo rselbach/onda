@@ -14,6 +14,7 @@ pub mod languages;
 pub mod level;
 pub mod messages;
 pub mod migration;
+pub mod model_loads;
 pub mod model_selection;
 pub mod models;
 pub mod non_dictation_ui;

@@ -32,6 +32,7 @@ use onda_domain::hotkey::{
 use onda_domain::language_menu;
 use onda_domain::level::SilentMicDetector;
 use onda_domain::messages::{MessageClass, NoticeRateLimiter, RateLimitedNotice, UserMessage};
+use onda_domain::model_loads::ModelLoads;
 use onda_domain::model_selection::{
     PendingSelection, SelectOutcome, load_failure_notification, reload_after_download, select_model,
 };
@@ -220,13 +221,11 @@ struct Opening {
     media_begun: bool,
 }
 
-// a start awaiting its checks or the microphone; aborted starts stay here
-// until the in-flight step returns, so two starts never overlap (HOT-28)
+// a start awaiting its checks or the microphone
 struct Starting {
     id: SessionId,
     kind: StartKind,
     settings: Arc<Settings>,
-    aborted: bool,
     opening: Option<Opening>,
     _task: Task,
 }
@@ -351,6 +350,9 @@ struct Transcribing {
 enum Phase {
     Idle,
     Starting(Starting),
+    // cancelled while its check or microphone step ran. It holds the start
+    // slot until that step returns, so two starts never overlap (HOT-28).
+    Aborting(Starting),
     Recording(Box<Recording>),
     Transcribing(Box<Transcribing>),
 }
@@ -383,12 +385,9 @@ pub(crate) struct Actor {
     download_overlay: DownloadOverlay,
     notice_timer: Option<Task>,
     model_state: ModelState,
-    loads_in_flight: usize,
-    force_loading: bool,
+    loads: ModelLoads,
     downloaded: Vec<ModelId>,
     downloads: DownloadTracker,
-    // a download a load started because its model was missing (ASR-2)
-    load_download: Option<ModelId>,
     // the declined-migration fallback loaded instead of the selection (DL-14)
     override_model: Option<ModelId>,
     pending: PendingSelection,
@@ -459,11 +458,9 @@ impl Actor {
             download_overlay: DownloadOverlay::new(),
             notice_timer: None,
             model_state: ModelState::NotReady,
-            loads_in_flight: 0,
-            force_loading: false,
+            loads: ModelLoads::new(),
             downloaded: Vec::new(),
             downloads: DownloadTracker::new(),
-            load_download: None,
             override_model: None,
             pending: PendingSelection::new(),
             permissions: PermissionSnapshot {
@@ -616,7 +613,7 @@ impl Actor {
             Msg::Fallback(message) => self.show_notice(&message),
             Msg::ModelState(state) => {
                 self.model_state = state;
-                self.force_loading = false;
+                self.loads.reported();
             }
             Msg::LoadFinished(result) => self.load_finished(result),
             Msg::Permissions(snapshot) => self.permissions = snapshot,
@@ -667,7 +664,7 @@ impl Actor {
     fn snapshot(&self) -> SessionSnapshot {
         SessionSnapshot {
             phase: self.session_phase(),
-            start_pending: matches!(self.phase, Phase::Starting(_)),
+            start_pending: matches!(self.phase, Phase::Starting(_) | Phase::Aborting(_)),
         }
     }
 
@@ -680,7 +677,7 @@ impl Actor {
         // UI-9, DICT-21: menu starts are not provisional and stops have no tail
         match self.phase {
             Phase::Idle => self.request_start(StartKind::Record { provisional: false }),
-            Phase::Starting(_) => {}
+            Phase::Starting(_) | Phase::Aborting(_) => {}
             Phase::Recording(_) => self.stop_without_tail(),
             Phase::Transcribing(_) => self.cancel(),
         }
@@ -708,7 +705,7 @@ impl Actor {
                 self.notify(UserMessage::StillTranscribing);
                 return;
             }
-            Phase::Starting(_) | Phase::Recording(_) => return,
+            Phase::Starting(_) | Phase::Aborting(_) | Phase::Recording(_) => return,
             Phase::Idle => {}
         }
         if kind == StartKind::Retry && self.failed_audio.is_none() {
@@ -730,28 +727,31 @@ impl Actor {
             id,
             kind,
             settings: self.settings.clone(),
-            aborted: false,
             opening: None,
             _task: task,
         });
     }
 
     fn abort_start(&mut self) {
-        if let Phase::Starting(starting) = &mut self.phase {
-            starting.aborted = true;
-        }
+        self.phase = match std::mem::replace(&mut self.phase, Phase::Idle) {
+            Phase::Starting(starting) => Phase::Aborting(starting),
+            other => other,
+        };
     }
 
     fn start_checked(&mut self, id: SessionId, report: CheckReport) {
-        if !matches!(&self.phase, Phase::Starting(s) if s.id == id && s.opening.is_none()) {
+        if !matches!(&self.phase, Phase::Starting(s) | Phase::Aborting(s) if s.id == id && s.opening.is_none())
+        {
             return;
         }
         self.permissions = PermissionSnapshot {
             microphone: report.microphone,
             accessibility: report.accessibility,
         };
-        let Phase::Starting(starting) = std::mem::replace(&mut self.phase, Phase::Idle) else {
-            return;
+        let (starting, aborted) = match std::mem::replace(&mut self.phase, Phase::Idle) {
+            Phase::Starting(starting) => (starting, false),
+            Phase::Aborting(starting) => (starting, true),
+            _ => return,
         };
         if let StartKind::Record { .. } = starting.kind
             && report.microphone != MicrophonePermission::Granted
@@ -762,7 +762,7 @@ impl Actor {
             return;
         }
         // released while the prompt was up: stop silently (DICT-1 step 4)
-        if starting.aborted {
+        if aborted {
             return;
         }
         if !self.output_ready(&starting.settings, report.accessibility) {
@@ -802,11 +802,14 @@ impl Actor {
     }
 
     fn capture_opened(&mut self, id: SessionId, result: Result<CaptureInfo, UserMessage>) {
-        if !matches!(&self.phase, Phase::Starting(s) if s.id == id && s.opening.is_some()) {
+        if !matches!(&self.phase, Phase::Starting(s) | Phase::Aborting(s) if s.id == id && s.opening.is_some())
+        {
             return;
         }
-        let Phase::Starting(starting) = std::mem::replace(&mut self.phase, Phase::Idle) else {
-            return;
+        let (starting, aborted) = match std::mem::replace(&mut self.phase, Phase::Idle) {
+            Phase::Starting(starting) => (starting, false),
+            Phase::Aborting(starting) => (starting, true),
+            _ => return,
         };
         let StartKind::Record { provisional } = starting.kind else {
             return;
@@ -827,7 +830,7 @@ impl Actor {
                 end_media(self);
                 self.notify(notice);
             }
-            Ok(_) if starting.aborted => {
+            Ok(_) if aborted => {
                 self.ports.audio.stop();
                 end_media(self);
             }
@@ -964,7 +967,7 @@ impl Actor {
                             let id = t.head.id;
                             self.end_tail(id);
                         }
-                        Phase::Idle | Phase::Starting(_) => {}
+                        Phase::Idle | Phase::Starting(_) | Phase::Aborting(_) => {}
                     }
                 }
             }
@@ -996,7 +999,7 @@ impl Actor {
             Phase::Transcribing(t) => {
                 matches!(t.stage, Stage::Tail { capture_id: id, .. } if id == capture_id)
             }
-            Phase::Idle | Phase::Starting(_) => false,
+            Phase::Idle | Phase::Starting(_) | Phase::Aborting(_) => false,
         }
     }
 
@@ -1011,7 +1014,7 @@ impl Actor {
             Phase::Transcribing(t) if matches!(t.stage, Stage::Tail { .. }) => {
                 self.overlay.push_level(level);
             }
-            Phase::Transcribing(_) | Phase::Idle | Phase::Starting(_) => {}
+            Phase::Transcribing(_) | Phase::Idle | Phase::Starting(_) | Phase::Aborting(_) => {}
         }
     }
 
@@ -1406,9 +1409,8 @@ impl Actor {
     fn cancel(&mut self) {
         match std::mem::replace(&mut self.phase, Phase::Idle) {
             Phase::Idle => {}
-            Phase::Starting(mut starting) => {
-                starting.aborted = true;
-                self.phase = Phase::Starting(starting);
+            Phase::Starting(starting) | Phase::Aborting(starting) => {
+                self.phase = Phase::Aborting(starting);
             }
             Phase::Recording(recording) => {
                 self.ports.audio.stop();
@@ -1429,7 +1431,7 @@ impl Actor {
         let media_session = match std::mem::replace(&mut self.phase, Phase::Idle) {
             Phase::Recording(recording) => recording.media_begun.then_some(recording.id),
             Phase::Transcribing(transcribing) => transcribing.head.media_session(),
-            Phase::Idle | Phase::Starting(_) => None,
+            Phase::Idle | Phase::Starting(_) | Phase::Aborting(_) => None,
         };
         self.go_idle(media_session);
     }
@@ -1489,7 +1491,7 @@ impl Actor {
         // nothing is delivered and no audio is kept (DICT-28a)
         self.cancel();
         self.redelivery = None;
-        if let Phase::Starting(_) = self.phase {
+        if let Phase::Aborting(_) = self.phase {
             self.phase = Phase::Idle;
             self.ports.audio.stop();
         }
@@ -1520,7 +1522,9 @@ impl Actor {
 
     fn discard_failed(&mut self) {
         let retrying = match &self.phase {
-            Phase::Starting(starting) => starting.kind == StartKind::Retry,
+            Phase::Starting(starting) | Phase::Aborting(starting) => {
+                starting.kind == StartKind::Retry
+            }
             Phase::Transcribing(t) => t.head.origin == Origin::Retry,
             Phase::Idle | Phase::Recording(_) => false,
         };
@@ -1606,7 +1610,7 @@ impl Actor {
             self.download_then_load(model);
             return;
         }
-        self.loads_in_flight += 1;
+        self.loads.started();
         let service = self.service.clone();
         tokio::spawn(send_when(self.messages.clone(), async move {
             if unload_first {
@@ -1617,10 +1621,7 @@ impl Actor {
     }
 
     fn load_finished(&mut self, result: Result<(), LoadError>) {
-        self.loads_in_flight = self.loads_in_flight.saturating_sub(1);
-        if self.loads_in_flight == 0 {
-            self.force_loading = false;
-        }
+        self.loads.finished();
         if let Err(LoadError::Failed(error)) = result {
             // built-in engines have no files on disk (ASR-6)
             let on_disk: Vec<ModelId> = self
@@ -1674,9 +1675,7 @@ impl Actor {
         if !self.downloaded.contains(&model) {
             self.downloaded.push(model);
         }
-        if self.load_download == Some(model) {
-            self.load_download = None;
-        }
+        self.loads.download_ended(model);
         // ASR-9: clear the temporary override, then load the selection
         if reload_after_download(
             model,
@@ -1684,7 +1683,7 @@ impl Actor {
             self.load_in_flight(),
         ) {
             self.override_model = None;
-            self.force_loading = true;
+            self.loads.announce();
             self.start_load(false);
         }
         let idle = matches!(self.phase, Phase::Idle);
@@ -1799,7 +1798,7 @@ impl Actor {
 
     fn current_id(&self) -> Option<SessionId> {
         match &self.phase {
-            Phase::Idle | Phase::Starting(_) => None,
+            Phase::Idle | Phase::Starting(_) | Phase::Aborting(_) => None,
             Phase::Recording(recording) => Some(recording.id),
             Phase::Transcribing(t) => Some(t.head.id),
         }
@@ -1807,7 +1806,7 @@ impl Actor {
 
     fn session_phase(&self) -> SessionPhase {
         match &self.phase {
-            Phase::Idle | Phase::Starting(_) => SessionPhase::Idle,
+            Phase::Idle | Phase::Starting(_) | Phase::Aborting(_) => SessionPhase::Idle,
             Phase::Recording(recording) => SessionPhase::Recording {
                 provisional: recording.provisional,
             },
@@ -1839,7 +1838,7 @@ impl Actor {
             &self.model_state,
             self.downloads.current(Some(selected)),
             self.load_in_flight(),
-            self.force_loading,
+            self.loads.announced(),
         );
         let status = AppStatus::resolve(phase, &non_dictation);
         let missing = self.missing_permission();
@@ -1861,7 +1860,7 @@ impl Actor {
                     warning: clock.is_warning,
                 })
             }
-            Phase::Idle | Phase::Starting(_) | Phase::Transcribing(_) => None,
+            Phase::Idle | Phase::Starting(_) | Phase::Aborting(_) | Phase::Transcribing(_) => None,
         };
         let overlay = self.overlay.view(clock.as_ref());
         let download = self.download_overlay.apply(

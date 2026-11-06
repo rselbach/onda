@@ -44,7 +44,7 @@ impl Actor {
 
     /// A load, or a download a load is waiting for, is running.
     pub(super) fn load_in_flight(&self) -> bool {
-        self.loads_in_flight > 0 || self.load_download.is_some()
+        self.loads.in_flight()
     }
 
     // --- launch (ASR-1, ONB-12, ONB-13, DL-12..DL-14) ---
@@ -110,13 +110,13 @@ impl Actor {
             }
             LaunchLoad::LoadFallback(model) => {
                 self.override_model = Some(model);
-                self.force_loading = true;
+                self.loads.announce();
                 self.start_load(false);
             }
             LaunchLoad::OpenSpeechSettings => self.open_section(MainWindowSection::Speech),
             LaunchLoad::LoadSelected => {
                 // the tray shows loading at once (ASR-1)
-                self.force_loading = true;
+                self.loads.announce();
                 self.start_load(false);
             }
         }
@@ -161,7 +161,7 @@ impl Actor {
         ) {
             Some(DeclinedLoad::LoadFallback(model)) => {
                 self.override_model = Some(model);
-                self.force_loading = true;
+                self.loads.announce();
                 self.start_load(false);
                 true
             }
@@ -227,8 +227,7 @@ impl Actor {
     // ASR-2: the load waits for the download; ASR-9 loads once it finishes
     pub(super) fn download_then_load(&mut self, model: ModelId) {
         // the tray and overlay follow the download's progress (OVL-19)
-        self.force_loading = false;
-        self.load_download = Some(model);
+        self.loads.wait_for_download(model);
         self.model_state = ModelState::Loading {
             status: PREPARING_STATUS.to_owned(),
             progress: None,
@@ -272,9 +271,8 @@ impl Actor {
             DownloadUpdateKind::Cancelled => {
                 self.downloads.ended(model.as_str());
                 self.pending.download_stopped(model);
-                if self.load_download == Some(model) {
+                if self.loads.download_ended(model) {
                     // a cancelled load reports not_ready (ASR-7)
-                    self.load_download = None;
                     self.model_state = ModelState::NotReady;
                 }
                 Some(OnboardingDownloadUpdate::Failed {
@@ -292,9 +290,8 @@ impl Actor {
                     DownloadEnd::Failed { error: Some(error) } => error.clone(),
                     _ => status_text(&name, DownloadStatus::Failed),
                 };
-                if self.load_download == Some(model) {
+                if self.loads.download_ended(model) {
                     // the load failed: error state and ASR-6
-                    self.load_download = None;
                     self.model_state = ModelState::Error {
                         message: shown.clone(),
                     };
@@ -403,7 +400,7 @@ impl Actor {
             return;
         }
         self.end_declined();
-        self.load_download = Some(model);
+        self.loads.wait_for_download(model);
         self.model_state = ModelState::Loading {
             status: PREPARING_STATUS.to_owned(),
             progress: None,

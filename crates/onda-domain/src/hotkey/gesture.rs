@@ -68,12 +68,24 @@ pub enum GestureAction {
 /// (state diagram under "Lone-modifier gesture").
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LoneModifierGesture {
-    phase: GesturePhase,
-    // set once a non-modifier key went down during this hold; the timer may
-    // not fire for the rest of it (HOT-22).
-    other_key_pressed: bool,
+    state: GestureState,
     // token of the most recent schedule; older ticks are stale.
     next_token: u64,
+}
+
+// `chorded` is set once a non-modifier key went down during this hold: the
+// timer may not fire for the rest of it (HOT-22), and only the first such key
+// after the start discards (HOT-33).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum GestureState {
+    #[default]
+    Idle,
+    Pending {
+        chorded: bool,
+    },
+    Active {
+        chorded: bool,
+    },
 }
 
 impl LoneModifierGesture {
@@ -84,13 +96,16 @@ impl LoneModifierGesture {
 
     /// The current phase, needed by [`gesture_input_for_flags_change`].
     pub fn phase(&self) -> GesturePhase {
-        self.phase
+        match self.state {
+            GestureState::Idle => GesturePhase::Idle,
+            GestureState::Pending { .. } => GesturePhase::Pending,
+            GestureState::Active { .. } => GesturePhase::Active,
+        }
     }
 
     /// Returns to idle without emitting anything (fresh registration).
     pub fn reset(&mut self) {
-        self.phase = GesturePhase::Idle;
-        self.other_key_pressed = false;
+        self.state = GestureState::Idle;
     }
 
     /// Feeds one input.
@@ -106,11 +121,10 @@ impl LoneModifierGesture {
 
     fn modifier_down(&mut self) -> GestureAction {
         // repeated downs while pending or active are ignored (HOT-23).
-        if self.phase != GesturePhase::Idle {
+        if self.state != GestureState::Idle {
             return GestureAction::None;
         }
-        self.phase = GesturePhase::Pending;
-        self.other_key_pressed = false;
+        self.state = GestureState::Pending { chorded: false };
         self.next_token += 1;
         GestureAction::ScheduleDebounce {
             token: DebounceToken(self.next_token),
@@ -119,51 +133,50 @@ impl LoneModifierGesture {
     }
 
     fn modifier_up(&mut self) -> GestureAction {
-        let phase = self.phase;
-        let already_cancelled = self.other_key_pressed;
+        let state = self.state;
         self.reset();
-        match phase {
-            GesturePhase::Idle => GestureAction::None,
-            GesturePhase::Pending if already_cancelled => GestureAction::None,
-            GesturePhase::Pending => GestureAction::CancelDebounce,
-            GesturePhase::Active => GestureAction::Up,
+        match state {
+            GestureState::Idle => GestureAction::None,
+            GestureState::Pending { chorded: true } => GestureAction::None,
+            GestureState::Pending { chorded: false } => GestureAction::CancelDebounce,
+            GestureState::Active { .. } => GestureAction::Up,
         }
     }
 
     fn other_key_down(&mut self) -> GestureAction {
-        match self.phase {
-            GesturePhase::Idle => GestureAction::None,
-            GesturePhase::Pending => {
-                self.other_key_pressed = true;
+        match self.state {
+            GestureState::Idle => GestureAction::None,
+            GestureState::Pending { .. } => {
+                self.state = GestureState::Pending { chorded: true };
                 GestureAction::CancelDebounce
             }
-            GesturePhase::Active => {
-                let first = !self.other_key_pressed;
-                self.other_key_pressed = true;
-                if first {
-                    return GestureAction::Discard;
+            GestureState::Active { chorded } => {
+                self.state = GestureState::Active { chorded: true };
+                if chorded {
+                    return GestureAction::None;
                 }
-                GestureAction::None
+                GestureAction::Discard
             }
         }
     }
 
     fn debounce_elapsed(&mut self, token: DebounceToken) -> GestureAction {
         let current = token.0 == self.next_token;
-        if self.phase != GesturePhase::Pending || self.other_key_pressed || !current {
+        let armed = self.state == GestureState::Pending { chorded: false };
+        if !armed || !current {
             return GestureAction::None;
         }
-        self.phase = GesturePhase::Active;
+        self.state = GestureState::Active { chorded: false };
         GestureAction::Down
     }
 
     fn stream_disabled(&mut self) -> GestureAction {
-        let phase = self.phase;
+        let state = self.state;
         self.reset();
-        match phase {
-            GesturePhase::Idle => GestureAction::None,
-            GesturePhase::Pending => GestureAction::CancelDebounce,
-            GesturePhase::Active => GestureAction::Up,
+        match state {
+            GestureState::Idle => GestureAction::None,
+            GestureState::Pending { .. } => GestureAction::CancelDebounce,
+            GestureState::Active { .. } => GestureAction::Up,
         }
     }
 }
@@ -390,7 +403,9 @@ mod tests {
         g.handle(GestureInput::OtherKeyDown);
         g.reset();
         assert_eq!(g.phase(), Idle);
-        assert!(!g.other_key_pressed);
+        // a chord before the reset does not carry into the next hold
+        assert_eq!(g.handle(GestureInput::ModifierDown), schedule(2));
+        assert_eq!(elapse(&mut g), A::Down);
     }
 
     #[test]
