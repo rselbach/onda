@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Onda: dictation for your editor, terminal, and chat</title>
+<meta name="description" content="Onda is a dictation app for macOS and Linux. Hold a shortcut, speak, and it types the text where your cursor is. Speech recognition runs on your computer.">
+<link rel="icon" href="icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #f5f2ea; --paper: #fbf9f4; --ink: #1c1b18; --muted: #5d5a52; --faint: #857f74; --rule: #dcd6c8; --accent: #1f3fbf;
+  --serif: "Newsreader", Georgia, serif;
+  --sans: "IBM Plex Sans", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.6 var(--sans); -webkit-font-smoothing: antialiased; }
+main { overflow-x: clip; }
+a { color: var(--accent); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--accent) 35%, transparent); text-underline-offset: 3px; }
+a:hover { text-decoration-color: currentColor; }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+.wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+header.top { display: flex; justify-content: space-between; align-items: center; padding-block: 22px; border-bottom: 1px solid var(--rule); }
+.brand { display: flex; align-items: center; gap: 10px; font: 500 22px/1 var(--serif); color: var(--ink); text-decoration: none; }
+.brand img { width: 26px; height: 26px; border-radius: 6px; }
+.top nav, footer nav { display: flex; gap: 22px; font-size: 14px; }
+.top nav a { color: var(--muted); text-decoration: none; }
+.top nav a:hover { color: var(--ink); }
+
+.hero { display: grid; grid-template-columns: 1.35fr 1fr; gap: 56px; align-items: end; padding-top: 84px; }
+.hero > * { min-width: 0; }
+.eyebrow { font: 500 12px/1 var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--faint); margin: 0 0 20px; }
+h1 { font: 400 clamp(38px, 5.6vw, 62px)/1.05 var(--serif); letter-spacing: -0.02em; margin: 0; text-wrap: balance; }
+.lede { font-size: 18px; color: var(--muted); margin: 22px 0 0; max-width: 34em; text-wrap: pretty; }
+
+.card { background: var(--paper); border: 1px solid var(--rule); border-radius: 4px; padding: 22px; }
+.btn { display: flex; justify-content: center; align-items: center; gap: 10px; background: var(--ink); color: var(--paper); text-decoration: none; font-weight: 500; padding: 13px 18px; border-radius: 3px; }
+.btn:hover { background: #33312b; }
+.btn svg { width: 17px; height: 17px; flex: none; }
+.meta { font-size: 14px; color: var(--muted); margin: 12px 0 0; }
+.others { font-size: 13.5px; color: var(--faint); margin: 10px 0 0; line-height: 1.7; }
+.others span { display: block; }
+.others .label { color: var(--muted); }
+
+figure { margin: 72px 0 0; padding: 18px; background: var(--paper); border: 1px solid var(--rule); border-radius: 4px; }
+figure img { display: block; width: 100%; height: auto; border-radius: 8px; }
+figcaption { font: italic 15px/1.5 var(--serif); color: var(--faint); margin-top: 14px; }
+
+section.features { padding-top: 110px; }
+.fhead { display: grid; grid-template-columns: 1.35fr 1fr; gap: 8px 56px; align-items: baseline; border-bottom: 1px solid var(--ink); padding-bottom: 16px; }
+h2 { font: 400 36px/1.1 var(--serif); letter-spacing: -0.015em; margin: 0; }
+.fhead p { margin: 0; color: var(--muted); font-size: 15px; }
+ol { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); column-gap: 56px; }
+li { display: grid; grid-template-columns: 44px 1fr; padding: 24px 0; border-bottom: 1px solid var(--rule); }
+li .n { font: 500 12px/2.1 var(--mono); color: var(--faint); }
+li h3 { font: 500 21px/1.25 var(--serif); margin: 0 0 6px; }
+li p { margin: 0; color: var(--muted); font-size: 15px; }
+code { font: 13.5px var(--mono); color: var(--ink); white-space: nowrap; }
+
+footer { margin-top: 110px; border-top: 1px solid var(--rule); padding: 28px 0 40px; }
+footer .wrap { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px 24px; font-size: 14px; color: var(--faint); }
+
+@media (max-width: 820px) {
+  .hero, .fhead { grid-template-columns: 1fr; }
+  .hero { gap: 32px; padding-top: 52px; }
+  figure { padding: 8px; margin-top: 52px; }
+  figure img { border-radius: 5px; }
+  figcaption { margin: 10px 4px 2px; }
+  section.features { padding-top: 88px; }
+  ol { grid-template-columns: 1fr; }
+  li { grid-template-columns: 36px 1fr; }
+}
+</style>
+</head>
+<body>
+<header class="wrap top">
+  <a class="brand" href="./"><img src="icon.png" width="26" height="26" alt="">Onda</a>
+  <nav><a href="https://github.com/rselbach/onda">GitHub</a><a href="https://github.com/rselbach/onda/releases">Releases</a></nav>
+</header>
+
+<main class="wrap">
+  <section class="hero">
+    <div>
+      <p class="eyebrow">macOS · Linux · on-device speech</p>
+      <h1>Dictation that types into your editor, terminal, or chat.</h1>
+      <p class="lede">Hold a shortcut, speak, and let go. Onda transcribes what you said and types it where your cursor is. Speech recognition runs on your computer, so your audio stays there.</p>
+    </div>
+    <div class="card">
+      <a class="btn" id="download" href="https://github.com/rselbach/onda/releases">View releases</a>
+      <p class="meta" id="download-meta">Packages for macOS and Linux are on the releases page.</p>
+      <p class="others" id="download-others" hidden></p>
+    </div>
+  </section>
+
+  <figure>
+    <img src="screenshot.webp" width="2200" height="1200" alt="Onda's History page in dark mode, listing transcripts dictated into Ghostty, Visual Studio Code, Slack, and Mail.">
+    <figcaption>The History page keeps each transcript with the app it went to.</figcaption>
+  </figure>
+
+  <section class="features">
+    <div class="fhead"><h2>What Onda does</h2><p>The core is shared on macOS and Linux; differences are noted.</p></div>
+    <ol>
+      <li><span class="n">01</span><div><h3>Hold, tap, or both</h3><p>Hold the shortcut to talk, tap to start and stop, or let Onda tell a tap from a hold. On a Mac, Right Option or Fn can work alone.</p></div></li>
+      <li><span class="n">02</span><div><h3>Speech runs locally</h3><p>Parakeet models cover English and 25 European languages. They run on the Neural Engine on a Mac and on the CPU on Linux.</p></div></li>
+      <li><span class="n">03</span><div><h3>Live preview</h3><p>On a Mac, the overlay shows the transcript while you speak. macOS can also use Apple's built-in speech engine and a Japanese Parakeet model.</p></div></li>
+      <li><span class="n">04</span><div><h3>Text goes where the cursor is</h3><p>Onda types into the focused app or copies to the clipboard. On a Mac it reads the text before the cursor to fix spacing and capitalization.</p></div></li>
+      <li><span class="n">05</span><div><h3>Replacements</h3><p>Rules swap phrases the model keeps getting wrong, like “cube cuddle” for <code>kubectl</code>. They run on your machine after each dictation.</p></div></li>
+      <li><span class="n">06</span><div><h3>Optional cleanup</h3><p>Send the text, never the audio, to OpenRouter or Fireworks with your own key, or to Apple Intelligence on a Mac. It drops filler words and applies “scratch that”.</p></div></li>
+      <li><span class="n">07</span><div><h3>Searchable history</h3><p>Transcripts stay on your computer for a week, a month, or until you delete them. Search them and copy any one again.</p></div></li>
+      <li><span class="n">08</span><div><h3>Commands on Linux</h3><p><code>onda --toggle</code>, <code>--start</code>, <code>--stop</code>, and <code>--paste-last</code> let you bind dictation to any key your desktop allows.</p></div></li>
+    </ol>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>Onda is open source under the MIT License.</span>
+    <nav><a href="https://github.com/rselbach/onda">GitHub</a><a href="https://github.com/rselbach/onda/releases">Releases</a></nav>
+  </div>
+</footer>
+<script src="onda.js" defer></script>
+</body>
+</html>
