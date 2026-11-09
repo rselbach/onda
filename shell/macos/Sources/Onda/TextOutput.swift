@@ -18,8 +18,13 @@ final class TextOutput: TextOutputPort, @unchecked Sendable {
     private static let vKey: CGKeyCode = 0x09
 
     func focusedTarget() -> TargetApp? {
-        guard AXIsProcessTrusted(), let element = Self.elementAttribute(
-            AXUIElementCreateSystemWide(),
+        guard AXIsProcessTrusted() else { return nil }
+        // every dictation start waits on this read, and without a timeout a
+        // hung frontmost app holds it for the system default of seconds
+        let systemWide = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(systemWide, Self.readTimeout)
+        guard let element = Self.elementAttribute(
+            systemWide,
             kAXFocusedUIElementAttribute as CFString
         ) else { return nil }
         var pid: pid_t = 0
