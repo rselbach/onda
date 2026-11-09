@@ -1284,6 +1284,19 @@ async fn cleanup_outcomes() {
             want_error: None,
         },
         Case {
+            name: "a dropped reply to a long transcript is not a scratch that",
+            raw: LONG_RAW,
+            responses: vec![Ok(String::new()), Ok(String::new())],
+            want_calls: 2,
+            want_typed: vec![LONG_RAW.to_owned()],
+            want_notices: vec!["Used Raw Transcript"],
+            want_cleaned: false,
+            want_transcript: LONG_RAW.to_owned(),
+            want_error: Some(
+                "Post-processing output looked too different from the transcript, so Onda used the raw transcript.",
+            ),
+        },
+        Case {
             name: "throw is not retried",
             raw: "cool cool cool",
             responses: vec![Err(CleanupError::Http {

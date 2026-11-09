@@ -168,6 +168,11 @@ pub enum CleanupStep {
 
 /// Decides what follows request 1 (CLN-12..CLN-14).
 ///
+/// Empty output passes the guardrails like any other, so it is used only
+/// where the shrinkage check allows it: a short transcript or one with a
+/// correction phrase. A provider that drops its reply looks the same as a
+/// "scratch that", and without this the dictation would vanish unnoticed.
+///
 /// `result` is [`super::parse_response`]'s value or the transport error.
 pub fn after_first_attempt(
     provider: CleanupProvider,
@@ -187,9 +192,6 @@ pub fn after_first_attempt(
             });
         }
     };
-    if cleaned.is_empty() {
-        return CleanupStep::Done(CleanupOutcome::Cleaned { text: cleaned });
-    }
     match check_guardrails(raw, &cleaned) {
         Ok(()) => CleanupStep::Done(CleanupOutcome::Cleaned { text: cleaned }),
         Err(violation) => CleanupStep::Retry(violation),
@@ -378,10 +380,19 @@ mod tests {
                 want: CleanupStep::Done(cleaned("")),
             },
             Case {
-                name: "CLN-12 empty output of a long transcript is still valid",
-                raw: GREENDALE,
+                name: "CLN-12 empty output after a correction phrase is a valid cancel",
+                raw: "tell Troy and Abed that the study group meets at three scratch that",
                 result: Ok(""),
                 want: CleanupStep::Done(cleaned("")),
+            },
+            Case {
+                name: "empty output of a long transcript with no correction is retried",
+                raw: GREENDALE,
+                result: Ok(""),
+                want: CleanupStep::Retry(GuardrailViolation::Shrinkage {
+                    raw_words: GREENDALE.split_whitespace().count(),
+                    cleaned_words: 0,
+                }),
             },
             Case {
                 name: "CLN-13 a throw is not retried and shows the error notice",
