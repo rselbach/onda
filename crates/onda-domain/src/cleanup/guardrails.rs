@@ -7,6 +7,11 @@ use std::fmt;
 /// Only check shrinkage once the raw transcript has this many words (CLN-16).
 const SHRINKAGE_MIN_RAW_WORDS: usize = 8;
 
+/// Cleaned text may have twice the raw transcript's words plus this many.
+/// Cleanup adds punctuation, not words, so more than that is a model that
+/// answered the dictation or kept writing.
+const GROWTH_SLACK_WORDS: usize = 10;
+
 /// Phrases that legitimately shrink the output (CLN-17).
 const CORRECTION_TRIGGERS: [&str; 9] = [
     "scratch that",
@@ -50,6 +55,13 @@ pub enum GuardrailViolation {
         /// Words in the trimmed cleaned text.
         cleaned_words: usize,
     },
+    /// Cleaned text has far more words than the raw transcript.
+    Growth {
+        /// Words in the trimmed raw transcript.
+        raw_words: usize,
+        /// Words in the trimmed cleaned text.
+        cleaned_words: usize,
+    },
     /// Cleaned text opens with Markdown structure nobody dictated (CLN-18).
     RogueMarkdown,
 }
@@ -57,7 +69,7 @@ pub enum GuardrailViolation {
 impl fmt::Display for GuardrailViolation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Shrinkage { .. } => f.write_str(
+            Self::Shrinkage { .. } | Self::Growth { .. } => f.write_str(
                 "Post-processing output looked too different from the transcript, so Onda used the raw transcript.",
             ),
             Self::RogueMarkdown => f.write_str(
@@ -69,11 +81,12 @@ impl fmt::Display for GuardrailViolation {
 
 impl std::error::Error for GuardrailViolation {}
 
-/// Checks `cleaned` against `raw`; both are trimmed first. Shrinkage is
-/// checked before Markdown (CLN-19).
+/// Checks `cleaned` against `raw`; both are trimmed first. Shrinkage and
+/// growth are checked before Markdown (CLN-19).
 pub fn check_guardrails(raw: &str, cleaned: &str) -> Result<(), GuardrailViolation> {
     let (raw, cleaned) = (raw.trim(), cleaned.trim());
     check_shrinkage(raw, cleaned)?;
+    check_growth(raw, cleaned)?;
     if begins_with_markdown(cleaned) && !contains_formatting_word(raw) {
         return Err(GuardrailViolation::RogueMarkdown);
     }
@@ -89,6 +102,17 @@ fn check_shrinkage(raw: &str, cleaned: &str) -> Result<(), GuardrailViolation> {
     // cleaned / raw < 0.5, in integers
     if cleaned_words * 2 < raw_words {
         return Err(GuardrailViolation::Shrinkage {
+            raw_words,
+            cleaned_words,
+        });
+    }
+    Ok(())
+}
+
+fn check_growth(raw: &str, cleaned: &str) -> Result<(), GuardrailViolation> {
+    let (raw_words, cleaned_words) = (word_count(raw), word_count(cleaned));
+    if cleaned_words > raw_words * 2 + GROWTH_SLACK_WORDS {
+        return Err(GuardrailViolation::Growth {
             raw_words,
             cleaned_words,
         });
@@ -281,6 +305,27 @@ mod tests {
                 "CLN-18 a number in a sentence passes",
                 "the answer is forty two",
                 "The answer is 42.",
+                Ok(()),
+            ),
+            case(
+                "an answer in place of the dictation is growth",
+                "what time does the study group meet",
+                &words(25),
+                Err(GuardrailViolation::Growth {
+                    raw_words: 7,
+                    cleaned_words: 25,
+                }),
+            ),
+            case(
+                "twice the words plus the slack still passes",
+                "what time does the study group meet",
+                &words(24),
+                Ok(()),
+            ),
+            case(
+                "a one-word dictation may gain a few words",
+                "thx",
+                "Thanks.",
                 Ok(()),
             ),
             case(
