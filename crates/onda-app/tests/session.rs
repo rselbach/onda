@@ -275,6 +275,25 @@ async fn hot_28_releasing_during_the_microphone_prompt_aborts_the_start() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn pressing_again_while_an_aborted_start_finishes_still_records() {
+    let h = Harness::new().await;
+    *lock(&h.permissions.microphone) = MicrophonePermission::NotDetermined;
+    let prompt = Hold::new();
+    *lock(&h.permissions.hold_request) = Some(prompt.clone());
+    h.press();
+    eventually("the prompt", || prompt.started()).await;
+    h.release();
+    h.press();
+    prompt.release();
+    sleep(1_000).await;
+    assert_eq!(h.audio.starts.load(Ordering::SeqCst), 1, "one capture");
+    assert_eq!(h.tray().icon, TrayIcon::Recording, "the held key records");
+    h.release();
+    sleep(1_000).await;
+    assert!(h.idle());
+}
+
+#[tokio::test(start_paused = true)]
 async fn desktop_stop_during_start_checks_prevents_late_recording() {
     let h = Harness::new().await;
     *lock(&h.permissions.microphone) = MicrophonePermission::NotDetermined;

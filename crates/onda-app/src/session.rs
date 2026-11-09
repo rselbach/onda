@@ -709,7 +709,11 @@ impl Actor {
                 self.notify(UserMessage::StillTranscribing);
                 return;
             }
-            Phase::Starting(_) | Phase::Aborting(_) | Phase::Recording(_) => return,
+            Phase::Starting(_) | Phase::Recording(_) => return,
+            Phase::Aborting(_) => {
+                self.resume_start(kind);
+                return;
+            }
             Phase::Idle => {}
         }
         if kind == StartKind::Retry && self.failed_audio.is_none() {
@@ -734,6 +738,16 @@ impl Actor {
             opening: None,
             _task: task,
         });
+    }
+
+    // a start asked for while an abandoned one of the same kind is still
+    // finishing takes that one over. dropped, it would leave the user
+    // holding the key and speaking into nothing once the old start ends.
+    fn resume_start(&mut self, kind: StartKind) {
+        self.phase = match std::mem::replace(&mut self.phase, Phase::Idle) {
+            Phase::Aborting(starting) if starting.kind == kind => Phase::Starting(starting),
+            other => other,
+        };
     }
 
     fn abort_start(&mut self) {
