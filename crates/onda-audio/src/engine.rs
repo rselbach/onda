@@ -109,7 +109,7 @@ impl fmt::Display for RebuildReason {
 /// What the capture tells its owner, in order.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AudioEvent {
-    /// Input level in `[0, 1]`: RMS of channel 0 before resampling, at most
+    /// Input level in `[0, 1]`: RMS of the loudest channel before resampling, at most
     /// 30 per second, only while a capture is open (AUD-8).
     Level(f32),
     /// Capture `capture_id` cannot continue: [`AudioError::NoBuffers`] or
@@ -491,8 +491,10 @@ impl<B: Backend> Engine<B> {
             return;
         }
         let channels = prepared.input.channels().max(1);
+        let channel = loudest_channel(&self.raw, channels);
         self.mono.clear();
-        self.mono.extend(self.raw.iter().step_by(channels));
+        self.mono
+            .extend(self.raw.iter().skip(channel).step_by(channels));
 
         let Some(capture) = self.capture.as_mut() else {
             if !prepared.running {
@@ -671,6 +673,27 @@ impl<B: Backend> Engine<B> {
     }
 }
 
+// the channel of interleaved `raw` with the most energy, the lowest on a
+// tie. a microphone on input 2 of an interface leaves channel 0 silent, and
+// mixing instead would halve a microphone that has one channel to itself.
+fn loudest_channel(raw: &[f32], channels: usize) -> usize {
+    let energy = |channel: usize| -> f32 {
+        raw.iter()
+            .skip(channel)
+            .step_by(channels)
+            .map(|sample| sample * sample)
+            .sum()
+    };
+    let mut loudest = (0, energy(0));
+    for channel in 1..channels {
+        let energy = energy(channel);
+        if energy > loudest.1 {
+            loudest = (channel, energy);
+        }
+    }
+    loudest.0
+}
+
 fn emit(events: &Sender<AudioEvent>, event: AudioEvent) {
     if events.send(event).is_err() {
         debug!("audio event receiver is gone");
@@ -699,6 +722,7 @@ mod tests {
         next_connection: u32,
         rate: u32,
         channels: usize,
+        signal_channel: usize,
         build_failures: VecDeque<AudioError>,
         start_failures: VecDeque<AudioError>,
         builds: Vec<String>,
@@ -732,16 +756,20 @@ mod tests {
                 .map(|(_, name, connection)| (name.clone(), *connection))
         }
 
-        // the device delivers `frames` of `value` on every channel of ch0,
+        // the device delivers `frames` of `value` on `signal_channel` and
         // silence on the others, if its stream runs and is not stalled.
         fn deliver(&mut self, frames: usize, value: f32) {
             if !self.running || self.stalled {
                 return;
             }
             for _ in 0..frames {
-                self.queue.push(value);
-                for _ in 1..self.channels {
-                    self.queue.push(0.0);
+                for channel in 0..self.channels.max(1) {
+                    let sample = if channel == self.signal_channel {
+                        value
+                    } else {
+                        0.0
+                    };
+                    self.queue.push(sample);
                 }
             }
         }
@@ -1076,29 +1104,36 @@ mod tests {
     }
 
     #[test]
-    fn levels_come_from_channel_0_at_most_30_hz_while_capturing_aud_8() {
-        let mut h = Harness::new(DeviceSelection::SystemDefault);
-        h.world.borrow_mut().channels = 2;
-        h.start().expect("start");
-        h.advance(ms(1_000));
-        let levels: Vec<f32> = h
-            .events()
-            .into_iter()
-            .filter_map(|e| match e {
-                AudioEvent::Level(level) => Some(level),
-                _ => None,
-            })
-            .collect();
-        assert!((25..=30).contains(&levels.len()), "{} levels", levels.len());
-        assert!(
-            levels.iter().all(|l| (*l - 0.25).abs() < 1e-6),
-            "channel 0 only"
-        );
-        let recording = h.stop();
-        assert_eq!(recording.samples.len(), 16_000, "downmixed to mono");
+    fn levels_come_from_the_loudest_channel_at_most_30_hz_while_capturing_aud_8() {
+        for signal_channel in [0, 1] {
+            let mut h = Harness::new(DeviceSelection::SystemDefault);
+            h.world.borrow_mut().channels = 2;
+            h.world.borrow_mut().signal_channel = signal_channel;
+            h.start().expect("start");
+            h.advance(ms(1_000));
+            let levels: Vec<f32> = h
+                .events()
+                .into_iter()
+                .filter_map(|e| match e {
+                    AudioEvent::Level(level) => Some(level),
+                    _ => None,
+                })
+                .collect();
+            assert!((25..=30).contains(&levels.len()), "{} levels", levels.len());
+            assert!(
+                levels.iter().all(|l| (*l - 0.25).abs() < 1e-6),
+                "signal on channel {signal_channel}: {levels:?}"
+            );
+            let recording = h.stop();
+            assert_eq!(recording.samples.len(), 16_000, "one channel out");
+            assert!(
+                (recording.samples[8_000] - 0.25).abs() < 0.01,
+                "signal on channel {signal_channel} is recorded"
+            );
 
-        h.advance(ms(1_000));
-        assert!(h.events().is_empty(), "no levels in standby");
+            h.advance(ms(1_000));
+            assert!(h.events().is_empty(), "no levels in standby");
+        }
     }
 
     #[test]
