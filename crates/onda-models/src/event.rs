@@ -22,7 +22,8 @@ pub enum DownloadEventKind {
     Finished,
     /// Cancelled by the user; partial data is kept (DL-3).
     Cancelled,
-    /// Failed after retries; the partial folder is gone (DL-4).
+    /// Failed. The partial folder is kept for a resume when the network
+    /// ran out of retries, and gone otherwise (DL-4).
     Failed {
         /// User-facing error description.
         error: String,

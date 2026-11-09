@@ -382,8 +382,10 @@ impl Inner {
             total: manifest.total_size(),
             start: Instant::now(),
             throttle: ProgressThrottle::new(),
+            network_gave_out: false,
         };
         let result = job.fetch_all(manifest, &folder).await;
+        let network_gave_out = job.network_gave_out;
         let elapsed_ms = job.start.elapsed().as_millis() as u64;
         let (result, event) = match result {
             Ok(()) => {
@@ -395,8 +397,12 @@ impl Inner {
                 (Err(Error::Cancelled), DownloadEventKind::Cancelled)
             }
             Err(error) => {
-                tracing::error!(%model, elapsed_ms, %error, "download failed");
-                if let Err(cleanup) = remove_descendant(&self.models_dir, &folder) {
+                tracing::error!(%model, elapsed_ms, %error, network_gave_out, "download failed");
+                // what a dropped connection leaves is a clean prefix the next
+                // download resumes; any other failure may have left bad data
+                if !network_gave_out
+                    && let Err(cleanup) = remove_descendant(&self.models_dir, &folder)
+                {
                     tracing::error!(%model, error = %cleanup, "could not delete partial download");
                 }
                 let event = DownloadEventKind::Failed {
@@ -425,6 +431,9 @@ struct Job<'a> {
     total: u64,
     start: Instant,
     throttle: ProgressThrottle,
+    /// The failure was the network running out of retries, so the partial
+    /// data is intact and kept for a resume.
+    network_gave_out: bool,
 }
 
 impl Job<'_> {
@@ -496,6 +505,7 @@ impl Job<'_> {
                 Err(Attempt::Retry { message, timed_out }) => (message, timed_out),
             };
             if retries == RETRIES {
+                self.network_gave_out = true;
                 return Err(match timed_out {
                     true => ModelError::DownloadTimedOut {
                         model_id: model.as_str().to_string(),

@@ -265,12 +265,13 @@ async fn cancelled_download_is_not_joined() {
 }
 
 #[tokio::test]
-async fn failure_deletes_partial_folder_dl_4() {
+async fn failure_keeps_only_resumable_data_dl_4() {
     struct Case {
         name: &'static str,
         behavior: Behavior,
         want: Error,
         want_requests: usize,
+        want_kept: bool,
     }
     let cases = [
         Case {
@@ -280,12 +281,14 @@ async fn failure_deletes_partial_folder_dl_4() {
                 "Could not download {WEIGHTS}: HTTP 500 Internal Server Error"
             )),
             want_requests: 4,
+            want_kept: true,
         },
         Case {
             name: "checksum mismatch is not retried",
             behavior: Behavior::Corrupt,
             want: Error::Download(format!("Checksum mismatch for {WEIGHTS}")),
             want_requests: 1,
+            want_kept: false,
         },
     ];
     for tc in cases {
@@ -293,7 +296,13 @@ async fn failure_deletes_partial_folder_dl_4() {
         f.server.set_behavior(WEIGHTS, Some(tc.behavior));
         let got = f.manager.download(MODEL).await;
         assert_eq!(got, Err(tc.want.clone()), "{}", tc.name);
-        assert!(!f.model_dir().exists(), "{}: partial folder kept", tc.name);
+        assert_eq!(
+            f.model_dir().join(VOCAB).exists(),
+            tc.want_kept,
+            "{}: finished files",
+            tc.name
+        );
+        assert_eq!(f.model_dir().exists(), tc.want_kept, "{}", tc.name);
         assert!(f.models_dir.exists(), "{}: models dir deleted", tc.name);
         let failed = DownloadEventKind::Failed {
             error: tc.want.to_string(),
