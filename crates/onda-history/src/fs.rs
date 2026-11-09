@@ -60,6 +60,11 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), HistoryError
         tempfile::NamedTempFile::new_in(folder).map_err(|err| io_error("write", path, &err))?;
     file.write_all(bytes)
         .map_err(|err| io_error("write", path, &err))?;
+    // without this a power loss after the rename can leave an empty file
+    // under the final name
+    file.as_file()
+        .sync_all()
+        .map_err(|err| io_error("write", path, &err))?;
     file.persist(path)
         .map_err(|err| io_error("write", path, &err.error))?;
     Ok(())
