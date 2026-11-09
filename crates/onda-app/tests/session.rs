@@ -2207,6 +2207,46 @@ async fn dict_29_download_and_use_applies_when_the_session_ends() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn the_selected_models_download_finishing_mid_session_reloads_afterwards() {
+    let h = Harness::with(|s| s.activation_mode = ActivationMode::Toggle).await;
+    // setup chose a model that is still downloading; the old one stays loaded
+    {
+        let mut settings = lock(&h.settings.settings);
+        settings.selected_model = ModelId::ParakeetUnified;
+        settings.stored_model = ModelId::ParakeetUnified.as_str().to_owned();
+    }
+    h.tap();
+    sleep(500).await;
+    lock(&h.models.downloaded).push(ModelId::ParakeetUnified);
+    h.app.download_event(common::download(
+        ModelId::ParakeetUnified,
+        onda_app::seams::DownloadUpdateKind::Finished,
+    ));
+    // another model finishing later does not displace the selected one
+    lock(&h.models.downloaded).push(ModelId::ParakeetUltra);
+    h.app.download_event(common::download(
+        ModelId::ParakeetUltra,
+        onda_app::seams::DownloadUpdateKind::Finished,
+    ));
+    sleep(100).await;
+    assert_eq!(h.tray().icon, TrayIcon::Recording);
+    assert!(
+        !h.script
+            .calls()
+            .contains(&EngineCall::Unload(ModelId::ParakeetTdtV2)),
+        "the engine in use stays loaded"
+    );
+    h.tap();
+    sleep(1_000).await;
+    assert_eq!(h.typed(), vec!["hello world"]);
+    assert_eq!(
+        h.script.calls().last(),
+        Some(&EngineCall::Load(ModelId::ParakeetUnified))
+    );
+    assert_eq!(h.tray().icon, TrayIcon::Ready);
+}
+
+#[tokio::test(start_paused = true)]
 async fn dl_8_download_and_use_while_idle_switches_at_once() {
     let h = Harness::new().await;
     h.app.download_and_use(ModelId::ParakeetUnified);

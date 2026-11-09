@@ -390,6 +390,9 @@ pub(crate) struct Actor {
     downloads: DownloadTracker,
     // the declined-migration fallback loaded instead of the selection (DL-14)
     override_model: Option<ModelId>,
+    // the selected model whose download finished while a session was using
+    // the engine; go_idle reloads for it
+    reload_when_idle: Option<ModelId>,
     pending: PendingSelection,
     permissions: PermissionSnapshot,
     accessibility_prompted: bool,
@@ -462,6 +465,7 @@ impl Actor {
             downloaded: Vec::new(),
             downloads: DownloadTracker::new(),
             override_model: None,
+            reload_when_idle: None,
             pending: PendingSelection::new(),
             permissions: PermissionSnapshot {
                 microphone: MicrophonePermission::NotDetermined,
@@ -1468,6 +1472,9 @@ impl Actor {
             self.preventing_sleep = false;
             self.effects.send(Effect::AllowIdleSleep);
         }
+        if let Some(model) = self.reload_when_idle.take() {
+            self.reload_after_download(model);
+        }
         // a "Download & Use" that finished mid-session applies now (DICT-29)
         if let Some(model) = self.pending.session_idle(&self.downloaded) {
             self.switch_model(model, false);
@@ -1689,12 +1696,8 @@ impl Actor {
         }
     }
 
-    fn download_finished(&mut self, model: ModelId) {
-        if !self.downloaded.contains(&model) {
-            self.downloaded.push(model);
-        }
-        self.loads.download_ended(model);
-        // ASR-9: clear the temporary override, then load the selection
+    // ASR-9: clear the temporary override, then load the selection
+    fn reload_after_download(&mut self, model: ModelId) {
         if reload_after_download(
             model,
             self.settings.selected_model.as_str(),
@@ -1703,6 +1706,25 @@ impl Actor {
             self.override_model = None;
             self.loads.announce();
             self.start_load(false);
+        }
+    }
+
+    fn download_finished(&mut self, model: ModelId) {
+        if !self.downloaded.contains(&model) {
+            self.downloaded.push(model);
+        }
+        self.loads.download_ended(model);
+        match self.phase {
+            // the engine is in use; the reload waits for the session to end,
+            // as a "Download & Use" does (DICT-29)
+            Phase::Recording(_) | Phase::Transcribing(_) => {
+                if model == self.settings.selected_model {
+                    self.reload_when_idle = Some(model);
+                }
+            }
+            Phase::Idle | Phase::Starting(_) | Phase::Aborting(_) => {
+                self.reload_after_download(model);
+            }
         }
         let idle = matches!(self.phase, Phase::Idle);
         if let Some(selected) = self.pending.download_finished(model, idle) {
