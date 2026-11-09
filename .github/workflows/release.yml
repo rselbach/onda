@@ -362,6 +362,9 @@ jobs:
         uses: actions/upload-pages-artifact@v3
         with:
           path: _site
+          # the action's default is one day; republish-feeds.yml redeploys
+          # this artifact, and it is the only copy of the signed feeds
+          retention-days: 90
 
   # one Pages deployment publishes update.json and appcast.xml together,
   # after the release's assets verified
