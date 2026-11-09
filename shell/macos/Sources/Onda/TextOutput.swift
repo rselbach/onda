@@ -127,6 +127,10 @@ final class TextOutput: TextOutputPort, @unchecked Sendable {
                   let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false) else {
                 return nil
             }
+            // a nil source stamps the modifiers held right now, and with
+            // virtual key 0 a held Command turns the text into Command-A
+            down.flags = []
+            up.flags = []
             chunk.withUnsafeBufferPointer { buffer in
                 guard let base = buffer.baseAddress else { return }
                 down.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: base)

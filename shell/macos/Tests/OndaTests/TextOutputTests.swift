@@ -34,6 +34,8 @@ struct UnicodeEventTests {
             #expect(event.up.type == .keyUp)
             #expect(Self.units(of: event.down) == chunk)
             #expect(Self.units(of: event.up) == chunk)
+            #expect(event.down.flags.isEmpty)
+            #expect(event.up.flags.isEmpty)
         }
     }
 
