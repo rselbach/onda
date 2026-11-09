@@ -15,7 +15,8 @@ const CONTINUATION_WORDS: [&str; 18] = [
 /// - OUT-9: at a sentence start the first letter is uppercased.
 /// - OUT-10: mid-sentence, a capitalized continuation word ("And", "The") is
 ///   lowercased.
-/// - OUT-11: one leading space is inserted when the two sides would touch.
+/// - OUT-11: one leading space is inserted when the two sides would touch,
+///   unless either side is in a script written without spaces.
 pub fn join(text: &str, preceding: &str) -> String {
     let Some(last) = preceding.chars().next_back() else {
         return text.to_owned();
@@ -27,14 +28,33 @@ pub fn join(text: &str, preceding: &str) -> String {
     let mut joined = set_initial_case(text, is_sentence_start(preceding));
     let needs_space = !last.is_whitespace()
         && !"([{“‘".contains(last)
-        && joined
-            .chars()
-            .next()
-            .is_some_and(|first| !first.is_whitespace() && !",.?!;:)]}”’".contains(first));
+        && !is_written_without_spaces(last)
+        && joined.chars().next().is_some_and(|first| {
+            !first.is_whitespace()
+                && !",.?!;:)]}”’".contains(first)
+                && !is_written_without_spaces(first)
+        });
     if needs_space {
         joined.insert(0, ' ');
     }
     joined
+}
+
+// Chinese, Japanese, Thai, Lao, Khmer, and Burmese text, with its own
+// punctuation, puts no space between words or sentences. Korean does, so
+// Hangul is not here.
+fn is_written_without_spaces(c: char) -> bool {
+    matches!(
+        u32::from(c),
+        0x0E00..=0x0EFF      // Thai, Lao
+        | 0x1000..=0x109F    // Myanmar
+        | 0x1780..=0x17FF    // Khmer
+        | 0x2E80..=0x312F    // CJK radicals and punctuation, kana, bopomofo
+        | 0x3190..=0x9FFF    // kana extensions, CJK ideographs
+        | 0xF900..=0xFAFF    // CJK compatibility ideographs
+        | 0xFF00..=0xFF9F    // fullwidth forms, halfwidth katakana
+        | 0x20000..=0x3FFFF // CJK extensions
+    )
 }
 
 fn is_sentence_start(preceding: &str) -> bool {
@@ -224,6 +244,42 @@ mod tests {
                 preceding: "Troy",
                 text: ", Abed",
                 want: ", Abed",
+            },
+            Case {
+                name: "OUT-11 Japanese takes no space",
+                preceding: "こんにちは",
+                text: "世界",
+                want: "世界",
+            },
+            Case {
+                name: "OUT-11 after Japanese punctuation",
+                preceding: "行きます。",
+                text: "ありがとう",
+                want: "ありがとう",
+            },
+            Case {
+                name: "OUT-11 Chinese takes no space",
+                preceding: "你好",
+                text: "世界",
+                want: "世界",
+            },
+            Case {
+                name: "OUT-11 Thai takes no space",
+                preceding: "สวัสดี",
+                text: "ครับ",
+                want: "ครับ",
+            },
+            Case {
+                name: "OUT-11 Latin after Japanese takes no space",
+                preceding: "場所は",
+                text: "Greendale",
+                want: "Greendale",
+            },
+            Case {
+                name: "OUT-11 Korean takes a space",
+                preceding: "안녕하세요",
+                text: "세계",
+                want: " 세계",
             },
             Case {
                 name: "OUT-11 text already starts with a space",
