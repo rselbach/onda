@@ -1134,8 +1134,14 @@ async fn failed_asr_keeps_the_audio_and_retry_types_into_the_focused_app() {
         .map(|mut t| *t = "troy and abed in the morning".to_owned())
         .ok();
     let hold = h.script.hold_next_final();
+    let calls_before = h.script.calls().len();
     h.app.retry_failed_dictation();
     eventually("the retry decode", || hold.started()).await;
+    assert_eq!(
+        h.script.calls()[calls_before..],
+        [EngineCall::Reset, EngineCall::Final(24_000)],
+        "a retry never continues an earlier recording's stream"
+    );
     assert_eq!(
         h.tray().icon,
         TrayIcon::Transcribing,

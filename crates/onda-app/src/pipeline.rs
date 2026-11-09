@@ -202,6 +202,11 @@ pub(crate) async fn decode(job: DecodeJob) -> Msg {
         Some(preview) => preview.finish().await,
         None => None,
     };
+    if snapshot.is_none() {
+        // no preview of this recording ran to a result, so the engine's
+        // stream, if it has one, belongs to an earlier recording
+        job.service.reset_preview().await;
+    }
     let asr_started = Instant::now();
     let reusable = snapshot
         .filter(|snapshot| job.reuse_allowed && snapshot.can_reuse(&job.audio, mono(job.origin)));
