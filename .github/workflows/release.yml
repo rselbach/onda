@@ -42,12 +42,40 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # the feeds have no channels, so a release reaches every user. only a
+  # final version tagged on main may become one
+  check-tag:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Require a final version on main
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if [[ ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::${TAG} is not a final version (vX.Y.Z)" >&2
+            exit 1
+          fi
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "${GITHUB_SHA}" FETCH_HEAD; then
+            echo "::error::${TAG} is not on main" >&2
+            exit 1
+          fi
+
   linux:
+    needs: check-tag
     uses: ./.github/workflows/linux-packages.yml
     with:
       version: ${{ github.ref_name }}
 
   macos:
+    needs: check-tag
     runs-on: xcode-27
     steps:
       - name: Checkout
