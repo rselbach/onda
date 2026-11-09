@@ -559,7 +559,10 @@ impl Worker {
             "read the update feed"
         );
         match feed::decide(release, &install) {
-            Decision::UpToDate => Ok(UpdateStatus::UpToDate),
+            Decision::UpToDate => {
+                prune(&self.config.state_dir.join("downloads"), None);
+                Ok(UpdateStatus::UpToDate)
+            }
             Decision::RequiresNewerOs { minimum_os } => Err(UpdateFailure::RequiresNewerOs {
                 version: release.version.clone(),
                 minimum_os,
@@ -598,7 +601,7 @@ impl Worker {
             return Ok(ready);
         }
         let downloads = self.config.state_dir.join("downloads");
-        prune(&downloads, &artifact.sha256);
+        prune(&downloads, Some(&artifact.sha256));
         let shared = self.shared.clone();
         let version = release.version.clone();
         let size = artifact.size.max(1);
@@ -630,7 +633,11 @@ impl Worker {
         let staged = tokio::task::spawn_blocking(move || installer.stage(&archive, &owned))
             .await
             .unwrap_or_else(|error| Err(InstallError::Failed(error.to_string())));
-        if let Err(error) = std::fs::remove_file(&zip) {
+        // a staged update does not outlive this process, so the archive
+        // stays for the next launch to stage again without a download
+        if staged.is_err()
+            && let Err(error) = std::fs::remove_file(&zip)
+        {
             tracing::warn!(%error, "could not delete the update archive");
         }
         let staged = staged.map_err(|error| {
@@ -748,8 +755,8 @@ impl Worker {
     }
 }
 
-/// Removes downloads other than the one for `keep` (a SHA-256).
-fn prune(downloads: &Path, keep: &str) {
+/// Removes downloads other than the one for `keep` (a SHA-256), if any.
+fn prune(downloads: &Path, keep: Option<&str>) {
     let Ok(entries) = std::fs::read_dir(downloads) else {
         return;
     };
@@ -757,7 +764,7 @@ fn prune(downloads: &Path, keep: &str) {
         let current = entry
             .file_name()
             .to_str()
-            .is_some_and(|name| name.starts_with(keep));
+            .is_some_and(|name| keep.is_some_and(|keep| name.starts_with(keep)));
         if !current && let Err(error) = std::fs::remove_file(entry.path()) {
             tracing::warn!(%error, "could not delete an old update download");
         }
@@ -866,8 +873,11 @@ mod tests {
         SigningKey::from_bytes(&[9; 32])
     }
 
-    fn zip_body() -> Vec<u8> {
-        b"Troy and Abed's update".repeat(1000)
+    // each build is its own archive, as in a real release
+    fn zip_body(build: u64) -> Vec<u8> {
+        format!("Troy and Abed's update {build}")
+            .into_bytes()
+            .repeat(1000)
     }
 
     #[tokio::test]
@@ -1022,6 +1032,7 @@ mod tests {
         host: Arc<FakeHost>,
         installer: Arc<FakeInstaller>,
         updater: Updater,
+        config: Config,
         _dir: tempfile::TempDir,
     }
 
@@ -1053,7 +1064,7 @@ mod tests {
             schedule: Schedule,
         ) -> Self {
             let server = Server::start().await;
-            server.put(ZIP_PATH, zip_body(), Behavior::Serve);
+            server.put(ZIP_PATH, Vec::new(), Behavior::Serve);
             server.put(DMG_PATH, b"dmg".to_vec(), Behavior::Serve);
             let fixture_host = Arc::new(FakeHost::default());
             let installer = Arc::new(FakeInstaller::new(replaceable));
@@ -1070,7 +1081,7 @@ mod tests {
                 user_agent: "Onda/test".to_owned(),
             };
             let updater = Updater::start(
-                config,
+                config.clone(),
                 installer.clone(),
                 fixture_host.clone(),
                 &Handle::current(),
@@ -1081,6 +1092,7 @@ mod tests {
                 host: fixture_host,
                 installer,
                 updater,
+                config,
                 _dir: dir,
             }
         }
@@ -1090,7 +1102,8 @@ mod tests {
         }
 
         fn publish_signed(&self, build: u64, key: &SigningKey) {
-            let mut zip = artifact_for(&self.server, ZIP_PATH, &zip_body());
+            self.server.replace_body(ZIP_PATH, zip_body(build));
+            let mut zip = artifact_for(&self.server, ZIP_PATH, &zip_body(build));
             zip.kind = KIND_APP_ZIP.to_owned();
             let mut dmg = artifact_for(&self.server, DMG_PATH, b"dmg");
             dmg.kind = KIND_DMG.to_owned();
@@ -1183,10 +1196,51 @@ mod tests {
         let log = fixture.installer.log();
         assert_eq!(log.last().map(String::as_str), Some("apply 42"));
         assert!(
-            log.contains(&format!("stage 42 {}", zip_body().len())),
+            log.contains(&format!("stage 42 {}", zip_body(42).len())),
             "{log:?}"
         );
         assert!(fixture.host.changes.load(Ordering::SeqCst) > 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_relaunch_stages_a_downloaded_update_without_downloading_again() {
+        let fixture = Fixture::new(41, true).await;
+        fixture.publish(42);
+        assert_eq!(fixture.check().await, Fixture::ready("2.0.42"));
+        assert_eq!(fixture.server.requests(ZIP_PATH).len(), 1);
+
+        let relaunched = Updater::start(
+            fixture.config.clone(),
+            fixture.installer.clone(),
+            fixture.host.clone(),
+            &Handle::current(),
+        )
+        .unwrap();
+        assert_eq!(package_check(&relaunched).await, Fixture::ready("2.0.42"));
+        assert_eq!(
+            fixture.server.requests(ZIP_PATH).len(),
+            1,
+            "downloaded once"
+        );
+        assert_eq!(fixture.logged("stage 42").len(), 2, "staged by each launch");
+
+        let updated = Updater::start(
+            Config {
+                build: 42,
+                ..fixture.config.clone()
+            },
+            fixture.installer.clone(),
+            fixture.host.clone(),
+            &Handle::current(),
+        )
+        .unwrap();
+        assert_eq!(package_check(&updated).await, UpdateStatus::UpToDate);
+        let downloads = fixture.config.state_dir.join("downloads");
+        assert_eq!(
+            std::fs::read_dir(downloads).unwrap().count(),
+            0,
+            "the archive goes once the update is installed"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

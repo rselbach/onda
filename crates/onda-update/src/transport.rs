@@ -362,6 +362,13 @@ pub(crate) mod tests {
             state.files.push((path.to_owned(), body, behavior));
         }
 
+        pub(crate) fn replace_body(&self, path: &str, body: Vec<u8>) {
+            let mut state = self.state.lock().unwrap();
+            if let Some(file) = state.files.iter_mut().find(|(p, _, _)| p == path) {
+                file.1 = body;
+            }
+        }
+
         pub(crate) fn behave(&self, path: &str, behavior: Behavior) {
             let mut state = self.state.lock().unwrap();
             if let Some(file) = state.files.iter_mut().find(|(p, _, _)| p == path) {
