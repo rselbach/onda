@@ -325,9 +325,9 @@ impl Settings {
         self.put_enum(retention)
     }
 
-    /// Instant-replacement rules. A corrupt stored value is logged and reads
-    /// as empty, and stays stored until [`Settings::set_replacement_rules`]
-    /// replaces it (REP-7).
+    /// Instant-replacement rules. Corrupt rows are logged and left out; a
+    /// value that is not a list reads as empty. The stored value stays as
+    /// it is until [`Settings::set_replacement_rules`] replaces it (REP-7).
     pub fn replacement_rules(&self) -> Vec<ReplacementRule> {
         let raw = self.raw(Key::ReplacementEntries);
         let decoded = decode_rules(raw.as_ref());
@@ -336,7 +336,7 @@ impl Settings {
             tracing::error!(
                 key = %Key::ReplacementEntries,
                 category = ?error.classify(),
-                "corrupt replacement rules; reading as empty"
+                "corrupt replacement rules; reading the rows that decode"
             );
         }
         decoded.rules

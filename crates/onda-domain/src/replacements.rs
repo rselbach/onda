@@ -30,17 +30,17 @@ pub struct ReplacementRule {
     pub replacement: String,
 }
 
-/// Rules read from settings, plus the decode error when the stored value was
-/// corrupt (REP-7).
+/// Rules read from settings, plus the first decode error when part of the
+/// stored value was corrupt (REP-7).
 ///
-/// A corrupt value reads as an empty list so dictation never breaks; the
-/// caller logs `error` and leaves the stored value alone until the user edits
-/// rules.
+/// Rows decode one by one, so a single bad row costs only itself. A value
+/// that is not a list reads as empty. Dictation never breaks either way; the
+/// caller logs `error`.
 #[derive(Debug)]
 pub struct DecodedRules {
-    /// The decoded rules, or empty when the value was missing or corrupt.
+    /// The rows that decoded, in stored order.
     pub rules: Vec<ReplacementRule>,
-    /// Why decoding failed, when it did.
+    /// Why the first unreadable row, or the whole value, failed to decode.
     pub error: Option<serde_json::Error>,
 }
 
@@ -48,19 +48,29 @@ pub struct DecodedRules {
 ///
 /// A missing key or JSON `null` is an empty list without error.
 pub fn decode_rules(value: Option<&serde_json::Value>) -> DecodedRules {
-    let Some(value) = value.filter(|v| !v.is_null()) else {
-        return DecodedRules {
-            rules: Vec::new(),
-            error: None,
-        };
+    let mut decoded = DecodedRules {
+        rules: Vec::new(),
+        error: None,
     };
-    match Vec::<ReplacementRule>::deserialize(value) {
-        Ok(rules) => DecodedRules { rules, error: None },
-        Err(error) => DecodedRules {
-            rules: Vec::new(),
-            error: Some(error),
-        },
+    let Some(value) = value.filter(|v| !v.is_null()) else {
+        return decoded;
+    };
+    let rows = match Vec::<serde_json::Value>::deserialize(value) {
+        Ok(rows) => rows,
+        Err(error) => {
+            decoded.error = Some(error);
+            return decoded;
+        }
+    };
+    for row in rows {
+        match ReplacementRule::deserialize(row) {
+            Ok(rule) => decoded.rules.push(rule),
+            Err(error) => {
+                decoded.error.get_or_insert(error);
+            }
+        }
     }
+    decoded
 }
 
 /// Parses the editor's comma-separated trigger field into trimmed, non-empty
@@ -669,6 +679,20 @@ mod tests {
                 name: "a row missing a field is corrupt",
                 json: Some(r#"[{"id": "1", "triggers": ["troy"]}]"#),
                 want: vec![],
+                want_error: true,
+            },
+            Case {
+                name: "a corrupt row costs only itself",
+                json: Some(
+                    r#"[{"id": "1", "triggers": ["troy"], "replacement": "Troy Barnes"},
+                        {"triggers": ["abed"], "replacement": "Abed Nadir"},
+                        {"id": "3", "triggers": "annie", "replacement": "Annie Edison"},
+                        {"id": "4", "triggers": ["britta"], "replacement": "Britta Perry"}]"#,
+                ),
+                want: vec![
+                    rule_with_id("1", &["troy"], "Troy Barnes"),
+                    rule_with_id("4", &["britta"], "Britta Perry"),
+                ],
                 want_error: true,
             },
         ];
