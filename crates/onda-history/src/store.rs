@@ -383,11 +383,14 @@ impl HistoryStore {
                     directory_name: name,
                     ..*entry
                 }),
-                FolderVerdict::Prune(reason) => {
-                    tracing::warn!(path = %path.display(), ?reason, "removing unreadable history entry");
+                FolderVerdict::Prune => {
+                    tracing::warn!(path = %path.display(), "removing a history folder with no metadata");
                     if let Err(err) = remove_descendant(&self.directory, &path) {
                         tracing::error!(path = %path.display(), error = %err, "could not remove history entry");
                     }
+                }
+                FolderVerdict::Skip(reason) => {
+                    tracing::warn!(path = %path.display(), ?reason, "leaving an unreadable history entry on disk");
                 }
             }
         }

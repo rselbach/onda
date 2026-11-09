@@ -362,7 +362,7 @@ fn save_never_removes_a_folder_it_did_not_create_his_7() {
 }
 
 #[test]
-fn first_load_prunes_bad_folders_and_leaves_the_rest_his_8() {
+fn first_load_prunes_only_folders_without_metadata_his_8() {
     struct Case {
         name: &'static str,
         setup: fn(&Fixture, &Path),
@@ -392,7 +392,7 @@ fn first_load_prunes_bad_folders_and_leaves_the_rest_his_8() {
         Case {
             name: "corrupt metadata",
             setup: |_, path| write_metadata(path, b"{ not json"),
-            want_exists: false,
+            want_exists: true,
             want_loaded: false,
         },
         Case {
@@ -400,13 +400,13 @@ fn first_load_prunes_bad_folders_and_leaves_the_rest_his_8() {
             setup: |_, path| {
                 std::fs::create_dir_all(path.join(METADATA_FILENAME)).expect("metadata folder")
             },
-            want_exists: false,
+            want_exists: true,
             want_loaded: false,
         },
         Case {
             name: "unsafe directoryName",
             setup: |_, path| write_metadata(path, &replace_key(&valid(2), "directoryName", "..")),
-            want_exists: false,
+            want_exists: true,
             want_loaded: false,
         },
         Case {
@@ -415,7 +415,7 @@ fn first_load_prunes_bad_folders_and_leaves_the_rest_his_8() {
                 let bytes = replace_key(&valid(3), "audioFilename", "../../Greendale/escape.wav");
                 write_metadata(path, &bytes);
             },
-            want_exists: false,
+            want_exists: true,
             want_loaded: false,
         },
         Case {

@@ -334,20 +334,23 @@ pub enum MetadataFile<'a> {
     Contents(&'a [u8]),
 }
 
-/// Whether an entry folder is kept or deleted on first load (HIS-8).
+/// What first load does with an entry folder (HIS-8).
 #[derive(Debug, Clone, PartialEq)]
 pub enum FolderVerdict {
     /// A valid entry; add it to the in-memory list.
     Keep(Box<HistoryEntry>),
-    /// Delete the whole entry folder.
-    Prune(PruneReason),
+    /// No `metadata.json`: what a write that died part-way leaves. Delete
+    /// the whole entry folder.
+    Prune,
+    /// Leave the folder on disk and out of the list.
+    Skip(SkipReason),
 }
 
-/// Why an entry folder is deleted on first load, for logging (HIS-8).
+/// Why an entry folder is left out of the list, for logging (HIS-8). The
+/// folder may hold a real entry this build cannot read right now, so it is
+/// never deleted.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PruneReason {
-    /// No `metadata.json`, such as after a partial write.
-    MissingMetadata,
+pub enum SkipReason {
     /// `metadata.json` could not be read.
     UnreadableMetadata,
     /// `metadata.json` did not decode or names an unsafe path.
@@ -357,11 +360,11 @@ pub enum PruneReason {
 /// Classifies one entry folder found on first load (HIS-8).
 pub fn classify_entry_folder(metadata: MetadataFile<'_>) -> FolderVerdict {
     match metadata {
-        MetadataFile::Missing => FolderVerdict::Prune(PruneReason::MissingMetadata),
-        MetadataFile::Unreadable => FolderVerdict::Prune(PruneReason::UnreadableMetadata),
+        MetadataFile::Missing => FolderVerdict::Prune,
+        MetadataFile::Unreadable => FolderVerdict::Skip(SkipReason::UnreadableMetadata),
         MetadataFile::Contents(bytes) => match decode_metadata(bytes) {
             Ok(entry) => FolderVerdict::Keep(Box::new(entry)),
-            Err(err) => FolderVerdict::Prune(PruneReason::Invalid(err)),
+            Err(err) => FolderVerdict::Skip(SkipReason::Invalid(err)),
         },
     }
 }
@@ -912,12 +915,12 @@ mod tests {
         for tc in cases {
             let got = match classify_entry_folder(tc.input) {
                 FolderVerdict::Keep(_) => Want::Keep,
-                FolderVerdict::Prune(PruneReason::MissingMetadata) => Want::Missing,
-                FolderVerdict::Prune(PruneReason::UnreadableMetadata) => Want::Unreadable,
-                FolderVerdict::Prune(PruneReason::Invalid(MetadataError::Malformed(_))) => {
+                FolderVerdict::Prune => Want::Missing,
+                FolderVerdict::Skip(SkipReason::UnreadableMetadata) => Want::Unreadable,
+                FolderVerdict::Skip(SkipReason::Invalid(MetadataError::Malformed(_))) => {
                     Want::Malformed
                 }
-                FolderVerdict::Prune(PruneReason::Invalid(MetadataError::UnsafeName(name))) => {
+                FolderVerdict::Skip(SkipReason::Invalid(MetadataError::UnsafeName(name))) => {
                     Want::Unsafe(name)
                 }
             };

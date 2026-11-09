@@ -22,7 +22,7 @@ pub use copy::{
 };
 pub use entry::{
     EntryAudio, FolderVerdict, HistoryEntry, MetadataError, MetadataFile, NewEntry, PathComponent,
-    PruneReason, classify_entry_folder, decode_metadata, encode_metadata, entry_directory_name,
+    SkipReason, classify_entry_folder, decode_metadata, encode_metadata, entry_directory_name,
     insert_newest_first, sort_newest_first,
 };
 pub use listing::{
