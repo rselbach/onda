@@ -124,10 +124,20 @@ async fn hot_27_lone_modifier_automatic_by_hold_length() {
     }
     let cases = [
         Case {
-            // the gesture fires at 150 ms, so the press lasts 100 ms
             name: "quick tap latches",
             held_ms: 250,
             want_recording_after_release: true,
+        },
+        Case {
+            name: "just under the threshold latches",
+            held_ms: 390,
+            want_recording_after_release: true,
+        },
+        Case {
+            // measured from the physical press, not from the debounce
+            name: "just over the threshold is push-to-talk",
+            held_ms: 410,
+            want_recording_after_release: false,
         },
         Case {
             name: "long hold is push-to-talk",

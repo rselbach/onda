@@ -25,8 +25,8 @@ use onda_domain::cleanup::CleanupOutcome;
 use onda_domain::clock::{RecordingClock, SESSION_LIMIT};
 use onda_domain::history::{NewEntry, RecentTranscript};
 use onda_domain::hotkey::{
-    DebounceToken, GestureInput, GlobeKeyAction, HotkeyView, PressIntent, PressRouter,
-    SessionSnapshot, Shortcut, ShortcutRecorder, cancel_hotkey_modifiers,
+    DebounceToken, GestureInput, GlobeKeyAction, HotkeyView, LONE_MODIFIER_DEBOUNCE, PressIntent,
+    PressRouter, SessionSnapshot, Shortcut, ShortcutRecorder, cancel_hotkey_modifiers,
     provisional_confirmation_delay,
 };
 use onda_domain::language_menu;
@@ -631,11 +631,15 @@ impl Actor {
 
     fn key_down(&mut self) {
         self.refresh_settings();
-        let intent = self.press.key_down(
-            self.settings.activation_mode,
-            self.snapshot(),
-            mono(self.origin),
-        );
+        let mut down_at = mono(self.origin);
+        // a lone-modifier press gets here only once its debounce has run,
+        // and Automatic measures the hold from the physical press
+        if self.settings.hotkey.is_lone_modifier() {
+            down_at = down_at.saturating_sub(LONE_MODIFIER_DEBOUNCE);
+        }
+        let intent = self
+            .press
+            .key_down(self.settings.activation_mode, self.snapshot(), down_at);
         self.apply_intent(intent);
     }
 
