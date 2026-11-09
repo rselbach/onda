@@ -189,7 +189,9 @@ jobs:
 
       - name: Generate release notes
         id: release_notes
-        uses: rselbach/actions/pi-release-notes@v1
+        # pinned to a commit because it runs beside the artifacts the next
+        # steps sign
+        uses: rselbach/actions/pi-release-notes@93af3769b4088fb0bca1dc942e558b774876432f # v1
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_TOKEN }}
           DEEPSEEK_API_TOKEN: ${{ secrets.DEEPSEEK_API_TOKEN }}
@@ -265,7 +267,7 @@ jobs:
             --out _site/update.json <<<"${SIGNING_KEY}"
 
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           # a rerun must not change bytes an installed client already trusts
           overwrite_files: false
