@@ -125,17 +125,25 @@ fn contains_formatting_word(text: &str) -> bool {
         .any(|word| FORMATTING_WORDS.contains(&word))
 }
 
-// CLN-18: ATX heading, bullet, or ordered list on the first non-empty line
+// CLN-18: ATX heading, bullet, or ordered list on the first non-empty line.
+// each marker needs what Markdown needs after it, so prose that opens with
+// "3.5 percent", "2026. That year" or "#1 priority" is not taken for one.
 fn begins_with_markdown(text: &str) -> bool {
     let Some(line) = text.split('\n').find(|line| !line.is_empty()) else {
         return false;
     };
     let line = line.trim();
-    if line.starts_with('#') || ["- ", "* ", "+ "].iter().any(|p| line.starts_with(p)) {
+    if ["- ", "* ", "+ "].iter().any(|p| line.starts_with(p)) {
         return true;
     }
-    let after_digits = line.trim_start_matches(|c: char| c.is_numeric());
-    after_digits.len() < line.len() && after_digits.starts_with('.')
+    let after_hashes = line.trim_start_matches('#');
+    let hashes = line.len() - after_hashes.len();
+    if (1..=6).contains(&hashes) && (after_hashes.is_empty() || after_hashes.starts_with(' ')) {
+        return true;
+    }
+    let after_digits = line.trim_start_matches(|c: char| c.is_ascii_digit());
+    let digits = line.len() - after_digits.len();
+    (1..=3).contains(&digits) && after_digits.starts_with(". ")
 }
 
 #[cfg(test)]
@@ -370,9 +378,29 @@ mod tests {
                 want: false,
             },
             Case {
-                name: "number and dot",
+                name: "a number that ends the sentence",
                 text: "42.",
-                want: true,
+                want: false,
+            },
+            Case {
+                name: "decimal number",
+                text: "3.5 percent of students",
+                want: false,
+            },
+            Case {
+                name: "year that ends a sentence",
+                text: "2026. That was the year Troy left.",
+                want: false,
+            },
+            Case {
+                name: "number sign",
+                text: "#1 priority is the Spanish exam",
+                want: false,
+            },
+            Case {
+                name: "hashtag",
+                text: "#sixseasonsandamovie",
+                want: false,
             },
             Case {
                 name: "bare hash",
