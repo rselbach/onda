@@ -564,6 +564,35 @@ impl App {
         self.ui(UiMsg::ApiKeyCommit);
     }
 
+    /// The "Prompt" row: opens the prompt sheet with the prompt in use as
+    /// its draft.
+    pub fn open_prompt_editor(&self) {
+        self.ui(UiMsg::OpenPromptEditor);
+    }
+
+    /// The prompt sheet's text changed. Nothing is saved.
+    pub fn prompt_edited(&self, text: impl Into<String>) {
+        self.ui(UiMsg::PromptEdited(text.into()));
+    }
+
+    /// "Restore Default" in the prompt sheet: Onda's prompt becomes the
+    /// draft, unsaved until "Save".
+    pub fn restore_default_prompt(&self) {
+        self.ui(UiMsg::RestoreDefaultPrompt);
+    }
+
+    /// "Cancel" or Escape in the prompt sheet: discards the draft.
+    pub fn cancel_prompt_editor(&self) {
+        self.ui(UiMsg::CancelPromptEditor);
+    }
+
+    /// "Save" in the prompt sheet: the draft becomes the prompt for every
+    /// provider and model; Onda's own text removes the override. A blank
+    /// draft is refused.
+    pub fn save_prompt(&self) {
+        self.ui(UiMsg::SavePrompt);
+    }
+
     /// "Test with Sample Text" (CLN-27).
     pub fn test_cleanup(&self) {
         self.ui(UiMsg::TestCleanup);

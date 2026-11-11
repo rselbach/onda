@@ -38,8 +38,8 @@ pub use onboarding::{
 pub use post_processing::{
     ApiKeyFieldView, CleanupModelGroup, CleanupModelOption, CleanupProviderOption,
     CleanupTestResult, PostProcessingDetails, PostProcessingInputs, PostProcessingPage,
-    ProvidersDialog, ProvidersDialogInputs, key_placeholder, models_error_text,
-    post_processing_page,
+    PromptDraftInputs, PromptEditorView, PromptSummaryView, ProvidersDialog, ProvidersDialogInputs,
+    key_placeholder, models_error_text, post_processing_page, prompt_saved_text,
 };
 pub use replacements::{ReplacementRowView, ReplacementsPage, replacements_page};
 pub use speech::{

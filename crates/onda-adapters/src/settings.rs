@@ -54,6 +54,7 @@ impl SettingsSource for SettingsAdapter {
             cleanup_enabled: settings.post_processing_enabled(),
             cleanup_provider,
             cleanup_model: settings.cleanup_model(cleanup_provider),
+            cleanup_prompt: settings.cleanup_prompt(),
             replacement_rules: settings.replacement_rules(),
             history_enabled: settings.history_enabled(),
             keep_audio: settings.history_keeps_audio(),
@@ -107,6 +108,7 @@ impl SettingsSource for SettingsAdapter {
             SettingChange::CleanupModel(provider, model) => {
                 settings.set_cleanup_model(provider, &model)
             }
+            SettingChange::CleanupPrompt(prompt) => settings.set_cleanup_prompt(&prompt),
             SettingChange::Onboarding(flags) => settings
                 .set_onboarding_flags(flags.onboarding_completed, flags.did_show_first_run_setup),
             SettingChange::LastNoticeKey(key) => settings.set_last_model_migration_notice_key(&key),

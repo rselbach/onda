@@ -10,7 +10,8 @@ use std::sync::Arc;
 use jiff::Timestamp;
 use onda_asr::SpeechEngine;
 use onda_domain::cleanup::{
-    ApiKey, CleanupError, CleanupModel, CleanupProvider, CleanupRequest, OnDeviceStatus,
+    ApiKey, CleanupError, CleanupModel, CleanupPrompt, CleanupProvider, CleanupRequest,
+    OnDeviceStatus,
 };
 use onda_domain::history::{HistoryEntry, NewEntry, RecentTranscript};
 use onda_domain::hotkey::Shortcut;
@@ -46,6 +47,8 @@ pub struct Settings {
     pub cleanup_provider: CleanupProvider,
     /// The provider's model, resolved from its slug (CLN-21).
     pub cleanup_model: CleanupModel,
+    /// `cleanupPrompt`: the system prompt every provider and model gets.
+    pub cleanup_prompt: CleanupPrompt,
     /// `replacementEntries` (REP-7).
     pub replacement_rules: Vec<ReplacementRule>,
     /// Save transcripts (HIS-1).
@@ -115,6 +118,8 @@ pub enum SettingChange {
     CleanupProvider(CleanupProvider),
     /// The provider's model slug (`openRouterModel`).
     CleanupModel(CleanupProvider, CleanupModel),
+    /// `cleanupPrompt`; the default removes the stored override.
+    CleanupPrompt(CleanupPrompt),
     /// Both onboarding flags in one write (SET-4).
     Onboarding(OnboardingFlags),
     /// `lastModelMigrationNoticeKey`.

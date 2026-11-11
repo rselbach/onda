@@ -35,5 +35,5 @@ pub use outcome::{
     after_first_attempt, after_retry, start, test_result_line, test_said_line, unavailable,
     unavailable_error,
 };
-pub use prompt::SYSTEM_PROMPT;
+pub use prompt::{BlankPrompt, CleanupPrompt, SYSTEM_PROMPT};
 pub use provider::{CleanupProvider, ModelListing, OnDeviceStatus};

@@ -1,6 +1,7 @@
-//! The fixed cleanup system prompt.
+//! The cleanup system prompt: Onda's default, and the user's override of it.
 
-/// System prompt sent with every cleanup request.
+/// Onda's default system prompt, sent with every cleanup request unless the
+/// user saved their own ([`CleanupPrompt`]).
 ///
 /// Three blocks (role and core rules, input layout, commands and output
 /// rules) separated by a blank line. The prompt is product behavior; changes
@@ -61,10 +62,109 @@ When multiple commands are chained, execute ALL of them in sequence, but never i
 - PRESERVE politeness words: "please", "thank you" at end of sentences
 - REMEMBER: cleaning delivery means punctuation, capitalization, filler removal, and explicit commands - nothing more. Never summarize, never restructure, never shorten."##;
 
+/// The system prompt in use: [`SYSTEM_PROMPT`], or the text the user saved
+/// over it. One prompt serves every provider and model.
+///
+/// A custom prompt is never blank and never equal to the default, so a
+/// user who saves the default text follows later defaults again.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CleanupPrompt(Option<String>);
+
+/// A prompt with no visible text; it cannot be used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlankPrompt;
+
+impl CleanupPrompt {
+    /// The prompt `text` asks for, kept exactly as typed: the default when
+    /// it is [`SYSTEM_PROMPT`] to the byte, a custom prompt otherwise.
+    pub fn from_text(text: &str) -> Result<Self, BlankPrompt> {
+        if text.trim().is_empty() {
+            return Err(BlankPrompt);
+        }
+        Ok(Self((text != SYSTEM_PROMPT).then(|| text.to_owned())))
+    }
+
+    /// The instructions to send.
+    pub fn text(&self) -> &str {
+        self.0.as_deref().unwrap_or(SYSTEM_PROMPT)
+    }
+
+    /// The user's own text, when they replaced the default.
+    pub fn custom(&self) -> Option<&str> {
+        self.0.as_deref()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use sha2::{Digest, Sha256};
+
+    #[test]
+    fn a_prompt_is_the_default_or_the_text_as_typed() {
+        enum Want {
+            Default,
+            Custom,
+            Blank,
+        }
+        struct Case {
+            name: &'static str,
+            text: String,
+            want: Want,
+        }
+        let cases = [
+            Case {
+                name: "the default text is the default",
+                text: SYSTEM_PROMPT.to_owned(),
+                want: Want::Default,
+            },
+            Case {
+                name: "other text is custom",
+                text: "Fix punctuation only.".to_owned(),
+                want: Want::Custom,
+            },
+            Case {
+                name: "custom text keeps its whitespace",
+                text: "  Fix punctuation only.\n".to_owned(),
+                want: Want::Custom,
+            },
+            Case {
+                name: "the default with a trailing newline is custom",
+                text: format!("{SYSTEM_PROMPT}\n"),
+                want: Want::Custom,
+            },
+            Case {
+                name: "empty is blank",
+                text: String::new(),
+                want: Want::Blank,
+            },
+            Case {
+                name: "whitespace is blank",
+                text: " \n\t ".to_owned(),
+                want: Want::Blank,
+            },
+        ];
+        for tc in cases {
+            let got = CleanupPrompt::from_text(&tc.text);
+            let (custom, text) = match tc.want {
+                Want::Blank => {
+                    assert_eq!(got, Err(BlankPrompt), "{}", tc.name);
+                    continue;
+                }
+                Want::Default => (None, SYSTEM_PROMPT),
+                Want::Custom => (Some(tc.text.as_str()), tc.text.as_str()),
+            };
+            let prompt = got.expect(tc.name);
+            assert_eq!(prompt.custom(), custom, "{}", tc.name);
+            assert_eq!(prompt.text(), text, "{}", tc.name);
+            assert_eq!(
+                prompt == CleanupPrompt::default(),
+                custom.is_none(),
+                "{}",
+                tc.name
+            );
+        }
+    }
 
     #[test]
     fn prompt_keeps_its_guardrails() {

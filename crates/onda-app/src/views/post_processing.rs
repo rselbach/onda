@@ -3,7 +3,8 @@
 use std::fmt;
 
 use onda_domain::cleanup::{
-    CleanupError, CleanupModel, CleanupProvider, ModelListing, TEST_FAILED_TITLE,
+    CleanupError, CleanupModel, CleanupPrompt, CleanupProvider, ModelListing, SYSTEM_PROMPT,
+    TEST_FAILED_TITLE,
 };
 
 use super::{AlertView, ButtonView, ToggleView};
@@ -161,6 +162,66 @@ pub struct CleanupTestResult {
     pub result: String,
 }
 
+/// The prompt sheet: the whole prompt as an editable draft. Nothing is
+/// saved until "Save"; "Cancel" discards the draft.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptEditorView {
+    /// "Post-processing prompt".
+    pub title: String,
+    /// What a custom prompt does, under the title.
+    pub intro: String,
+    /// "Prompt instructions", above the editor.
+    pub label: String,
+    /// What the draft is: "Onda default" or "Custom".
+    pub badge: String,
+    /// The draft as the core knows it. Replace the editor's contents only
+    /// when `revision` changes (the sheet opened, or "Restore Default"), so
+    /// typing is never overwritten.
+    pub text: String,
+    /// Bumped when the core replaces `text`.
+    pub revision: u64,
+    /// Under the editor: "No changes", "Unsaved changes", what to do about
+    /// a blank draft, or why a save failed.
+    pub status: String,
+    /// `status` is a problem; show it in red.
+    pub status_is_error: bool,
+    /// "4,216 characters".
+    pub character_count: String,
+    /// "What the model receives"; discloses `help`.
+    pub help_title: String,
+    /// How the transcript and app name reach the model.
+    pub help: String,
+    /// "Restore Default": sends `restore_default_prompt`, which puts Onda's
+    /// prompt in the draft. Disabled while the draft is that prompt.
+    pub restore: ButtonView,
+    /// "Cancel"; sends `cancel_prompt_editor`.
+    pub cancel_title: String,
+    /// "Save": sends `save_prompt`. Disabled while the draft is blank or is
+    /// the prompt in use.
+    pub save: ButtonView,
+}
+
+/// The "Prompt" section: the one prompt every provider and model gets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptSummaryView {
+    /// "Prompt".
+    pub title: String,
+    /// "Onda default" or "Custom prompt"; clicking the row sends
+    /// `open_prompt_editor`.
+    pub name: String,
+    /// "Instructions for cleaning up your dictation".
+    pub subtitle: String,
+    /// The start of the prompt in use, as one line; show up to three lines.
+    pub preview: String,
+    /// "Used for all post-processing models."
+    pub caption: String,
+    /// What the last save did, e.g. "Custom prompt saved. Applies to your
+    /// next dictation."
+    pub status: Option<String>,
+    /// The prompt sheet, while open.
+    pub editor: Option<PromptEditorView>,
+}
+
 /// What shows while post-processing is on (CLN-26).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PostProcessingDetails {
@@ -174,6 +235,8 @@ pub struct PostProcessingDetails {
     pub dialog: Option<ProvidersDialog>,
     /// The privacy caption.
     pub caption: String,
+    /// The prompt in use and its sheet.
+    pub prompt: PromptSummaryView,
     /// "Test with Sample Text"; disabled while a test runs.
     pub test_button: ButtonView,
     /// Show a small spinner next to the button.
@@ -207,12 +270,29 @@ pub struct PostProcessingInputs<'a> {
     pub listed_models: &'a [CleanupModel],
     /// The model sheet, while open.
     pub dialog: Option<ProvidersDialogInputs<'a>>,
+    /// `cleanupPrompt`: the prompt in use.
+    pub prompt: &'a CleanupPrompt,
+    /// The prompt sheet's draft, while open.
+    pub prompt_draft: Option<PromptDraftInputs<'a>>,
+    /// What the last prompt save did.
+    pub prompt_status: Option<&'a str>,
     /// A test is running.
     pub test_running: bool,
     /// The last finished test.
     pub test_result: Option<&'a CleanupTestResult>,
     /// The last test error message.
     pub test_error: Option<&'a str>,
+}
+
+/// What the prompt sheet is built from.
+#[derive(Debug, Clone, Copy)]
+pub struct PromptDraftInputs<'a> {
+    /// The unsaved text, exactly as typed.
+    pub text: &'a str,
+    /// Bumped when the core replaced the text.
+    pub revision: u64,
+    /// Why the last "Save" failed, until the draft changes.
+    pub save_error: Option<&'a str>,
 }
 
 /// What the model sheet is built from.
@@ -317,6 +397,96 @@ fn providers_dialog(inputs: &ProvidersDialogInputs<'_>) -> ProvidersDialog {
     }
 }
 
+/// Most characters of the prompt the page shows as its preview.
+const PROMPT_PREVIEW_CHARS: usize = 400;
+
+/// What a prompt save did, for the line it leaves on the page.
+pub fn prompt_saved_text(saved: &CleanupPrompt) -> &'static str {
+    match saved.custom() {
+        Some(_) => "Custom prompt saved. Applies to your next dictation.",
+        None => "Default prompt restored.",
+    }
+}
+
+// one line: runs of whitespace collapse, and a long prompt is cut
+fn prompt_preview(prompt: &str) -> String {
+    let one_line = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
+    match one_line.char_indices().nth(PROMPT_PREVIEW_CHARS) {
+        Some((cut, _)) => format!("{}…", &one_line[..cut]),
+        None => one_line,
+    }
+}
+
+// "4,216 characters"
+fn character_count(text: &str) -> String {
+    let count = text.chars().count();
+    let digits = count.to_string();
+    let mut grouped = String::new();
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+    match count {
+        1 => "1 character".to_owned(),
+        _ => format!("{grouped} characters"),
+    }
+}
+
+fn prompt_editor(saved: &CleanupPrompt, draft: &PromptDraftInputs<'_>) -> PromptEditorView {
+    let blank = draft.text.trim().is_empty();
+    let changed = draft.text != saved.text();
+    let is_default = draft.text == SYSTEM_PROMPT;
+    let (status, status_is_error) = match draft.save_error {
+        _ if blank => ("Enter a prompt or restore the default.".to_owned(), true),
+        Some(error) => (error.to_owned(), true),
+        None if changed => ("Unsaved changes".to_owned(), false),
+        None => ("No changes".to_owned(), false),
+    };
+    PromptEditorView {
+        title: "Post-processing prompt".to_owned(),
+        intro: "Control how Onda cleans up your dictation. Your prompt replaces the default \
+                instructions for every post-processing model."
+            .to_owned(),
+        label: "Prompt instructions".to_owned(),
+        badge: if is_default { "Onda default" } else { "Custom" }.to_owned(),
+        text: draft.text.to_owned(),
+        revision: draft.revision,
+        status,
+        status_is_error,
+        character_count: character_count(draft.text),
+        help_title: "What the model receives".to_owned(),
+        help: "Onda sends your instructions with the dictated text inside <transcript> tags. \
+               It may also include a \"Dictating into:\" line naming the app. Tell the model to \
+               return only the text you want to insert."
+            .to_owned(),
+        restore: ButtonView::new("Restore Default", !is_default),
+        cancel_title: "Cancel".to_owned(),
+        save: ButtonView::new("Save", !blank && changed),
+    }
+}
+
+fn prompt_summary(inputs: &PostProcessingInputs<'_>) -> PromptSummaryView {
+    let prompt = inputs.prompt;
+    PromptSummaryView {
+        title: "Prompt".to_owned(),
+        name: match prompt.custom() {
+            Some(_) => "Custom prompt",
+            None => "Onda default",
+        }
+        .to_owned(),
+        subtitle: "Instructions for cleaning up your dictation".to_owned(),
+        preview: prompt_preview(prompt.text()),
+        caption: "Used for all post-processing models.".to_owned(),
+        status: inputs.prompt_status.map(str::to_owned),
+        editor: inputs
+            .prompt_draft
+            .as_ref()
+            .map(|draft| prompt_editor(prompt, draft)),
+    }
+}
+
 /// Builds the page.
 pub fn post_processing_page(inputs: PostProcessingInputs<'_>) -> PostProcessingPage {
     let provider = inputs.provider;
@@ -328,6 +498,7 @@ pub fn post_processing_page(inputs: PostProcessingInputs<'_>) -> PostProcessingP
             model_name: named(inputs.model, inputs.listed_models).name,
             dialog: inputs.dialog.as_ref().map(providers_dialog),
             caption: caption(provider),
+            prompt: prompt_summary(&inputs),
             test_button: ButtonView::new("Test with Sample Text", !inputs.test_running),
             test_running: inputs.test_running,
             test_result: inputs.test_result.cloned(),
@@ -344,6 +515,13 @@ mod tests {
     use onda_domain::cleanup::CLEANUP_MODELS;
 
     use super::*;
+
+    static DEFAULT_PROMPT: std::sync::LazyLock<CleanupPrompt> =
+        std::sync::LazyLock::new(CleanupPrompt::default);
+
+    fn custom(text: &str) -> CleanupPrompt {
+        CleanupPrompt::from_text(text).expect("a prompt with text")
+    }
 
     fn key() -> ApiKeyFieldView {
         ApiKeyFieldView {
@@ -362,6 +540,9 @@ mod tests {
             model,
             listed_models: listed,
             dialog: None,
+            prompt: &DEFAULT_PROMPT,
+            prompt_draft: None,
+            prompt_status: None,
             test_running: false,
             test_result: None,
             test_error: None,
@@ -426,6 +607,191 @@ mod tests {
             key_placeholder(CleanupProvider::OpenRouter),
             "OpenRouter API key"
         );
+    }
+
+    #[test]
+    fn the_prompt_row_names_and_previews_the_prompt_in_use() {
+        let details = post_processing_page(inputs(&CLEANUP_MODELS[0], &[]))
+            .details
+            .expect("details");
+        let prompt = details.prompt;
+        assert_eq!(prompt.title, "Prompt");
+        assert_eq!(prompt.name, "Onda default");
+        assert_eq!(
+            prompt.subtitle,
+            "Instructions for cleaning up your dictation"
+        );
+        assert_eq!(prompt.caption, "Used for all post-processing models.");
+        assert_eq!(prompt.status, None);
+        assert_eq!(prompt.editor, None, "the sheet starts closed");
+        assert!(
+            prompt.preview.starts_with(
+                "You are a voice-to-text dictation cleaner. Your role is to clean and format"
+            ),
+            "{}",
+            prompt.preview
+        );
+        assert!(
+            prompt
+                .preview
+                .contains("anything else. ## HIGHEST PRIORITY"),
+            "line breaks read as spaces: {}",
+            prompt.preview
+        );
+        assert!(prompt.preview.ends_with('…'), "a long prompt is cut");
+        assert_eq!(prompt.preview.chars().count(), PROMPT_PREVIEW_CHARS + 1);
+
+        let saved = custom("Fix punctuation only.\n\n  Keep every word Troy said.");
+        let details = post_processing_page(PostProcessingInputs {
+            prompt: &saved,
+            prompt_status: Some(prompt_saved_text(&saved)),
+            ..inputs(&CLEANUP_MODELS[0], &[])
+        })
+        .details
+        .expect("details");
+        assert_eq!(details.prompt.name, "Custom prompt");
+        assert_eq!(
+            details.prompt.preview,
+            "Fix punctuation only. Keep every word Troy said."
+        );
+        assert_eq!(
+            details.prompt.status.as_deref(),
+            Some("Custom prompt saved. Applies to your next dictation.")
+        );
+        assert_eq!(
+            prompt_saved_text(&CleanupPrompt::default()),
+            "Default prompt restored."
+        );
+    }
+
+    #[test]
+    fn the_prompt_sheet_follows_its_draft() {
+        struct Case {
+            name: &'static str,
+            saved: CleanupPrompt,
+            draft: &'static str,
+            save_error: Option<&'static str>,
+            want_badge: &'static str,
+            want_status: &'static str,
+            want_error: bool,
+            want_save: bool,
+            want_restore: bool,
+            want_count: &'static str,
+        }
+        let cases = [
+            Case {
+                name: "the default, untouched",
+                saved: CleanupPrompt::default(),
+                draft: SYSTEM_PROMPT,
+                save_error: None,
+                want_badge: "Onda default",
+                want_status: "No changes",
+                want_error: false,
+                want_save: false,
+                want_restore: false,
+                want_count: "4,216 characters",
+            },
+            Case {
+                name: "an edit to the default",
+                saved: CleanupPrompt::default(),
+                draft: "Fix punctuation only.",
+                save_error: None,
+                want_badge: "Custom",
+                want_status: "Unsaved changes",
+                want_error: false,
+                want_save: true,
+                want_restore: true,
+                want_count: "21 characters",
+            },
+            Case {
+                name: "a saved custom prompt, untouched",
+                saved: custom("Fix punctuation only."),
+                draft: "Fix punctuation only.",
+                save_error: None,
+                want_badge: "Custom",
+                want_status: "No changes",
+                want_error: false,
+                want_save: false,
+                want_restore: true,
+                want_count: "21 characters",
+            },
+            Case {
+                name: "the default restored over a custom prompt",
+                saved: custom("Fix punctuation only."),
+                draft: SYSTEM_PROMPT,
+                save_error: None,
+                want_badge: "Onda default",
+                want_status: "Unsaved changes",
+                want_error: false,
+                want_save: true,
+                want_restore: false,
+                want_count: "4,216 characters",
+            },
+            Case {
+                name: "an empty draft cannot be saved",
+                saved: CleanupPrompt::default(),
+                draft: "",
+                save_error: None,
+                want_badge: "Custom",
+                want_status: "Enter a prompt or restore the default.",
+                want_error: true,
+                want_save: false,
+                want_restore: true,
+                want_count: "0 characters",
+            },
+            Case {
+                name: "a whitespace draft cannot be saved",
+                saved: custom("Fix punctuation only."),
+                draft: " \n\t",
+                save_error: None,
+                want_badge: "Custom",
+                want_status: "Enter a prompt or restore the default.",
+                want_error: true,
+                want_save: false,
+                want_restore: true,
+                want_count: "3 characters",
+            },
+            Case {
+                name: "a failed save says why and can be retried",
+                saved: CleanupPrompt::default(),
+                draft: "é",
+                save_error: Some("Couldn't save the prompt: the disk is full"),
+                want_badge: "Custom",
+                want_status: "Couldn't save the prompt: the disk is full",
+                want_error: true,
+                want_save: true,
+                want_restore: true,
+                want_count: "1 character",
+            },
+        ];
+        for tc in cases {
+            let editor = post_processing_page(PostProcessingInputs {
+                prompt: &tc.saved,
+                prompt_draft: Some(PromptDraftInputs {
+                    text: tc.draft,
+                    revision: 7,
+                    save_error: tc.save_error,
+                }),
+                ..inputs(&CLEANUP_MODELS[0], &[])
+            })
+            .details
+            .expect("details")
+            .prompt
+            .editor
+            .expect(tc.name);
+            assert_eq!(editor.text, tc.draft, "{}", tc.name);
+            assert_eq!(editor.revision, 7, "{}", tc.name);
+            assert_eq!(editor.badge, tc.want_badge, "{}", tc.name);
+            assert_eq!(editor.status, tc.want_status, "{}", tc.name);
+            assert_eq!(editor.status_is_error, tc.want_error, "{}", tc.name);
+            assert_eq!(editor.save.enabled, tc.want_save, "{}", tc.name);
+            assert_eq!(editor.restore.enabled, tc.want_restore, "{}", tc.name);
+            assert_eq!(editor.character_count, tc.want_count, "{}", tc.name);
+            assert_eq!(editor.title, "Post-processing prompt", "{}", tc.name);
+            assert_eq!(editor.save.title, "Save", "{}", tc.name);
+            assert_eq!(editor.restore.title, "Restore Default", "{}", tc.name);
+            assert_eq!(editor.cancel_title, "Cancel", "{}", tc.name);
+        }
     }
 
     #[test]

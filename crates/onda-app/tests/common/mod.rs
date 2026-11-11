@@ -33,8 +33,8 @@ use onda_app::views::UpdaterState;
 use onda_app::{App, Event, EventSink, HotkeyEvent, Ports};
 use onda_asr::{AsrError, LoadProgress, SpeechEngine};
 use onda_domain::cleanup::{
-    ApiKey, CleanupError, CleanupModel, CleanupProvider, CleanupRequest, ModelListing,
-    OnDeviceStatus, default_model,
+    ApiKey, CleanupError, CleanupModel, CleanupPrompt, CleanupProvider, CleanupRequest,
+    ModelListing, OnDeviceStatus, default_model,
 };
 use onda_domain::history::{HistoryEntry, NewEntry, RecentTranscript, plan_retention};
 use onda_domain::hotkey::{GlobeKeyAction, HotkeyView, ModifierSet, Shortcut};
@@ -907,6 +907,21 @@ impl FakeCleanup {
             .collect()
     }
 
+    /// The system instructions of each request, as its provider carries
+    /// them.
+    pub fn instructions(&self) -> Vec<String> {
+        lock(&self.requests)
+            .iter()
+            .map(|body| {
+                body["messages"][0]["content"]
+                    .as_str()
+                    .or(body["instructions"].as_str())
+                    .unwrap_or("")
+                    .to_owned()
+            })
+            .collect()
+    }
+
     pub fn calls(&self) -> usize {
         lock(&self.requests).len()
     }
@@ -994,6 +1009,8 @@ pub struct FakeSettings {
     pub log: Arc<Log>,
     /// A stored language code that is not offered (LANG-3).
     pub invalid_language: Mutex<Option<String>>,
+    /// The error the next `apply` fails with, saving nothing.
+    pub fail_apply: Mutex<Option<String>>,
 }
 
 impl SettingsSource for FakeSettings {
@@ -1013,6 +1030,9 @@ impl SettingsSource for FakeSettings {
     }
 
     fn apply(&self, change: SettingChange) -> Result<(), String> {
+        if let Some(error) = lock(&self.fail_apply).take() {
+            return Err(error);
+        }
         self.log.push(format!("settings:{change:?}"));
         let mut s = lock(&self.settings);
         match change {
@@ -1036,6 +1056,7 @@ impl SettingsSource for FakeSettings {
             SettingChange::CleanupEnabled(on) => s.cleanup_enabled = on,
             SettingChange::CleanupProvider(provider) => s.cleanup_provider = provider,
             SettingChange::CleanupModel(_, model) => s.cleanup_model = model,
+            SettingChange::CleanupPrompt(prompt) => s.cleanup_prompt = prompt,
             SettingChange::Onboarding(flags) => s.onboarding = flags,
             SettingChange::LastNoticeKey(key) => s.last_notice_key = key,
             SettingChange::DeclinedNoticeKey(key) => s.declined_notice_key = key,
@@ -1068,6 +1089,7 @@ pub fn default_settings() -> Settings {
         cleanup_enabled: false,
         cleanup_provider: CleanupProvider::OpenRouter,
         cleanup_model: default_model().clone(),
+        cleanup_prompt: CleanupPrompt::default(),
         replacement_rules: Vec::new(),
         history_enabled: true,
         keep_audio: false,
@@ -1240,6 +1262,7 @@ impl Harness {
             settings: Mutex::new(settings),
             log: log.clone(),
             invalid_language: Mutex::default(),
+            fail_apply: Mutex::default(),
         });
         let system = Arc::new(FakeSystem {
             log: log.clone(),

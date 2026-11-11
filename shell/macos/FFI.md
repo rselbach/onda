@@ -158,9 +158,31 @@ The device list updates live (the core hears device changes itself).
   listing, or a request for the key from a provider that lists only with
   one). The list can hold hundreds of
   rows: render it lazily (a `List`, not a `Form`).
+- `prompt`, a section titled `prompt.title` with `prompt.caption` under
+  it: a clickable row showing `name` over `subtitle` and a chevron, with
+  `preview` below it in up to three lines → `openPromptEditor()`. One
+  prompt serves every provider and model. Show `prompt.status`, when set,
+  under the test button; the core clears it when the sheet opens again or
+  the page disappears.
+- Present `prompt.editor` as a sheet while it is non-nil. It holds a draft
+  the core owns: show `text` in a large scrolling monospaced editor when
+  `revision` changes (never overwrite while typing), and send every edit
+  with `promptEdited(text:)`. `badge` beside `label`; `status` under the
+  editor (red when `statusIsError`) with `characterCount` opposite it;
+  `help` disclosed under `helpTitle`. `restore` →
+  `restoreDefaultPrompt()`, which replaces the draft only. `cancelTitle`,
+  Escape, or dismissing the sheet → `cancelPromptEditor()`, which
+  discards the draft. `save` → `savePrompt()`; the core refuses a blank
+  draft, stores nothing but the override (Onda's own text removes it), and
+  closes the sheet, or keeps it open with `status` saying why the save
+  failed.
 - `testButton` + spinner while `testRunning`: `testCleanup()`.
   `testResult` (`said`, `result`, selectable); `testError` alert →
   `dismissCleanupTestError()`.
+  Samples use the same output acceptance and retry rules as dictation.
+  The default prompt keeps transcript-preservation checks. A custom prompt
+  permits changes in length and formatting. Provider failures still fail
+  the test, and rejected default-prompt output shows the fallback reason.
 
 ### Replacements — `ReplacementsChanged(page: ReplacementsPage)`
 

@@ -1,6 +1,7 @@
 //! The Post-Processing page inside the session actor: the model sheet
 //! (each provider's model list, the model choice, and the API key field's
-//! load and save rules, CLN-24, CLN-25) and the sample test (CLN-27).
+//! load and save rules, CLN-24, CLN-25), the prompt sheet's draft, and the
+//! sample test (CLN-27).
 //!
 //! Every credential-store call goes through one [`KeyQueue`], so a load
 //! issued after a save always reads what that save wrote.
@@ -9,20 +10,21 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use onda_domain::cleanup::{
-    ApiKey, CleanupError, CleanupModel, CleanupProvider, KeyBaseline, KeyWrite, ModelListing,
-    OnDeviceStatus, TEST_SAMPLE, build_request, custom_model_slug, key_write, test_result_line,
-    test_said_line,
+    ApiKey, CleanupError, CleanupModel, CleanupOutcome, CleanupPrompt, CleanupProvider,
+    KeyBaseline, KeyWrite, ModelListing, OnDeviceStatus, SYSTEM_PROMPT, TEST_SAMPLE, build_request,
+    custom_model_slug, key_write, test_result_line, test_said_line,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::spawn_blocking;
 
 use super::{Actor, Msg, Task, UiMsg, send_when};
 use crate::events::Event;
+use crate::pipeline::refine;
 use crate::seams::{CleanupTransport, SettingChange};
 use crate::views::{
     ApiKeyFieldView, CleanupTestResult, MainWindowSection, PostProcessingInputs,
-    PostProcessingPage, ProvidersDialogInputs, key_placeholder, models_error_text,
-    post_processing_page,
+    PostProcessingPage, PromptDraftInputs, ProvidersDialogInputs, key_placeholder,
+    models_error_text, post_processing_page, prompt_saved_text,
 };
 
 // a credential-store call waiting its turn
@@ -70,6 +72,12 @@ fn lost<T>(_: oneshot::error::RecvError) -> Result<T, String> {
     Err("The credential-store call did not finish.".to_owned())
 }
 
+// the prompt sheet's unsaved text; the setting changes only on "Save"
+struct PromptDraft {
+    text: String,
+    save_error: Option<String>,
+}
+
 /// Post-Processing page state.
 pub(super) struct CleanupPageState {
     key_queue: Option<KeyQueue>,
@@ -95,6 +103,13 @@ pub(super) struct CleanupPageState {
     // Apple Intelligence, as last read; refreshed when the page or the
     // sheet shows
     on_device: OnDeviceStatus,
+    // the prompt sheet, while open
+    prompt_draft: Option<PromptDraft>,
+    // bumped whenever the core puts text in the prompt sheet's editor
+    prompt_revision: u64,
+    // what the last prompt save did, until the sheet opens again or the
+    // page is left
+    pub(super) prompt_status: Option<&'static str>,
 }
 
 impl Default for CleanupPageState {
@@ -119,6 +134,9 @@ impl Default for CleanupPageState {
             list_generation: 0,
             list_error: None,
             on_device: OnDeviceStatus::DeviceNotEligible,
+            prompt_draft: None,
+            prompt_revision: 0,
+            prompt_status: None,
         }
     }
 }
@@ -197,7 +215,8 @@ impl Actor {
     }
 
     /// The "Post-process transcripts" toggle (CLN-26). Turning it off hides
-    /// the details, which closes the model sheet.
+    /// the details, which closes the model sheet and discards a prompt
+    /// draft; the saved prompt stays.
     pub(super) fn set_cleanup_enabled(&mut self, on: bool) {
         self.apply_setting(SettingChange::CleanupEnabled(on));
         match on {
@@ -205,7 +224,87 @@ impl Actor {
                 self.list_public_models_once();
             }
             true => {}
-            false => self.close_providers_dialog(),
+            false => {
+                self.close_providers_dialog();
+                self.cancel_prompt_editor();
+            }
+        }
+    }
+
+    /// The "Prompt" row: opens the prompt sheet on the prompt in use.
+    pub(super) fn open_prompt_editor(&mut self) {
+        let visible = self.ui.is_visible(MainWindowSection::PostProcessing);
+        let page = &mut self.ui.cleanup;
+        let sheet_open = page.dialog.is_some() || page.prompt_draft.is_some();
+        if !self.settings.cleanup_enabled || !visible || sheet_open {
+            return;
+        }
+        page.prompt_draft = Some(PromptDraft {
+            text: self.settings.cleanup_prompt.text().to_owned(),
+            save_error: None,
+        });
+        page.prompt_revision += 1;
+        page.prompt_status = None;
+    }
+
+    /// Typing in the prompt sheet. Only the draft changes.
+    pub(super) fn prompt_edited(&mut self, text: String) {
+        if let Some(draft) = &mut self.ui.cleanup.prompt_draft {
+            draft.text = text;
+            draft.save_error = None;
+        }
+    }
+
+    /// "Restore Default": Onda's prompt becomes the draft, still unsaved.
+    pub(super) fn restore_default_prompt(&mut self) {
+        let page = &mut self.ui.cleanup;
+        if let Some(draft) = &mut page.prompt_draft {
+            SYSTEM_PROMPT.clone_into(&mut draft.text);
+            draft.save_error = None;
+            page.prompt_revision += 1;
+        }
+    }
+
+    /// "Cancel", Escape, or anything that hides the prompt sheet: the draft
+    /// is discarded, a restored default included.
+    pub(super) fn cancel_prompt_editor(&mut self) {
+        self.ui.cleanup.prompt_draft = None;
+    }
+
+    /// "Save": the draft becomes the prompt for every provider and model,
+    /// and the sheet closes. A blank draft, or one equal to the prompt in
+    /// use, saves nothing and stays open; so does one that could not be
+    /// stored, which says why.
+    pub(super) fn save_prompt(&mut self) {
+        let Some(draft) = &self.ui.cleanup.prompt_draft else {
+            return;
+        };
+        let Ok(prompt) = CleanupPrompt::from_text(&draft.text) else {
+            return;
+        };
+        if prompt == self.settings.cleanup_prompt {
+            return;
+        }
+        let saved = self
+            .ports
+            .settings
+            .apply(SettingChange::CleanupPrompt(prompt.clone()));
+        self.refresh_settings();
+        match saved {
+            Ok(()) => {
+                let page = &mut self.ui.cleanup;
+                page.prompt_draft = None;
+                page.prompt_status = Some(prompt_saved_text(&prompt));
+                // a result, shown or on its way, is the old prompt's (CLN-27)
+                page.test_result = None;
+                self.cancel_cleanup_test();
+            }
+            Err(error) => {
+                tracing::error!(%error, "could not save the cleanup prompt");
+                if let Some(draft) = &mut self.ui.cleanup.prompt_draft {
+                    draft.save_error = Some(format!("Couldn't save the prompt: {error}"));
+                }
+            }
         }
     }
 
@@ -214,7 +313,9 @@ impl Actor {
     /// is the keychain read, which can prompt and pull Onda forward.
     pub(super) fn open_providers_dialog(&mut self) {
         let visible = self.ui.is_visible(MainWindowSection::PostProcessing);
-        if !self.settings.cleanup_enabled || !visible || self.ui.cleanup.dialog.is_some() {
+        let page = &self.ui.cleanup;
+        let sheet_open = page.dialog.is_some() || page.prompt_draft.is_some();
+        if !self.settings.cleanup_enabled || !visible || sheet_open {
             return;
         }
         self.refresh_on_device();
@@ -470,8 +571,7 @@ impl Actor {
         }
     }
 
-    // CLN-27: save a just-typed key, then send the sample through the same
-    // request path with no guardrails and no app name
+    // CLN-27: save a just-typed key before testing the selected provider
     pub(super) fn test_cleanup(&mut self) {
         if self.ui.cleanup.test.is_some() {
             return;
@@ -490,6 +590,8 @@ impl Actor {
         let transport = self.ports.cleanup.clone();
         let provider = self.settings.cleanup_provider;
         let model = self.settings.cleanup_model.clone();
+        // the saved prompt as of now; a save during the test is not picked up
+        let prompt = self.settings.cleanup_prompt.clone();
         let messages = self.messages.clone();
         let queue = self.key_queue();
         let saved = write.map(|(saved_for, value)| {
@@ -511,16 +613,15 @@ impl Actor {
                 }));
             }
             let result = match test_key(provider, &transport, stored).await {
-                Ok(key) => transport
-                    .send(build_request(
-                        provider,
-                        key.as_ref(),
-                        &model,
-                        TEST_SAMPLE,
-                        None,
-                    ))
-                    .await
-                    .map_err(|error| error.describe(provider)),
+                Ok(key) => {
+                    let request =
+                        build_request(provider, key.as_ref(), &model, &prompt, TEST_SAMPLE, None);
+                    match refine(transport.as_ref(), request, &prompt, TEST_SAMPLE).await {
+                        CleanupOutcome::Cleaned { text } => Ok(text),
+                        CleanupOutcome::FellBack { error, .. } => Err(error),
+                        CleanupOutcome::NotRun => Ok(TEST_SAMPLE.to_owned()),
+                    }
+                }
                 Err(error) => Err(error),
             };
             Msg::Ui(UiMsg::TestFinished { generation, result })
@@ -600,6 +701,13 @@ impl Actor {
             model: &self.settings.cleanup_model,
             listed_models: listed(provider),
             dialog,
+            prompt: &self.settings.cleanup_prompt,
+            prompt_draft: page.prompt_draft.as_ref().map(|draft| PromptDraftInputs {
+                text: &draft.text,
+                revision: page.prompt_revision,
+                save_error: draft.save_error.as_deref(),
+            }),
+            prompt_status: page.prompt_status,
             test_running: page.test.is_some(),
             test_result: page.test_result.as_ref(),
             test_error: page.test_error.as_deref(),

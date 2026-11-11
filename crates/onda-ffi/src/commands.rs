@@ -278,6 +278,34 @@ impl OndaCore {
         self.with_app(App::api_key_commit);
     }
 
+    /// The "Prompt" row on Post-Processing: opens the prompt sheet.
+    pub fn open_prompt_editor(&self) {
+        self.with_app(App::open_prompt_editor);
+    }
+
+    /// The prompt sheet's text changed. Nothing is saved.
+    pub fn prompt_edited(&self, text: String) {
+        self.with_app(|app| app.prompt_edited(text));
+    }
+
+    /// "Restore Default" in the prompt sheet: Onda's prompt becomes the
+    /// draft, unsaved until "Save".
+    pub fn restore_default_prompt(&self) {
+        self.with_app(App::restore_default_prompt);
+    }
+
+    /// "Cancel" or Escape in the prompt sheet, or the sheet going away:
+    /// discards the draft.
+    pub fn cancel_prompt_editor(&self) {
+        self.with_app(App::cancel_prompt_editor);
+    }
+
+    /// "Save" in the prompt sheet: the draft becomes the prompt for every
+    /// provider and model. A blank draft is refused.
+    pub fn save_prompt(&self) {
+        self.with_app(App::save_prompt);
+    }
+
     /// "Test with Sample Text" (CLN-27).
     pub fn test_cleanup(&self) {
         self.with_app(App::test_cleanup);

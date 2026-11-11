@@ -6,7 +6,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use onda_domain::cleanup::{CleanupModel, CleanupProvider};
+use onda_domain::cleanup::{CleanupModel, CleanupPrompt, CleanupProvider};
 use onda_domain::hotkey::Shortcut;
 use onda_domain::language_menu::encode_recent;
 use onda_domain::languages::{
@@ -394,6 +394,26 @@ impl Settings {
             return Ok(());
         };
         self.put(key, Value::from(model.slug.as_ref()))
+    }
+
+    /// The cleanup prompt in use, for every provider and model: the stored
+    /// `cleanupPrompt`, or Onda's default when it is unset, blank, or
+    /// corrupt.
+    pub fn cleanup_prompt(&self) -> CleanupPrompt {
+        let Some(text) = self.string(Key::CleanupPrompt) else {
+            return CleanupPrompt::default();
+        };
+        CleanupPrompt::from_text(&text).unwrap_or_else(|_blank| {
+            tracing::warn!(key = %Key::CleanupPrompt, "blank prompt; using the default");
+            CleanupPrompt::default()
+        })
+    }
+
+    /// Stores a custom prompt as `cleanupPrompt`. The default removes the
+    /// key, so a later version's default is adopted.
+    pub fn set_cleanup_prompt(&self, prompt: &CleanupPrompt) -> Result<(), SettingsError> {
+        let value = prompt.custom().map(Value::from);
+        self.apply(|| vec![(Key::CleanupPrompt, value)]).map(drop)
     }
 
     /// `onboardingCompleted`. Default false.

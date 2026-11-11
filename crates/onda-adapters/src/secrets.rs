@@ -100,7 +100,7 @@ impl CleanupTransport for CloudCleanup {
 mod tests {
     use std::sync::Mutex;
 
-    use onda_domain::cleanup::{APPLE_MODELS, build_request};
+    use onda_domain::cleanup::{APPLE_MODELS, CleanupPrompt, build_request};
 
     use super::*;
 
@@ -129,11 +129,14 @@ mod tests {
         CloudCleanup::new(http, model.map(|m| m as Arc<dyn OnDeviceModel>))
     }
 
+    const CUSTOM_PROMPT: &str = "Fix punctuation only.";
+
     fn on_device_request() -> CleanupRequest {
         build_request(
             CleanupProvider::AppleIntelligence,
             None,
             &APPLE_MODELS[0],
+            &CleanupPrompt::from_text(CUSTOM_PROMPT).expect("a prompt with text"),
             "um hi abed",
             None,
         )
@@ -152,6 +155,10 @@ mod tests {
         assert_eq!(got, Ok("Hi Abed.".to_owned()), "echoed tags are dropped");
         let prompts = model.prompts.lock().expect("prompts").clone();
         assert_eq!(prompts.len(), 1);
+        assert_eq!(
+            prompts[0].0, CUSTOM_PROMPT,
+            "the prompt in use is the instructions"
+        );
         assert_eq!(prompts[0].1, "<transcript>\num hi abed\n</transcript>");
     }
 

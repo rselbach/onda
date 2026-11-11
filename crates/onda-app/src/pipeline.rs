@@ -7,7 +7,8 @@ use std::time::Duration;
 
 use onda_asr::AsrError;
 use onda_domain::cleanup::{
-    self, CleanupModel, CleanupOutcome, CleanupProvider, CleanupStart, CleanupStep, OnDeviceStatus,
+    self, CleanupModel, CleanupOutcome, CleanupPrompt, CleanupProvider, CleanupRequest,
+    CleanupStart, CleanupStep, OnDeviceStatus,
 };
 use onda_domain::joiner::join;
 use onda_domain::languages::Language;
@@ -234,6 +235,7 @@ pub(crate) struct CleanupJob {
     pub(crate) transport: Arc<dyn CleanupTransport>,
     pub(crate) provider: CleanupProvider,
     pub(crate) model: CleanupModel,
+    pub(crate) prompt: CleanupPrompt,
     pub(crate) raw: String,
     pub(crate) app_name: Option<String>,
     pub(crate) messages: mpsc::UnboundedSender<Msg>,
@@ -299,24 +301,34 @@ async fn run(job: &CleanupJob, key: Option<String>) -> CleanupOutcome {
         CleanupStart::Skip(outcome) => outcome,
         CleanupStart::Request(key) => {
             let _ = job.messages.send(Msg::Refining(job.id));
-            let request = || {
-                cleanup::build_request(
-                    provider,
-                    key.as_ref(),
-                    &job.model,
-                    &job.raw,
-                    job.app_name.as_deref(),
-                )
-            };
-            let first = job.transport.send(request()).await;
-            match cleanup::after_first_attempt(provider, &job.raw, first) {
-                CleanupStep::Done(outcome) => outcome,
-                CleanupStep::Retry(violation) => {
-                    tracing::info!(%violation, "cleanup rejected by guardrails; retrying once");
-                    let second = job.transport.send(request()).await;
-                    cleanup::after_retry(provider, &job.raw, second)
-                }
-            }
+            let request = cleanup::build_request(
+                provider,
+                key.as_ref(),
+                &job.model,
+                &job.prompt,
+                &job.raw,
+                job.app_name.as_deref(),
+            );
+            refine(job.transport.as_ref(), request, &job.prompt, &job.raw).await
+        }
+    }
+}
+
+/// Runs the same acceptance and retry policy for dictation and sample tests.
+pub(crate) async fn refine(
+    transport: &dyn CleanupTransport,
+    request: CleanupRequest,
+    prompt: &CleanupPrompt,
+    raw: &str,
+) -> CleanupOutcome {
+    let provider = request.provider;
+    let first = transport.send(request.clone()).await;
+    match cleanup::after_first_attempt(provider, prompt, raw, first) {
+        CleanupStep::Done(outcome) => outcome,
+        CleanupStep::Retry(violation) => {
+            tracing::info!(%violation, "cleanup rejected by guardrails; retrying once");
+            let second = transport.send(request).await;
+            cleanup::after_retry(provider, raw, second)
         }
     }
 }

@@ -1249,6 +1249,7 @@ impl Actor {
             transport: self.ports.cleanup.clone(),
             provider: settings.cleanup_provider,
             model: settings.cleanup_model.clone(),
+            prompt: settings.cleanup_prompt.clone(),
             raw: raw.clone(),
             app_name,
             messages: self.messages.clone(),

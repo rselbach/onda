@@ -9,7 +9,9 @@ use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use onda_domain::cleanup::{CLEANUP_MODELS, CleanupProvider, default_model};
+use onda_domain::cleanup::{
+    CLEANUP_MODELS, CleanupPrompt, CleanupProvider, SYSTEM_PROMPT, default_model,
+};
 use onda_domain::hotkey::{KeyCode, Modifier, ModifierKey, ModifierSet, Shortcut};
 use onda_domain::languages::LanguageSetting;
 use onda_domain::messages::UserMessage;
@@ -41,6 +43,7 @@ struct Snapshot {
     cleanup_provider: CleanupProvider,
     openrouter_model: String,
     fireworks_model: String,
+    cleanup_prompt: CleanupPrompt,
     onboarding_completed: bool,
     did_show_first_run_setup: bool,
     last_model_migration_notice_key: String,
@@ -72,6 +75,7 @@ fn snapshot(settings: &Settings) -> Snapshot {
             .cleanup_model(CleanupProvider::Fireworks)
             .slug
             .into_owned(),
+        cleanup_prompt: settings.cleanup_prompt(),
         onboarding_completed: settings.onboarding_completed(),
         did_show_first_run_setup: settings.did_show_first_run_setup(),
         last_model_migration_notice_key: settings.last_model_migration_notice_key(),
@@ -98,6 +102,7 @@ fn defaults() -> Snapshot {
         cleanup_provider: CleanupProvider::OpenRouter,
         openrouter_model: "~openai/gpt-luna-latest".to_owned(),
         fireworks_model: "accounts/fireworks/models/deepseek-v4p1-flash".to_owned(),
+        cleanup_prompt: CleanupPrompt::default(),
         onboarding_completed: false,
         did_show_first_run_setup: false,
         last_model_migration_notice_key: String::new(),
@@ -165,6 +170,12 @@ fn system_catalog(languages: &[&str]) -> Catalog {
     }))
 }
 
+const CUSTOM_PROMPT: &str = "Fix punctuation only.\n\nKeep every word Troy said. ";
+
+fn custom_prompt() -> CleanupPrompt {
+    CleanupPrompt::from_text(CUSTOM_PROMPT).expect("a prompt with text")
+}
+
 fn rule(id: &str, triggers: &[&str], replacement: &str) -> ReplacementRule {
     ReplacementRule {
         id: RuleId(id.to_owned()),
@@ -211,6 +222,7 @@ fn key_names_match_prd_09() {
         "cleanupProvider",
         "openRouterModel",
         "fireworksModel",
+        "cleanupPrompt",
         "onboardingCompleted",
         "didShowFirstRunSetup",
         "lastModelMigrationNoticeKey",
@@ -277,6 +289,7 @@ fn every_setter_round_trips_through_the_file() {
             &CleanupProvider::Fireworks.resolve_model(Some("accounts/fireworks/models/kimi-k3")),
         )
         .expect("set");
+    settings.set_cleanup_prompt(&custom_prompt()).expect("set");
     settings.complete_onboarding().expect("set");
     settings
         .set_last_model_migration_notice_key("parakeet-old->parakeet-ultra")
@@ -303,6 +316,7 @@ fn every_setter_round_trips_through_the_file() {
         cleanup_provider: CleanupProvider::Fireworks,
         openrouter_model: "~anthropic/claude-haiku-latest".to_owned(),
         fireworks_model: "accounts/fireworks/models/kimi-k3".to_owned(),
+        cleanup_prompt: custom_prompt(),
         onboarding_completed: true,
         did_show_first_run_setup: true,
         last_model_migration_notice_key: "parakeet-old->parakeet-ultra".to_owned(),
@@ -335,6 +349,32 @@ fn every_setter_round_trips_through_the_file() {
         raw["replacementEntries"],
         json!([{"id": "a1b2", "triggers": ["greendale", "greendale cc"], "replacement": "Greendale Community College"}])
     );
+}
+
+#[test]
+fn a_custom_cleanup_prompt_is_stored_until_the_default_is_saved() {
+    let old = json!({"postProcessingEnabled": true, "openRouterModel": "openai/gpt-4o"});
+    let (dir, settings) = with_json(&old);
+    let path = settings_path(&dir);
+    assert_eq!(settings.cleanup_prompt(), CleanupPrompt::default());
+    assert_eq!(settings.cleanup_prompt().text(), SYSTEM_PROMPT);
+
+    settings.set_cleanup_prompt(&custom_prompt()).expect("set");
+    assert_eq!(stored(&path)["cleanupPrompt"], CUSTOM_PROMPT, "as typed");
+    assert_eq!(Settings::open(&path).cleanup_prompt(), custom_prompt());
+
+    settings.set_post_processing_enabled(false).expect("set");
+    settings.set_post_processing_enabled(true).expect("set");
+    assert_eq!(Settings::open(&path).cleanup_prompt(), custom_prompt());
+
+    let default = CleanupPrompt::from_text(SYSTEM_PROMPT).expect("the default");
+    settings.set_cleanup_prompt(&default).expect("set");
+    assert_eq!(stored(&path).get("cleanupPrompt"), None);
+    assert_eq!(settings.cleanup_prompt(), CleanupPrompt::default());
+    assert_eq!(stored(&path)["openRouterModel"], "openai/gpt-4o");
+
+    let (_dir, settings) = with_json(&json!({"cleanupPrompt": SYSTEM_PROMPT}));
+    assert_eq!(settings.cleanup_prompt().custom(), None);
 }
 
 #[test]
@@ -414,6 +454,10 @@ fn corrupt_values_read_as_defaults_set_2() {
         ("cleanupProvider".into(), json!(1)),
         ("openRouterModel".into(), json!("")),
         ("openRouterModel".into(), json!(3)),
+        ("cleanupPrompt".into(), json!(7)),
+        ("cleanupPrompt".into(), json!(["Fix punctuation only."])),
+        ("cleanupPrompt".into(), json!("")),
+        ("cleanupPrompt".into(), json!(" \n\t")),
         ("lastModelMigrationNoticeKey".into(), json!(9)),
         ("declinedModelMigrationNoticeKey".into(), json!({})),
     ];

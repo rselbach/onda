@@ -15,7 +15,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use super::catalog::{CleanupModel, ReasoningEffort};
 use super::fireworks;
-use super::prompt::SYSTEM_PROMPT;
+use super::prompt::CleanupPrompt;
 use super::provider::CleanupProvider;
 
 /// Chat-completions endpoint (CLN-4).
@@ -149,7 +149,7 @@ enum Body {
 /// instructions, and the user message as its prompt.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct OnDevicePrompt {
-    /// The session instructions, [`SYSTEM_PROMPT`].
+    /// The session instructions: the [`CleanupPrompt`] in use.
     pub instructions: String,
     /// The fenced transcript (CLN-6).
     pub prompt: String,
@@ -222,21 +222,25 @@ impl fmt::Debug for CleanupRequest {
 
 /// Builds the request that cleans `transcript` (untrimmed) with
 /// `provider`'s `model`, naming the target app when known (CLN-4..CLN-6).
-/// `key` is required by providers that [use one](CleanupProvider::uses_key)
-/// and ignored by the rest.
+/// `prompt` is every provider's system instructions; the transcript and app
+/// name are framed the same way whatever it says. `key` is required by
+/// providers that [use one](CleanupProvider::uses_key) and ignored by the
+/// rest.
 pub fn build_request(
     provider: CleanupProvider,
     key: Option<&ApiKey>,
     model: &CleanupModel,
+    prompt: &CleanupPrompt,
     transcript: &str,
     app_name: Option<&str>,
 ) -> CleanupRequest {
+    let instructions = prompt.text();
     let prompt = user_message(transcript, app_name);
     let messages = || {
         [
             ChatMessage {
                 role: "system",
-                content: SYSTEM_PROMPT.to_owned(),
+                content: instructions.to_owned(),
             },
             ChatMessage {
                 role: "user",
@@ -281,7 +285,7 @@ pub fn build_request(
         }
         CleanupProvider::AppleIntelligence => {
             let body = Body::OnDevice(OnDevicePrompt {
-                instructions: SYSTEM_PROMPT.to_owned(),
+                instructions: instructions.to_owned(),
                 prompt: prompt.clone(),
             });
             (Vec::new(), body)
@@ -423,6 +427,7 @@ mod tests {
     use crate::cleanup::catalog::{CLEANUP_MODELS, default_model};
     use crate::cleanup::fireworks::FIREWORKS_MODELS;
     use crate::cleanup::listing::{finish_models, parse_models_page};
+    use crate::cleanup::prompt::SYSTEM_PROMPT;
 
     const KEY: &str = "sk-test-greendale-abc";
 
@@ -476,6 +481,7 @@ mod tests {
             CleanupProvider::OpenRouter,
             Some(&key()),
             default_model(),
+            &CleanupPrompt::default(),
             "hello",
             None,
         );
@@ -493,6 +499,7 @@ mod tests {
             CleanupProvider::OpenRouter,
             Some(&key()),
             model,
+            &CleanupPrompt::default(),
             "señor chang",
             None,
         );
@@ -529,6 +536,7 @@ mod tests {
             CleanupProvider::Fireworks,
             Some(&key()),
             &FIREWORKS_MODELS[0],
+            &CleanupPrompt::default(),
             "pop pop",
             Some("Mail"),
         );
@@ -560,6 +568,7 @@ mod tests {
             CleanupProvider::Fireworks,
             Some(&key()),
             &custom,
+            &CleanupPrompt::default(),
             "hi",
             None,
         );
@@ -574,6 +583,7 @@ mod tests {
             CleanupProvider::AppleIntelligence,
             None,
             model,
+            &CleanupPrompt::default(),
             "um hi troy",
             Some("Notes"),
         );
@@ -593,6 +603,59 @@ mod tests {
     }
 
     #[test]
+    fn a_custom_prompt_replaces_the_instructions_for_every_provider() {
+        let custom = CleanupPrompt::from_text("Fix punctuation only.\nKeep every word.")
+            .expect("a prompt with text");
+        let user = "Dictating into: Notes\n\n<transcript>\num hi troy\n</transcript>";
+        for provider in CleanupProvider::ALL {
+            let request = |prompt: &CleanupPrompt| {
+                build_request(
+                    provider,
+                    Some(&key()),
+                    provider.default_model(),
+                    prompt,
+                    "um hi troy",
+                    Some("Notes"),
+                )
+            };
+            let sent = |request: &CleanupRequest| match request.on_device_prompt() {
+                Some(on_device) => (on_device.instructions.clone(), on_device.prompt.clone()),
+                None => {
+                    let body = serde_json::to_value(&request.body).expect("serialize body");
+                    let content = |index: usize| {
+                        body["messages"][index]["content"]
+                            .as_str()
+                            .expect("content")
+                            .to_owned()
+                    };
+                    assert_eq!(body["messages"][0]["role"], "system", "{provider:?}");
+                    assert_eq!(body["messages"][1]["role"], "user", "{provider:?}");
+                    (content(0), content(1))
+                }
+            };
+            let with_custom = request(&custom);
+            assert_eq!(
+                sent(&with_custom),
+                (
+                    "Fix punctuation only.\nKeep every word.".to_owned(),
+                    user.to_owned()
+                ),
+                "{provider:?}: the custom prompt is the instructions, the framing is kept"
+            );
+            let with_default = request(&CleanupPrompt::default());
+            assert_eq!(
+                sent(&with_default),
+                (SYSTEM_PROMPT.to_owned(), user.to_owned()),
+                "{provider:?}: the default prompt"
+            );
+            assert_eq!(
+                with_custom.headers, with_default.headers,
+                "{provider:?}: the prompt leaves the headers alone"
+            );
+        }
+    }
+
+    #[test]
     fn models_outside_the_catalog_send_no_reasoning_setting() {
         // a model with mandatory reasoning rejects effort "none"
         let model = CleanupModel::custom("openai/gpt-6.1-terra-pro");
@@ -600,6 +663,7 @@ mod tests {
             CleanupProvider::OpenRouter,
             Some(&key()),
             &model,
+            &CleanupPrompt::default(),
             "pop pop",
             None,
         );

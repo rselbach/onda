@@ -1425,6 +1425,443 @@ async fn cln_27_the_test_runs_resets_and_cancels_silently() {
     assert_eq!(details.test_error, None);
 }
 
+const CUSTOM_PROMPT: &str = "Fix punctuation only.\n\nKeep every word Troy said.";
+
+#[tokio::test(start_paused = true)]
+async fn custom_prompt_transformations_match_in_samples_and_dictation() {
+    use onda_domain::cleanup::{CleanupPrompt, CleanupProvider, OnDeviceStatus, TEST_SAMPLE};
+
+    let expanded = "Troy and Abed meet at Greendale Community College. ".repeat(12);
+    let cases = [
+        ("Use bullet points.", "- Troy and Abed\n- Greendale"),
+        ("Summarize in two words.", "Study group."),
+        ("Expand into a detailed explanation.", expanded.trim()),
+        ("Remove all text.", ""),
+    ];
+    for provider in CleanupProvider::ALL {
+        for (instructions, output) in cases {
+            let h = Harness::with(|s| {
+                s.cleanup_enabled = true;
+                s.cleanup_provider = provider;
+                s.cleanup_model = provider.default_model().clone();
+                s.cleanup_prompt = CleanupPrompt::from_text(instructions).expect("custom prompt");
+            })
+            .await;
+            *lock(&h.cleanup.on_device) = Some(OnDeviceStatus::Available);
+            *lock(&h.script.final_default) = TEST_SAMPLE.to_owned();
+            h.cleanup.respond(vec![Ok(output.to_owned())]);
+            h.dictate().await;
+            assert_eq!(h.history.entries()[0].transcript, output, "{provider:?}");
+            assert!(h.history.entries()[0].was_post_processed);
+            let want_typed = if output.is_empty() {
+                vec![]
+            } else {
+                vec![output]
+            };
+            assert_eq!(h.typed(), want_typed, "{provider:?}");
+            assert!(h.notices().is_empty());
+            assert_eq!(h.cleanup.calls(), 1, "custom output is not retried");
+
+            h.app.page_appeared(MainWindowSection::PostProcessing);
+            h.cleanup.respond(vec![Ok(output.to_owned())]);
+            h.app.test_cleanup();
+            sleep(10).await;
+            let details = post_processing(&h).details.expect("details");
+            assert_eq!(details.test_error, None, "{provider:?}");
+            assert_eq!(
+                details.test_result.expect("accepted sample output").result,
+                onda_domain::cleanup::test_result_line(output),
+                "{provider:?}: the sample accepts the same transformation"
+            );
+            assert_eq!(h.cleanup.calls(), 2);
+            assert_eq!(h.cleanup.instructions(), [instructions, instructions]);
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn samples_report_default_guardrail_rejections_and_custom_transport_errors() {
+    use onda_domain::cleanup::{CleanupError, CleanupPrompt};
+
+    let h = Harness::with(|s| s.cleanup_enabled = true).await;
+    h.app.page_appeared(MainWindowSection::PostProcessing);
+    h.cleanup.respond(vec![Ok("# Study group".to_owned()); 2]);
+    h.app.test_cleanup();
+    sleep(10).await;
+    let details = post_processing(&h).details.expect("details");
+    assert_eq!(details.test_result, None);
+    assert!(
+        details
+            .test_error
+            .expect("rejected sample")
+            .message
+            .contains("unexpected Markdown")
+    );
+    assert_eq!(h.cleanup.calls(), 2, "default rejection gets one retry");
+
+    h.app.dismiss_cleanup_test_error();
+    h.cleanup.respond(vec![
+        Ok("# Study group".to_owned()),
+        Ok("The study group meets at four.".to_owned()),
+    ]);
+    h.app.test_cleanup();
+    sleep(10).await;
+    let details = post_processing(&h).details.expect("details");
+    assert_eq!(details.test_error, None);
+    assert_eq!(
+        details.test_result.expect("accepted retry").result,
+        "Result: The study group meets at four."
+    );
+
+    let h = Harness::with(|s| {
+        s.cleanup_enabled = true;
+        s.cleanup_prompt = CleanupPrompt::from_text("Use bullet points.").expect("custom prompt");
+    })
+    .await;
+    let error = CleanupError::Http {
+        status: 503,
+        message: None,
+    };
+    h.cleanup.respond(vec![Err(error.clone())]);
+    h.dictate().await;
+    assert_eq!(h.typed(), ["hello world"]);
+    assert!(!h.history.entries()[0].was_post_processed);
+    h.app.page_appeared(MainWindowSection::PostProcessing);
+    h.cleanup.respond(vec![Err(error)]);
+    h.app.test_cleanup();
+    sleep(10).await;
+    let details = post_processing(&h).details.expect("details");
+    assert_eq!(details.test_result, None);
+    assert_eq!(
+        details.test_error.expect("provider failure").message,
+        "OpenRouter returned HTTP 503."
+    );
+    assert_eq!(h.cleanup.calls(), 2, "transport failures are not retried");
+}
+
+fn saved_prompt(h: &Harness) -> onda_domain::cleanup::CleanupPrompt {
+    lock(&h.settings.settings).cleanup_prompt.clone()
+}
+
+fn prompt_summary(h: &Harness) -> onda_app::views::PromptSummaryView {
+    post_processing(h).details.expect("details").prompt
+}
+
+fn prompt_editor(h: &Harness) -> onda_app::views::PromptEditorView {
+    prompt_summary(h).editor.expect("the prompt sheet")
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_prompt_changes_only_on_save() {
+    use onda_domain::cleanup::{CleanupPrompt, SYSTEM_PROMPT};
+
+    let h = Harness::with(|s| s.cleanup_enabled = true).await;
+    h.app.page_appeared(MainWindowSection::PostProcessing);
+    sleep(1).await;
+    assert_eq!(prompt_summary(&h).name, "Onda default");
+    assert_eq!(prompt_summary(&h).editor, None);
+
+    h.app.open_prompt_editor();
+    sleep(1).await;
+    let opened = prompt_editor(&h);
+    assert_eq!(opened.text, SYSTEM_PROMPT);
+    assert_eq!(opened.status, "No changes");
+    assert!(!opened.save.enabled);
+
+    h.app.prompt_edited(CUSTOM_PROMPT);
+    sleep(1).await;
+    let typed = prompt_editor(&h);
+    assert_eq!(typed.status, "Unsaved changes");
+    assert!(typed.save.enabled);
+    assert_eq!(typed.revision, opened.revision);
+    assert_eq!(saved_prompt(&h), CleanupPrompt::default());
+
+    h.app.cancel_prompt_editor();
+    sleep(1).await;
+    assert_eq!(prompt_summary(&h).editor, None);
+    assert_eq!(prompt_summary(&h).status, None);
+    assert_eq!(saved_prompt(&h), CleanupPrompt::default());
+    h.app.open_prompt_editor();
+    sleep(1).await;
+    let reopened = prompt_editor(&h);
+    assert_eq!(reopened.text, SYSTEM_PROMPT, "the cancelled draft is gone");
+    assert!(reopened.revision > opened.revision, "the editor reloads");
+
+    h.app.prompt_edited(CUSTOM_PROMPT);
+    h.app.save_prompt();
+    sleep(1).await;
+    assert_eq!(saved_prompt(&h).custom(), Some(CUSTOM_PROMPT));
+    let summary = prompt_summary(&h);
+    assert_eq!(summary.editor, None);
+    assert_eq!(summary.name, "Custom prompt");
+    assert_eq!(
+        summary.preview,
+        "Fix punctuation only. Keep every word Troy said."
+    );
+    assert_eq!(
+        summary.status.as_deref(),
+        Some("Custom prompt saved. Applies to your next dictation.")
+    );
+
+    h.app.page_disappeared(MainWindowSection::PostProcessing);
+    h.app.page_appeared(MainWindowSection::PostProcessing);
+    sleep(1).await;
+    assert_eq!(prompt_summary(&h).status, None);
+    assert_eq!(prompt_summary(&h).name, "Custom prompt");
+
+    h.app.open_prompt_editor();
+    sleep(1).await;
+    let custom = prompt_editor(&h);
+    assert_eq!(custom.text, CUSTOM_PROMPT);
+    h.app.restore_default_prompt();
+    sleep(1).await;
+    let restored = prompt_editor(&h);
+    assert_eq!(restored.text, SYSTEM_PROMPT);
+    assert_eq!(restored.badge, "Onda default");
+    assert_eq!(restored.status, "Unsaved changes");
+    assert!(restored.revision > custom.revision, "the editor reloads");
+    assert_eq!(saved_prompt(&h).custom(), Some(CUSTOM_PROMPT));
+    h.app.cancel_prompt_editor();
+    sleep(1).await;
+    assert_eq!(saved_prompt(&h).custom(), Some(CUSTOM_PROMPT));
+    assert_eq!(prompt_summary(&h).name, "Custom prompt");
+
+    h.app.set_cleanup_enabled(false);
+    sleep(1).await;
+    assert_eq!(post_processing(&h).details, None);
+    assert_eq!(saved_prompt(&h).custom(), Some(CUSTOM_PROMPT));
+    h.app.set_cleanup_enabled(true);
+    sleep(1).await;
+    assert_eq!(prompt_summary(&h).name, "Custom prompt");
+
+    h.app.open_prompt_editor();
+    h.app.restore_default_prompt();
+    h.app.save_prompt();
+    sleep(1).await;
+    assert_eq!(saved_prompt(&h), CleanupPrompt::default());
+    let summary = prompt_summary(&h);
+    assert_eq!(summary.editor, None);
+    assert_eq!(summary.name, "Onda default");
+    assert_eq!(summary.status.as_deref(), Some("Default prompt restored."));
+
+    h.app.open_prompt_editor();
+    sleep(1).await;
+    assert_eq!(prompt_summary(&h).status, None);
+    assert_eq!(
+        settings_log(&h, "CleanupPrompt").len(),
+        2,
+        "one write per save: {:?}",
+        settings_log(&h, "CleanupPrompt")
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_blank_or_unchanged_prompt_is_never_saved() {
+    use onda_domain::cleanup::{CleanupPrompt, SYSTEM_PROMPT};
+
+    struct Case {
+        name: &'static str,
+        saved: CleanupPrompt,
+        draft: &'static str,
+        want_status: &'static str,
+        want_error: bool,
+    }
+    let custom = CleanupPrompt::from_text(CUSTOM_PROMPT).expect("a prompt with text");
+    let cases = [
+        Case {
+            name: "empty",
+            saved: CleanupPrompt::default(),
+            draft: "",
+            want_status: "Enter a prompt or restore the default.",
+            want_error: true,
+        },
+        Case {
+            name: "whitespace over a custom prompt",
+            saved: custom.clone(),
+            draft: " \n\t ",
+            want_status: "Enter a prompt or restore the default.",
+            want_error: true,
+        },
+        Case {
+            name: "the default over the default",
+            saved: CleanupPrompt::default(),
+            draft: SYSTEM_PROMPT,
+            want_status: "No changes",
+            want_error: false,
+        },
+        Case {
+            name: "the custom prompt over itself",
+            saved: custom.clone(),
+            draft: CUSTOM_PROMPT,
+            want_status: "No changes",
+            want_error: false,
+        },
+    ];
+    for tc in cases {
+        let saved = tc.saved.clone();
+        let h = Harness::with(move |s| {
+            s.cleanup_enabled = true;
+            s.cleanup_prompt = saved;
+        })
+        .await;
+        h.app.page_appeared(MainWindowSection::PostProcessing);
+        h.app.open_prompt_editor();
+        h.app.prompt_edited(tc.draft);
+        h.app.save_prompt();
+        sleep(1).await;
+        let editor = prompt_editor(&h);
+        assert_eq!(editor.status, tc.want_status, "{}", tc.name);
+        assert_eq!(editor.status_is_error, tc.want_error, "{}", tc.name);
+        assert!(!editor.save.enabled, "{}", tc.name);
+        assert_eq!(saved_prompt(&h), tc.saved, "{}", tc.name);
+        assert!(settings_log(&h, "CleanupPrompt").is_empty(), "{}", tc.name);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_prompt_that_cannot_be_stored_stays_in_the_sheet() {
+    use onda_domain::cleanup::CleanupPrompt;
+
+    let h = Harness::with(|s| s.cleanup_enabled = true).await;
+    h.app.page_appeared(MainWindowSection::PostProcessing);
+    h.app.open_prompt_editor();
+    h.app.prompt_edited(CUSTOM_PROMPT);
+    *lock(&h.settings.fail_apply) =
+        Some("couldn't write settings: No space left on device".to_owned());
+    h.app.save_prompt();
+    sleep(1).await;
+    let failed = prompt_editor(&h);
+    assert_eq!(
+        failed.status,
+        "Couldn't save the prompt: couldn't write settings: No space left on device"
+    );
+    assert!(failed.status_is_error);
+    assert!(failed.save.enabled, "the save can be retried");
+    assert_eq!(saved_prompt(&h), CleanupPrompt::default());
+    assert_eq!(prompt_summary(&h).name, "Onda default");
+    assert_eq!(prompt_summary(&h).status, None);
+
+    h.app.prompt_edited(format!("{CUSTOM_PROMPT}!"));
+    sleep(1).await;
+    assert_eq!(prompt_editor(&h).status, "Unsaved changes");
+    h.app.prompt_edited(CUSTOM_PROMPT);
+    h.app.save_prompt();
+    sleep(1).await;
+    assert_eq!(prompt_summary(&h).editor, None);
+    assert_eq!(saved_prompt(&h).custom(), Some(CUSTOM_PROMPT));
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_prompt_draft_is_discarded_with_its_sheet() {
+    use onda_domain::cleanup::CleanupPrompt;
+
+    let h = Harness::with(|s| s.cleanup_enabled = true).await;
+    h.app.page_appeared(MainWindowSection::PostProcessing);
+
+    h.app.open_prompt_editor();
+    h.app.prompt_edited(CUSTOM_PROMPT);
+    h.app.page_disappeared(MainWindowSection::PostProcessing);
+    h.app.page_appeared(MainWindowSection::PostProcessing);
+    sleep(1).await;
+    assert_eq!(prompt_summary(&h).editor, None);
+
+    h.app.open_prompt_editor();
+    h.app.prompt_edited(CUSTOM_PROMPT);
+    h.app.set_cleanup_enabled(false);
+    h.app.set_cleanup_enabled(true);
+    sleep(1).await;
+    assert_eq!(prompt_summary(&h).editor, None);
+    assert_eq!(saved_prompt(&h), CleanupPrompt::default());
+
+    h.app.prompt_edited(CUSTOM_PROMPT);
+    h.app.restore_default_prompt();
+    h.app.save_prompt();
+    sleep(1).await;
+    assert_eq!(prompt_summary(&h).editor, None);
+    assert!(settings_log(&h, "CleanupPrompt").is_empty());
+
+    h.app.open_providers_dialog();
+    h.app.open_prompt_editor();
+    sleep(10).await;
+    let details = post_processing(&h).details.expect("details");
+    assert!(details.dialog.is_some());
+    assert_eq!(details.prompt.editor, None);
+    h.app.close_providers_dialog();
+    h.app.open_prompt_editor();
+    h.app.open_providers_dialog();
+    sleep(10).await;
+    let details = post_processing(&h).details.expect("details");
+    assert_eq!(details.dialog, None);
+    assert!(details.prompt.editor.is_some());
+
+    h.app.cancel_prompt_editor();
+    h.app.set_cleanup_enabled(false);
+    h.app.open_prompt_editor();
+    h.app.set_cleanup_enabled(true);
+    sleep(1).await;
+    assert_eq!(prompt_summary(&h).editor, None);
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_sample_test_sends_the_saved_prompt() {
+    use onda_domain::cleanup::SYSTEM_PROMPT;
+
+    let h = Harness::with(|s| s.cleanup_enabled = true).await;
+    h.app.page_appeared(MainWindowSection::PostProcessing);
+    let sample = "<transcript>\num so tell troy and abed that the study group meets at three no wait four in the library thanks\n</transcript>";
+
+    h.cleanup.respond(vec![Ok("Cool.".to_owned())]);
+    h.app.test_cleanup();
+    sleep(10).await;
+    assert_eq!(h.cleanup.instructions(), [SYSTEM_PROMPT]);
+
+    h.app.open_prompt_editor();
+    h.app.prompt_edited(CUSTOM_PROMPT);
+    h.cleanup.respond(vec![Ok("Cool cool.".to_owned())]);
+    h.app.test_cleanup();
+    sleep(10).await;
+    assert_eq!(h.cleanup.instructions()[1], SYSTEM_PROMPT);
+    assert!(
+        post_processing(&h)
+            .details
+            .expect("details")
+            .test_result
+            .is_some()
+    );
+
+    h.app.save_prompt();
+    sleep(1).await;
+    assert_eq!(
+        post_processing(&h).details.expect("details").test_result,
+        None
+    );
+    h.cleanup.respond(vec![Ok("Cool cool cool.".to_owned())]);
+    h.app.test_cleanup();
+    sleep(10).await;
+    assert_eq!(h.cleanup.instructions()[2], CUSTOM_PROMPT);
+    assert_eq!(
+        h.cleanup.user_messages(),
+        [sample, sample, sample],
+        "the sample is framed the same way"
+    );
+
+    let hold = Arc::new(tokio::sync::Notify::new());
+    *lock(&h.cleanup.hold) = Some(hold.clone());
+    h.cleanup.respond(vec![Ok("Streets ahead.".to_owned())]);
+    h.app.test_cleanup();
+    sleep(10).await;
+    assert!(post_processing(&h).details.expect("details").test_running);
+    h.app.open_prompt_editor();
+    h.app.restore_default_prompt();
+    h.app.save_prompt();
+    hold.notify_waiters();
+    sleep(10).await;
+    let details = post_processing(&h).details.expect("details");
+    assert!(!details.test_running);
+    assert_eq!(details.test_result, None);
+    assert_eq!(details.test_error, None);
+}
+
 // ---------------------------------------------------------------------------
 // Replacements (REP-8..REP-12)
 

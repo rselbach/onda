@@ -81,6 +81,11 @@ pub(crate) enum UiMsg {
     RefreshCleanupModels,
     ApiKeyEdited(String),
     ApiKeyCommit,
+    OpenPromptEditor,
+    PromptEdited(String),
+    RestoreDefaultPrompt,
+    CancelPromptEditor,
+    SavePrompt,
     TestCleanup,
     DismissCleanupTestError,
     // Replacements (REP-8..REP-12)
@@ -335,6 +340,11 @@ impl Actor {
             UiMsg::RefreshCleanupModels => self.refresh_cleanup_models(),
             UiMsg::ApiKeyEdited(text) => self.api_key_edited(text),
             UiMsg::ApiKeyCommit => self.save_api_key(),
+            UiMsg::OpenPromptEditor => self.open_prompt_editor(),
+            UiMsg::PromptEdited(text) => self.prompt_edited(text),
+            UiMsg::RestoreDefaultPrompt => self.restore_default_prompt(),
+            UiMsg::CancelPromptEditor => self.cancel_prompt_editor(),
+            UiMsg::SavePrompt => self.save_prompt(),
             UiMsg::TestCleanup => self.test_cleanup(),
             UiMsg::DismissCleanupTestError => self.ui.cleanup.test_error = None,
             UiMsg::AddRule => self.add_rule(),
@@ -511,6 +521,10 @@ impl Actor {
             MainWindowSection::PostProcessing => {
                 // the sheet goes with the page, saving the key field
                 self.close_providers_dialog();
+                // an unsaved prompt draft goes with it too, and so does the
+                // line the last prompt save left
+                self.cancel_prompt_editor();
+                self.ui.cleanup.prompt_status = None;
                 // leaving cancels a running test silently (CLN-27)
                 self.cancel_cleanup_test();
             }

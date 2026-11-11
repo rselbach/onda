@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use onda_domain::cleanup::{
-    ApiKey, CleanupError, CleanupProvider, CleanupRequest, REQUEST_TIMEOUT, SYSTEM_PROMPT,
-    TEST_SAMPLE, build_request, default_model,
+    ApiKey, CleanupError, CleanupPrompt, CleanupProvider, CleanupRequest, REQUEST_TIMEOUT,
+    SYSTEM_PROMPT, TEST_SAMPLE, build_request, default_model,
 };
 use serde_json::json;
 use tokio::net::TcpListener;
@@ -33,6 +33,7 @@ fn cleanup_request(key: &str) -> CleanupRequest {
         CleanupProvider::OpenRouter,
         Some(&key),
         default_model(),
+        &CleanupPrompt::default(),
         TEST_SAMPLE,
         Some(APP),
     )

@@ -14,9 +14,9 @@ use onda_app::views::{
     MainWindowSection, ModelCardAction, ModelCardView, ModelRow, ModelRowControl, NoteActionView,
     NoticeButtonView, OnboardingContent, OnboardingProgress, OnboardingView, OtherModelsView,
     OutputModeOption, OutputModePicker, PermissionCardView, PermissionFixButton, PermissionRowView,
-    PostProcessingDetails, PostProcessingPage, PresetCardView, ProvidersDialog, ReplacementRowView,
-    ReplacementsPage, RetentionOption, SidebarGroup, SidebarPage, SpeechAlert, SpeechPage,
-    ToggleView, UpdateNotice, sidebar,
+    PostProcessingDetails, PostProcessingPage, PresetCardView, PromptEditorView, PromptSummaryView,
+    ProvidersDialog, ReplacementRowView, ReplacementsPage, RetentionOption, SidebarGroup,
+    SidebarPage, SpeechAlert, SpeechPage, ToggleView, UpdateNotice, sidebar,
 };
 use onda_domain::history::ContextMenuItem;
 use onda_domain::hotkey::HotkeyPreset;
@@ -705,6 +705,66 @@ pub struct ProvidersDialog {
     pub done_title: String,
 }
 
+/// The prompt sheet: the whole prompt as an editable draft. Nothing is
+/// saved until "Save"; "Cancel" discards the draft.
+#[uniffi::remote(Record)]
+pub struct PromptEditorView {
+    /// "Post-processing prompt".
+    pub title: String,
+    /// What a custom prompt does, under the title.
+    pub intro: String,
+    /// "Prompt instructions", above the editor.
+    pub label: String,
+    /// What the draft is: "Onda default" or "Custom".
+    pub badge: String,
+    /// The draft as the core knows it. Replace the editor's contents only
+    /// when `revision` changes (the sheet opened, or "Restore Default"), so
+    /// typing is never overwritten.
+    pub text: String,
+    /// Bumped when the core replaces `text`.
+    pub revision: u64,
+    /// Under the editor: "No changes", "Unsaved changes", what to do about
+    /// a blank draft, or why a save failed.
+    pub status: String,
+    /// `status` is a problem; show it in red.
+    pub status_is_error: bool,
+    /// "4,216 characters".
+    pub character_count: String,
+    /// "What the model receives"; discloses `help`.
+    pub help_title: String,
+    /// How the transcript and app name reach the model.
+    pub help: String,
+    /// "Restore Default": sends `restore_default_prompt`, which puts Onda's
+    /// prompt in the draft. Disabled while the draft is that prompt.
+    pub restore: ButtonView,
+    /// "Cancel"; sends `cancel_prompt_editor`.
+    pub cancel_title: String,
+    /// "Save": sends `save_prompt`. Disabled while the draft is blank or is
+    /// the prompt in use.
+    pub save: ButtonView,
+}
+
+/// The "Prompt" section: the one prompt every provider and model gets.
+#[uniffi::remote(Record)]
+pub struct PromptSummaryView {
+    /// "Prompt".
+    pub title: String,
+    /// "Onda default" or "Custom prompt"; clicking the row sends
+    /// `open_prompt_editor`.
+    pub name: String,
+    /// "Instructions for cleaning up your dictation".
+    pub subtitle: String,
+    /// The start of the prompt in use, as one line; show up to three lines.
+    pub preview: String,
+    /// "Used for all post-processing models."
+    pub caption: String,
+    /// What the last save did, e.g. "Custom prompt saved. Applies to your
+    /// next dictation."
+    pub status: Option<String>,
+    /// The prompt sheet, while open.
+    pub editor: Option<PromptEditorView>,
+}
+
 /// What shows while post-processing is on (CLN-26).
 #[uniffi::remote(Record)]
 pub struct PostProcessingDetails {
@@ -718,6 +778,8 @@ pub struct PostProcessingDetails {
     pub dialog: Option<ProvidersDialog>,
     /// The privacy caption.
     pub caption: String,
+    /// The prompt in use and its sheet.
+    pub prompt: PromptSummaryView,
     /// "Test with Sample Text"; disabled while a test runs.
     pub test_button: ButtonView,
     /// Show a small spinner next to the button.

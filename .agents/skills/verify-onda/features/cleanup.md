@@ -14,6 +14,11 @@ page. Verify the UI only: no real API key, no requests.
   model list where one click uses a model (checkmark), one "Search or
   enter a model ID" field that filters the list or offers "Use as model
   ID", "Refresh Models" with a spinner and red error, and "Done".
+- `cln-prompt`: "Prompt" section naming the prompt in use ("Onda default"
+  or "Custom prompt") over a three-line preview, and the "Post-processing
+  prompt" sheet it opens: editor, "Onda default"/"Custom" badge, status
+  line and character count, "What the model receives", "Restore Default",
+  "Cancel", "Save". One prompt serves every provider and model.
 - `cln-test`: Test button, result and error alert.
 - `cln-overlay`: "Refining..." label and "Used Raw Transcript" notices
   during dictation.
@@ -37,7 +42,15 @@ Main window > Post-Processing.
    model ID" row that appears; it shows
    under "Custom" with the checkmark. Click "Done"; the Model row names it
    and the choice survives switching pages.
-5. Toggle off again before cleanup.
+5. Click the Prompt row; screenshot the sheet. Replace the editor's text
+   with `llama-cu set-value` on `text area "Prompt instructions"`: the
+   badge, status, and count follow, and `settings.json` gains no
+   `cleanupPrompt` until "Save". "Cancel" and Escape discard the draft. An
+   empty or whitespace-only editor shows "Enter a prompt or restore the
+   default." in red with "Save" disabled. "Save" closes the sheet, the row
+   reads "Custom prompt", and `cleanupPrompt` in `<data>/settings.json`
+   holds the text as typed. "Restore Default" then "Save" removes the key.
+6. Toggle off again before cleanup.
 
 ## Gotchas
 
@@ -62,5 +75,11 @@ Main window > Post-Processing.
   delivers the raw transcript and the entry's `metadata.json` records
   `postProcessingErrorDescription` "OpenRouter unavailable". Do not add a
   key to reach "Refining...".
+- The prompt sheet does not take background mouse clicks or `type-text`;
+  press its buttons by element (accessibility press) and edit with
+  `set-value`. A fresh `get-ax-state` is needed after the sheet opens, or
+  the button ids are stale.
+- A saved prompt is sent with every later dictation, so restore the default
+  before any run that dictates with post-processing on.
 - Request behavior (headers, prompt, guardrails) is covered by Rust tests in
   `crates/onda-cleanup`, not by this skill.

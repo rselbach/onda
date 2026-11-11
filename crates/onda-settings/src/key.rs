@@ -39,6 +39,8 @@ pub enum Key {
     OpenRouterModel,
     /// `fireworksModel`: Fireworks AI cleanup model slug.
     FireworksModel,
+    /// `cleanupPrompt`: the user's cleanup prompt; unset for Onda's default.
+    CleanupPrompt,
     /// `onboardingCompleted` (SET-4).
     OnboardingCompleted,
     /// `didShowFirstRunSetup` (SET-4).
@@ -51,7 +53,7 @@ pub enum Key {
 
 impl Key {
     /// Every key.
-    pub const ALL: [Key; 21] = [
+    pub const ALL: [Key; 22] = [
         Key::SelectedModel,
         Key::SelectedLanguage,
         Key::RecentLanguages,
@@ -69,6 +71,7 @@ impl Key {
         Key::CleanupProvider,
         Key::OpenRouterModel,
         Key::FireworksModel,
+        Key::CleanupPrompt,
         Key::OnboardingCompleted,
         Key::DidShowFirstRunSetup,
         Key::LastModelMigrationNoticeKey,
@@ -95,6 +98,7 @@ impl Key {
             Key::CleanupProvider => "cleanupProvider",
             Key::OpenRouterModel => "openRouterModel",
             Key::FireworksModel => "fireworksModel",
+            Key::CleanupPrompt => "cleanupPrompt",
             Key::OnboardingCompleted => "onboardingCompleted",
             Key::DidShowFirstRunSetup => "didShowFirstRunSetup",
             Key::LastModelMigrationNoticeKey => "lastModelMigrationNoticeKey",

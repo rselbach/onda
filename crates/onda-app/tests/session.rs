@@ -1476,6 +1476,67 @@ async fn apple_intelligence_cleans_on_device_without_a_key() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn dictation_sends_the_prompt_in_use_to_every_provider() {
+    use onda_domain::cleanup::{CleanupPrompt, CleanupProvider, OnDeviceStatus, SYSTEM_PROMPT};
+
+    let custom = "Fix punctuation only.\n\nKeep every word Troy said.";
+    let user = "Dictating into: Study Room\n\n<transcript>\nhello world\n</transcript>";
+    for provider in CleanupProvider::ALL {
+        for want in [SYSTEM_PROMPT, custom] {
+            let prompt = CleanupPrompt::from_text(want).expect("a prompt with text");
+            let h = Harness::with(move |s| {
+                s.cleanup_enabled = true;
+                s.cleanup_provider = provider;
+                s.cleanup_model = provider.default_model().clone();
+                s.cleanup_prompt = prompt;
+            })
+            .await;
+            *lock(&h.cleanup.on_device) = Some(OnDeviceStatus::Available);
+            *lock(&h.text.focused) = Some(target(7, "Study Room"));
+            h.cleanup.respond(vec![Ok("Hello world.".to_owned())]);
+            h.dictate().await;
+            assert_eq!(h.typed(), vec!["Hello world."], "{provider:?}");
+            assert_eq!(h.cleanup.instructions(), [want], "{provider:?}");
+            let requests = lock(&h.cleanup.requests).clone();
+            for request in &requests {
+                let sent = request["messages"][1]["content"]
+                    .as_str()
+                    .or(request["prompt"].as_str());
+                assert_eq!(sent, Some(user), "{provider:?}: the framing is kept");
+            }
+        }
+    }
+
+    // a prompt saved during a dictation applies to the next one: both of
+    // this one's requests send the prompt it started with
+    let h = Harness::with(|s| s.cleanup_enabled = true).await;
+    h.app
+        .page_appeared(onda_app::MainWindowSection::PostProcessing);
+    h.cleanup.respond(vec![
+        Ok("# Hello".to_owned()),
+        Ok("Hello world.".to_owned()),
+    ]);
+    h.press();
+    sleep(400).await;
+    h.app.open_prompt_editor();
+    h.app.prompt_edited(custom);
+    h.app.save_prompt();
+    sleep(1).await;
+    assert_eq!(
+        lock(&h.settings.settings).cleanup_prompt.custom(),
+        Some(custom)
+    );
+    h.release();
+    sleep(1_000).await;
+    h.cleanup.respond(vec![Ok("Hello world.".to_owned())]);
+    h.dictate().await;
+    assert_eq!(
+        h.cleanup.instructions(),
+        [SYSTEM_PROMPT, SYSTEM_PROMPT, custom]
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn apple_intelligence_turned_off_delivers_raw_silently() {
     use onda_domain::cleanup::{APPLE_MODELS, CleanupProvider, OnDeviceStatus};
 

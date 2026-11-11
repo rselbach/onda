@@ -12,6 +12,7 @@
 
 use super::guardrails::{GuardrailViolation, check_guardrails};
 use super::openrouter::{ApiKey, CleanupError};
+use super::prompt::CleanupPrompt;
 use super::provider::CleanupProvider;
 use crate::types::OutputMode;
 
@@ -168,14 +169,19 @@ pub enum CleanupStep {
 
 /// Decides what follows request 1 (CLN-12..CLN-14).
 ///
-/// Empty output passes the guardrails like any other, so it is used only
-/// where the shrinkage check allows it: a short transcript or one with a
+/// Custom instructions may deliberately change length and formatting, so
+/// their output bypasses the default prompt's transcript-preservation checks.
+/// Transport errors still fall back to the raw transcript.
+///
+/// With the default prompt, empty output is used only where the shrinkage
+/// check allows it: a short transcript or one with a
 /// correction phrase. A provider that drops its reply looks the same as a
 /// "scratch that", and without this the dictation would vanish unnoticed.
 ///
 /// `result` is [`super::parse_response`]'s value or the transport error.
 pub fn after_first_attempt(
     provider: CleanupProvider,
+    prompt: &CleanupPrompt,
     raw: &str,
     result: Result<String, CleanupError>,
 ) -> CleanupStep {
@@ -192,6 +198,9 @@ pub fn after_first_attempt(
             });
         }
     };
+    if prompt.custom().is_some() {
+        return CleanupStep::Done(CleanupOutcome::Cleaned { text: cleaned });
+    }
     match check_guardrails(raw, &cleaned) {
         Ok(()) => CleanupStep::Done(CleanupOutcome::Cleaned { text: cleaned }),
         Err(violation) => CleanupStep::Retry(violation),
@@ -230,8 +239,8 @@ pub fn after_retry(
     }
 }
 
-/// Sample the "Test with Sample Text" button sends, with no guardrails and
-/// no app name (CLN-27).
+/// Sample the "Test with Sample Text" button sends with the saved prompt's
+/// acceptance rules and no app name (CLN-27).
 pub const TEST_SAMPLE: &str = "um so tell troy and abed that the study group meets at three no wait four in the library thanks";
 
 /// Alert title when the cleanup test fails; the message is the error (CLN-27).
@@ -431,10 +440,50 @@ mod tests {
         for tc in cases {
             let got = after_first_attempt(
                 CleanupProvider::OpenRouter,
+                &CleanupPrompt::default(),
                 tc.raw,
                 tc.result.map(str::to_owned),
             );
             assert_eq!(got, tc.want, "{}", tc.name);
+        }
+    }
+
+    #[test]
+    fn custom_prompts_allow_transformations_but_keep_transport_failures() {
+        let prompt = CleanupPrompt::from_text("Rewrite the transcript as requested.")
+            .expect("custom prompt");
+        let expanded = GREENDALE.repeat(4);
+        for output in ["Studying at Greendale.", "# Greendale", &expanded, ""] {
+            assert!(
+                matches!(
+                    after_first_attempt(
+                        CleanupProvider::OpenRouter,
+                        &CleanupPrompt::default(),
+                        GREENDALE,
+                        Ok(output.to_owned()),
+                    ),
+                    CleanupStep::Retry(_)
+                ),
+                "the default still rejects this transformation"
+            );
+            assert_eq!(
+                after_first_attempt(
+                    CleanupProvider::OpenRouter,
+                    &prompt,
+                    GREENDALE,
+                    Ok(output.to_owned()),
+                ),
+                CleanupStep::Done(cleaned(output)),
+                "custom instructions control output length and formatting"
+            );
+        }
+        for provider in CleanupProvider::ALL {
+            let error = CleanupError::Transport("Greendale is offline".to_owned());
+            assert_eq!(
+                after_first_attempt(provider, &prompt, GREENDALE, Err(error.clone())),
+                after_first_attempt(provider, &CleanupPrompt::default(), GREENDALE, Err(error),),
+                "a custom prompt does not suppress provider errors"
+            );
         }
     }
 

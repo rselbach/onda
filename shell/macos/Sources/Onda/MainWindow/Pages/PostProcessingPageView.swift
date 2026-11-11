@@ -16,23 +16,32 @@ struct PostProcessingPageView: View {
                 .disabled(!page.enabled.enabled)
 
                 if let details = page.details {
-                    PostProcessingDetailsView(details: details, core: core)
+                    PostProcessingModelRows(details: details, core: core)
                 }
             } header: {
                 Text(verbatim: "Post-Processing")
+            }
+
+            if let details = page.details {
+                PostProcessingPromptSection(prompt: details.prompt, core: core)
+
+                Section {
+                    PostProcessingTestRows(details: details, core: core)
+                } footer: {
+                    if let status = details.prompt.status {
+                        Text(status)
+                    }
+                }
             }
         }
         .formStyle(.grouped)
     }
 }
 
-/// The rows shown while post-processing is on (CLN-26, CLN-27).
-private struct PostProcessingDetailsView: View {
+/// The model in use and its privacy caption (CLN-26).
+private struct PostProcessingModelRows: View {
     let details: PostProcessingDetails
     let core: OndaCore
-
-    /// the alert on screen; follows the core, cleared locally on dismissal
-    @State private var shownError: AlertView?
 
     var body: some View {
         Button {
@@ -73,7 +82,180 @@ private struct PostProcessingDetailsView: View {
         Text(details.caption)
             .font(.caption)
             .foregroundStyle(.secondary)
+    }
+}
 
+/// The prompt in use: a row that opens the prompt sheet, over the start of
+/// the prompt. One prompt serves every provider and model.
+private struct PostProcessingPromptSection: View {
+    let prompt: PromptSummaryView
+    let core: OndaCore
+
+    var body: some View {
+        Section {
+            Button {
+                core.openPromptEditor()
+            } label: {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(prompt.name)
+                                .fontWeight(.medium)
+                            Text(prompt.subtitle)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .foregroundStyle(.secondary)
+                    }
+                    // an excerpt of what the sheet shows in full; left out
+                    // of the row's spoken label, which would run to 400
+                    // characters
+                    Text(prompt.preview)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                        .multilineTextAlignment(.leading)
+                        .accessibilityHidden(true)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            // the core owns the draft; dismissing the sheet discards it
+            .sheet(isPresented: Binding(
+                get: { prompt.editor != nil },
+                set: { presented in
+                    if !presented {
+                        core.cancelPromptEditor()
+                    }
+                }
+            )) {
+                if let editor = prompt.editor {
+                    PromptEditorSheet(editor: editor, core: core)
+                }
+            }
+        } header: {
+            Text(prompt.title)
+        } footer: {
+            Text(prompt.caption)
+        }
+    }
+}
+
+/// The prompt sheet: the whole prompt in an editor. The core holds the
+/// draft and decides what the buttons may do; this view forwards typing and
+/// takes the core's text only when it replaces the draft.
+private struct PromptEditorSheet: View {
+    let editor: PromptEditorView
+    let core: OndaCore
+
+    @State private var text = ""
+    @State private var showsHelp = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(editor.title)
+                .font(.title3.weight(.semibold))
+            Text(editor.intro)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 6)
+
+            HStack {
+                Text(editor.label)
+                    .font(.callout.weight(.semibold))
+                Spacer()
+                Text(editor.badge)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 5))
+            }
+            .padding(.top, 18)
+
+            TextEditor(text: Binding(
+                get: { text },
+                set: { newValue in
+                    // the editor writes back text it was given; only typing counts
+                    guard newValue != text else { return }
+                    text = newValue
+                    core.promptEdited(text: newValue)
+                }
+            ))
+            .font(.system(size: 12, design: .monospaced))
+            .autocorrectionDisabled()
+            .frame(height: 280)
+            .overlay(
+                RoundedRectangle(cornerRadius: MainWindowRadius.small)
+                    .stroke(.separator)
+            )
+            .accessibilityLabel(editor.label)
+            .padding(.top, 8)
+
+            HStack(alignment: .firstTextBaseline) {
+                Text(editor.status)
+                    .foregroundStyle(editor.statusIsError ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer()
+                Text(editor.characterCount)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            .font(.caption)
+            .padding(.top, 7)
+
+            DisclosureGroup(editor.helpTitle, isExpanded: $showsHelp) {
+                Text(editor.help)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 4)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.top, 14)
+
+            Divider()
+                .padding(.top, 18)
+
+            HStack {
+                Button(editor.restore.title) {
+                    core.restoreDefaultPrompt()
+                }
+                .disabled(!editor.restore.enabled)
+                Spacer()
+                Button(editor.cancelTitle) {
+                    core.cancelPromptEditor()
+                }
+                .keyboardShortcut(.cancelAction)
+                Button(editor.save.title) {
+                    core.savePrompt()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(!editor.save.enabled)
+            }
+            .padding(.top, 14)
+        }
+        .padding(22)
+        .frame(width: 580)
+        // replace the text only when the core says so, never while typing
+        .onChange(of: editor.revision, initial: true) {
+            text = editor.text
+        }
+    }
+}
+
+/// The sample test: its button, result, and error alert (CLN-27).
+private struct PostProcessingTestRows: View {
+    let details: PostProcessingDetails
+    let core: OndaCore
+
+    /// the alert on screen; follows the core, cleared locally on dismissal
+    @State private var shownError: AlertView?
+
+    var body: some View {
         HStack {
             Button(details.testButton.title) {
                 core.testCleanup()
