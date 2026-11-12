@@ -300,45 +300,78 @@ private struct PostProcessingTestRows: View {
     }
 }
 
-/// The model sheet: a provider sidebar, and the selected provider's key and
-/// models; clicking a model uses it.
+/// The model sheet: a provider sidebar, the selected provider's key and
+/// models, and a footer naming what is in use; clicking a model uses it.
 private struct ProvidersSheet: View {
     let dialog: ProvidersDialog
     let core: OndaCore
 
     var body: some View {
-        NavigationSplitView {
-            List(selection: Binding(
-                get: { dialog.selectedProvider },
-                set: { id in
-                    if let id {
-                        core.selectDialogProvider(id: id)
-                    }
-                }
-            )) {
-                ForEach(dialog.providers, id: \.id) { provider in
-                    Label {
-                        Text(provider.name)
-                    } icon: {
-                        ProviderLogo(id: provider.id, systemSymbol: provider.systemSymbol)
-                    }
-                    .tag(provider.id)
-                }
+        VStack(spacing: 0) {
+            HStack(spacing: 0) {
+                ProviderSidebar(dialog: dialog, core: core)
+                    .frame(width: 200)
+                Divider()
+                ProviderPane(dialog: dialog, core: core)
             }
-            .navigationSplitViewColumnWidth(min: 140, ideal: 160)
-        } detail: {
-            ProviderPane(dialog: dialog, core: core)
-        }
-        .navigationTitle(dialog.title)
-        .toolbar {
-            ToolbarItem(placement: .confirmationAction) {
+            Divider()
+            HStack(spacing: 4) {
+                Text(verbatim: "\(dialog.inUseLabel):")
+                    .foregroundStyle(.secondary)
+                Text(dialog.inUseModel)
+                    .fontWeight(.medium)
+                    .truncationMode(.middle)
+                Text(verbatim: "· \(dialog.inUseProvider)")
+                    .foregroundStyle(.secondary)
+                    .layoutPriority(1)
+                Spacer()
                 Button(dialog.doneTitle) {
                     core.closeProvidersDialog()
                 }
                 .keyboardShortcut(.defaultAction)
             }
+            .lineLimit(1)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
         }
-        .frame(minWidth: 680, minHeight: 520)
+        .frame(width: 700, height: 560)
+        .navigationTitle(dialog.title)
+    }
+}
+
+/// The providers this Mac offers; the one in use carries a checkmark.
+private struct ProviderSidebar: View {
+    let dialog: ProvidersDialog
+    let core: OndaCore
+
+    var body: some View {
+        List(selection: Binding(
+            get: { dialog.selectedProvider },
+            set: { id in
+                if let id {
+                    core.selectDialogProvider(id: id)
+                }
+            }
+        )) {
+            ForEach(dialog.providers, id: \.id) { provider in
+                HStack {
+                    Label {
+                        Text(provider.name)
+                    } icon: {
+                        ProviderLogo(id: provider.id, systemSymbol: provider.systemSymbol)
+                    }
+                    Spacer()
+                    if provider.inUse {
+                        Image(systemName: "checkmark")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .accessibilityLabel(dialog.inUseLabel)
+                    }
+                }
+                .tag(provider.id)
+            }
+        }
+        .listStyle(.sidebar)
     }
 }
 
@@ -396,111 +429,223 @@ private struct ProviderPane: View {
             || model.slug.localizedCaseInsensitiveContains(trimmedQuery)
     }
 
-    /// a List builds only the rows on screen; a grouped Form builds all of
-    /// them, which stalls the sheet with a provider's full model list
     var body: some View {
-        List {
-            if let key = dialog.key {
-                Section {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(dialog.providerName)
+                        .font(.title3.weight(.semibold))
+                    Text(dialog.privacyNote)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if let key = dialog.key {
                     PostProcessingApiKeyField(key: key, core: core)
                 }
-            }
 
-            if let status = dialog.statusMessage {
-                Section {
+                if let status = dialog.statusMessage {
                     Label(status, systemImage: "exclamationmark.triangle")
+                        .font(.callout)
                         .foregroundStyle(.secondary)
                 }
-            }
 
-            Section {
                 // a provider with one fixed model has nothing to search
-                if dialog.refreshModels != nil {
-                    HStack(spacing: 6) {
-                        Image(systemName: "magnifyingglass")
-                            .foregroundStyle(.secondary)
-                        TextField("", text: $query, prompt: Text(dialog.searchPlaceholder))
-                            .labelsHidden()
-                            .textFieldStyle(.plain)
-                            .onSubmit(useTypedID)
-                    }
-                }
-
-                if let id = typedID {
-                    Button(action: useTypedID) {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(id)
-                                Text(dialog.useIdCaption)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Image(systemName: "return")
-                                .foregroundStyle(.secondary)
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
-
-                if dialog.modelsLoading {
-                    HStack(spacing: 6) {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text(dialog.loadingTitle)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                if let error = dialog.modelsError {
-                    Text(error)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
-            } header: {
-                HStack {
-                    Text(dialog.modelsLabel)
-                    Spacer()
-                    if let refresh = dialog.refreshModels {
-                        Button(refresh.title) {
+                if let refresh = dialog.refreshModels {
+                    HStack(spacing: 8) {
+                        SearchField(
+                            text: $query,
+                            placeholder: dialog.searchPlaceholder,
+                            submit: useTypedID
+                        )
+                        Button {
                             core.refreshCleanupModels()
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
                         }
                         .disabled(!refresh.enabled)
+                        .help(refresh.title)
+                        .accessibilityLabel(refresh.title)
                     }
                 }
+
+                switch dialog.modelsNotice {
+                case let .needsKey(text):
+                    Label(text, systemImage: "key")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                case let .failed(text):
+                    Label(text, systemImage: "exclamationmark.triangle")
+                        .font(.callout)
+                        .foregroundStyle(.red)
+                case nil:
+                    EmptyView()
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 18)
+            .padding(.bottom, 6)
+
+            models
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        // each provider starts with its whole list
+        .onChange(of: dialog.selectedProvider) {
+            query = ""
+        }
+    }
+
+    /// a List builds only the rows on screen; a provider's full model list
+    /// built eagerly stalls the sheet
+    private var models: some View {
+        List {
+            if dialog.modelsLoading {
+                HStack(spacing: 6) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text(dialog.loadingTitle)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.leading, 8)
+                .modelListRow()
             }
 
+            if let id = typedID {
+                Button {
+                    _ = useTypedID()
+                } label: {
+                    HStack(spacing: 8) {
+                        Text(id)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer()
+                        Text(dialog.useIdCaption)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Image(systemName: "return")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.leading, 22)
+                    .modelRowHighlight(selected: false)
+                }
+                .buttonStyle(.plain)
+                .modelListRow()
+            }
+
+            // headings are rows, not section headers, which pin and draw a rule
             ForEach(dialog.modelGroups, id: \.title) { group in
                 let models = group.models.filter(matches)
                 if !models.isEmpty {
-                    Section(group.title) {
-                        ForEach(models, id: \.slug) { model in
-                            ModelRowButton(
-                                model: model,
-                                selected: model.slug == dialog.selectedModel
-                            ) {
-                                core.selectCleanupModel(
-                                    provider: dialog.selectedProvider,
-                                    slug: model.slug
-                                )
-                            }
+                    Text(group.title)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.leading, 8)
+                        .padding(.top, 8)
+                        .accessibilityAddTraits(.isHeader)
+                        .modelListRow()
+                    ForEach(models, id: \.slug) { model in
+                        ModelRowButton(
+                            model: model,
+                            selected: model.slug == dialog.selectedModel
+                        ) {
+                            core.selectCleanupModel(
+                                provider: dialog.selectedProvider,
+                                slug: model.slug
+                            )
                         }
+                        .modelListRow()
                     }
                 }
             }
         }
-        .listStyle(.inset)
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
     }
 
-    private func useTypedID() {
-        guard let id = typedID else { return }
+    /// Uses the typed ID; false when the field holds none, so Return falls
+    /// through to "Done".
+    private func useTypedID() -> Bool {
+        guard let id = typedID else { return false }
         core.selectCleanupModel(provider: dialog.selectedProvider, slug: id)
         query = ""
+        return true
     }
 }
 
-/// One clickable model row, checked when in use.
+/// AppKit's search field, which SwiftUI offers only in a toolbar.
+private struct SearchField: NSViewRepresentable {
+    @Binding var text: String
+    let placeholder: String
+    /// Return; true when it was handled.
+    let submit: () -> Bool
+
+    func makeNSView(context: Context) -> NSSearchField {
+        let field = Field()
+        field.delegate = context.coordinator
+        // the clear button changes the text without a delegate call
+        field.target = context.coordinator
+        field.action = #selector(Coordinator.changed(_:))
+        return field
+    }
+
+    func updateNSView(_ field: NSSearchField, context: Context) {
+        context.coordinator.parent = self
+        field.placeholderString = placeholder
+        if field.stringValue != text {
+            field.stringValue = text
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    /// Assistive apps set the text through accessibility, which tells
+    /// neither the delegate nor the target.
+    private final class Field: NSSearchField {
+        override func setAccessibilityValue(_ value: Any?) {
+            guard let text = value as? String else {
+                super.setAccessibilityValue(value)
+                return
+            }
+            // unlike super, this also replaces text being edited
+            stringValue = text
+            sendAction(action, to: target)
+        }
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, NSSearchFieldDelegate {
+        var parent: SearchField
+
+        init(parent: SearchField) {
+            self.parent = parent
+        }
+
+        @objc func changed(_ field: NSSearchField) {
+            parent.text = field.stringValue
+        }
+
+        func controlTextDidChange(_ notification: Notification) {
+            if let field = notification.object as? NSSearchField {
+                parent.text = field.stringValue
+            }
+        }
+
+        func control(
+            _ control: NSControl,
+            textView: NSTextView,
+            doCommandBy selector: Selector
+        ) -> Bool {
+            selector == #selector(NSResponder.insertNewline(_:)) && parent.submit()
+        }
+    }
+}
+
+/// One clickable model row, checked and tinted when in use. The whole slug
+/// is its tooltip, since the row shows only the short ID.
 private struct ModelRowButton: View {
     let model: CleanupModelOption
     let selected: Bool
@@ -508,25 +653,66 @@ private struct ModelRowButton: View {
 
     var body: some View {
         Button(action: select) {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(model.name)
-                    if model.name != model.slug {
-                        Text(model.slug)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+            HStack(spacing: 8) {
+                Image(systemName: "checkmark")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tint)
+                    .opacity(selected ? 1 : 0)
+                    .frame(width: 14)
+                Text(model.name)
+                    .fontWeight(selected ? .semibold : .regular)
+                    .lineLimit(1)
+                    .layoutPriority(1)
+                if let id = model.shortId {
+                    // a long name leaves the ID its start, where the vendor is
+                    Text(id)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .frame(minWidth: 90, alignment: .leading)
                 }
-                Spacer()
-                if selected {
-                    Image(systemName: "checkmark")
-                        .foregroundStyle(.tint)
-                }
+                Spacer(minLength: 0)
             }
-            .contentShape(Rectangle())
+            .modelRowHighlight(selected: selected)
         }
         .buttonStyle(.plain)
+        .help(model.slug)
         .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+/// A model row's shape: tinted when in use, shaded under the pointer.
+private struct ModelRowHighlight: ViewModifier {
+    let selected: Bool
+
+    @State private var hovered = false
+
+    private var fill: Color {
+        if selected {
+            return Color.accentColor.opacity(0.14)
+        }
+        return hovered ? Color.primary.opacity(0.06) : .clear
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .padding(.horizontal, 8)
+            .frame(height: 28)
+            .background(fill, in: RoundedRectangle(cornerRadius: MainWindowRadius.small))
+            .contentShape(Rectangle())
+            .onHover { hovered = $0 }
+    }
+}
+
+private extension View {
+    func modelRowHighlight(selected: Bool) -> some View {
+        modifier(ModelRowHighlight(selected: selected))
+    }
+
+    /// a row of the model list: no separator, and the pane's side margin
+    func modelListRow() -> some View {
+        listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets(top: 1, leading: 4, bottom: 1, trailing: 4))
     }
 }
 
@@ -541,26 +727,45 @@ private struct PostProcessingApiKeyField: View {
     @FocusState private var focused: Bool
 
     var body: some View {
-        LabeledContent {
-            SecureField(key.placeholder, text: Binding(
-                get: { text },
-                set: { newValue in
-                    // the field writes back text it was given; only typing counts
-                    guard newValue != text else { return }
-                    text = newValue
-                    core.apiKeyEdited(text: newValue)
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text(key.label)
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 6) {
+                    SecureField(key.placeholder, text: Binding(
+                        get: { text },
+                        set: { newValue in
+                            // the field writes back text it was given; only typing counts
+                            guard newValue != text else { return }
+                            text = newValue
+                            core.apiKeyEdited(text: newValue)
+                        }
+                    ), prompt: Text(key.placeholder))
+                        .textContentType(.password)
+                        .labelsHidden()
+                        .textFieldStyle(.roundedBorder)
+                        .focused($focused)
+                        .onSubmit { core.apiKeyCommit() }
+                    if key.loading {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
                 }
-            ))
-            .textContentType(.password)
-            .labelsHidden()
-            .focused($focused)
-            .onSubmit { core.apiKeyCommit() }
-        } label: {
-            HStack(spacing: 6) {
-                Text(key.placeholder)
-                if key.loading {
-                    ProgressView()
-                        .controlSize(.small)
+                HStack {
+                    Text(key.note)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    if let url = URL(string: key.getKeyUrl) {
+                        Link(destination: url) {
+                            Text("\(key.getKeyTitle) \(Image(systemName: "arrow.up.right"))")
+                        }
+                    }
+                }
+                .font(.caption)
+                if let error = key.error {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
                 }
             }
         }
@@ -572,12 +777,6 @@ private struct PostProcessingApiKeyField: View {
             if !isFocused {
                 core.apiKeyCommit()
             }
-        }
-
-        if let error = key.error {
-            Text(error)
-                .font(.caption)
-                .foregroundStyle(.red)
         }
     }
 }

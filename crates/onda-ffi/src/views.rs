@@ -11,12 +11,12 @@ use onda_app::views::{
     CleanupTestResult, CompatibilityView, DayHeading, GeneralPage, GettingStartedPage,
     HistoryContent, HistoryDialog, HistoryMenuItem, HistoryPage, HistoryRow, HistorySection,
     HotkeyPage, InputOption, InputPickerView, LanguageCardView, LanguageOption, LoginCaptionView,
-    MainWindowSection, ModelCardAction, ModelCardView, ModelRow, ModelRowControl, NoteActionView,
-    NoticeButtonView, OnboardingContent, OnboardingProgress, OnboardingView, OtherModelsView,
-    OutputModeOption, OutputModePicker, PermissionCardView, PermissionFixButton, PermissionRowView,
-    PostProcessingDetails, PostProcessingPage, PresetCardView, PromptEditorView, PromptSummaryView,
-    ProvidersDialog, ReplacementRowView, ReplacementsPage, RetentionOption, SidebarGroup,
-    SidebarPage, SpeechAlert, SpeechPage, ToggleView, UpdateNotice, sidebar,
+    MainWindowSection, ModelCardAction, ModelCardView, ModelRow, ModelRowControl, ModelsNotice,
+    NoteActionView, NoticeButtonView, OnboardingContent, OnboardingProgress, OnboardingView,
+    OtherModelsView, OutputModeOption, OutputModePicker, PermissionCardView, PermissionFixButton,
+    PermissionRowView, PostProcessingDetails, PostProcessingPage, PresetCardView, PromptEditorView,
+    PromptSummaryView, ProvidersDialog, ReplacementRowView, ReplacementsPage, RetentionOption,
+    SidebarGroup, SidebarPage, SpeechAlert, SpeechPage, ToggleView, UpdateNotice, sidebar,
 };
 use onda_domain::history::ContextMenuItem;
 use onda_domain::hotkey::HotkeyPreset;
@@ -605,6 +605,8 @@ pub struct SpeechPage {
 /// The API key field (CLN-25). `Debug` never prints the key (CLN-8).
 #[uniffi::remote(Record)]
 pub struct ApiKeyFieldView {
+    /// "API key", beside the field.
+    pub label: String,
     /// "OpenRouter API key".
     pub placeholder: String,
     /// The field text as the core knows it. Replace the field's contents
@@ -618,6 +620,12 @@ pub struct ApiKeyFieldView {
     /// Inline Keychain error in red, e.g. "Keychain read failed (OSStatus
     /// -25293)." (CLN-24).
     pub error: Option<String>,
+    /// "Stored in your system keychain.", under the field.
+    pub note: String,
+    /// "Get a key": opens `get_key_url` in the browser.
+    pub get_key_title: String,
+    /// The provider's page for creating a key.
+    pub get_key_url: String,
 }
 
 /// One provider entry in the sheet's sidebar.
@@ -630,6 +638,8 @@ pub struct CleanupProviderOption {
     pub name: String,
     /// An SF Symbol to show when the provider has no bundled logo.
     pub system_symbol: Option<String>,
+    /// The provider cleanup uses now; mark it.
+    pub in_use: bool,
 }
 
 /// One model row in the sheet.
@@ -639,12 +649,16 @@ pub struct CleanupModelOption {
     pub slug: String,
     /// Display name.
     pub name: String,
+    /// The ID to show beside the name: the slug without the part every
+    /// model of the provider shares. Absent when it would repeat the name,
+    /// and for a provider with one fixed model.
+    pub short_id: Option<String>,
 }
 
 /// A titled run of model rows.
 #[uniffi::remote(Record)]
 pub struct CleanupModelGroup {
-    /// "Recommended", "Custom", or "All OpenRouter Models".
+    /// "Recommended", "Custom", or "All models".
     pub title: String,
     /// The rows, in display order.
     pub models: Vec<CleanupModelOption>,
@@ -659,6 +673,22 @@ pub struct CleanupTestResult {
     pub result: String,
 }
 
+/// Why the provider's list is not showing, in the sheet.
+#[uniffi::remote(Enum)]
+pub enum ModelsNotice {
+    /// The provider lists only with a key and none is stored. A request,
+    /// not a failure: show it plainly.
+    NeedsKey {
+        /// "Enter your Fireworks AI API key to see its models."
+        text: String,
+    },
+    /// The listing failed; show it in red.
+    Failed {
+        /// "Couldn't load OpenRouter models: OpenRouter returned HTTP 503."
+        text: String,
+    },
+}
+
 /// The model sheet: pick a provider, set its key, and click the model to
 /// use.
 #[uniffi::remote(Record)]
@@ -669,14 +699,16 @@ pub struct ProvidersDialog {
     pub providers: Vec<CleanupProviderOption>,
     /// The provider whose pane shows.
     pub selected_provider: String,
+    /// Its name, heading the pane.
+    pub provider_name: String,
+    /// Where the transcript goes with this provider, under its name.
+    pub privacy_note: String,
     /// The provider's API key field; absent for a provider that uses no
     /// key.
     pub key: Option<ApiKeyFieldView>,
     /// Why the provider cannot run now, e.g. "Turn on Apple Intelligence in
     /// System Settings…"; shown above its models.
     pub status_message: Option<String>,
-    /// "Models".
-    pub models_label: String,
     /// The provider's models: curated, then the model in use when it is a
     /// typed ID, then the rest of the provider's list by name. Empty groups
     /// are left out.
@@ -698,9 +730,14 @@ pub struct ProvidersDialog {
     pub models_loading: bool,
     /// "Loading models…".
     pub loading_title: String,
-    /// Why the list is missing, under the search field: a failed listing
-    /// or, for a provider that lists only with a key, a request for one.
-    pub models_error: Option<String>,
+    /// Why the list is missing, under the search field.
+    pub models_notice: Option<ModelsNotice>,
+    /// "In use", before the model and provider cleanup uses now.
+    pub in_use_label: String,
+    /// That model, by name; it may belong to another provider's pane.
+    pub in_use_model: String,
+    /// That provider, by name.
+    pub in_use_provider: String,
     /// "Done"; sends `close_providers_dialog`.
     pub done_title: String,
 }

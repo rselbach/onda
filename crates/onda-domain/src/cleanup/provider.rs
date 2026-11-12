@@ -113,6 +113,25 @@ impl CleanupProvider {
         }
     }
 
+    /// The page where the user creates an API key; `None` for a provider
+    /// that uses no key.
+    pub const fn key_url(self) -> Option<&'static str> {
+        match self {
+            Self::OpenRouter => Some("https://openrouter.ai/workspaces/default/keys"),
+            Self::Fireworks => Some("https://app.fireworks.ai/settings/users/api-keys"),
+            Self::AppleIntelligence => None,
+        }
+    }
+
+    /// A model's ID as shown beside its name: the slug without the part
+    /// every model of the provider shares.
+    pub fn short_model_id(self, slug: &str) -> &str {
+        match self {
+            Self::Fireworks => fireworks::short_id(slug),
+            Self::OpenRouter | Self::AppleIntelligence => slug,
+        }
+    }
+
     /// Whether the model runs on this Mac rather than over the network.
     pub const fn on_device(self) -> bool {
         matches!(self, Self::AppleIntelligence)
@@ -195,5 +214,49 @@ mod tests {
             "on-device",
             "one fixed model"
         );
+    }
+
+    #[test]
+    fn a_provider_has_a_key_page_exactly_when_it_uses_a_key() {
+        for provider in CleanupProvider::ALL {
+            assert_eq!(
+                provider.key_url().is_some(),
+                provider.uses_key(),
+                "{}",
+                provider.id()
+            );
+        }
+        assert_eq!(
+            CleanupProvider::OpenRouter.key_url(),
+            Some("https://openrouter.ai/workspaces/default/keys")
+        );
+        assert_eq!(
+            CleanupProvider::Fireworks.key_url(),
+            Some("https://app.fireworks.ai/settings/users/api-keys")
+        );
+    }
+
+    #[test]
+    fn short_model_ids_drop_only_the_shared_path() {
+        let cases = [
+            (
+                CleanupProvider::Fireworks,
+                "accounts/fireworks/models/deepseek-v4p1-flash",
+                "deepseek-v4p1-flash",
+            ),
+            (
+                CleanupProvider::Fireworks,
+                "accounts/greendale/models/human-being",
+                "accounts/greendale/models/human-being",
+            ),
+            (
+                CleanupProvider::OpenRouter,
+                "~anthropic/claude-haiku-latest",
+                "~anthropic/claude-haiku-latest",
+            ),
+        ];
+        for (provider, slug, want) in cases {
+            assert_eq!(provider.short_model_id(slug), want, "{slug}");
+        }
     }
 }

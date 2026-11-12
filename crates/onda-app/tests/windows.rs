@@ -10,8 +10,8 @@ use common::{EngineCall, Harness, download, eventually, lock, sleep};
 use jiff::{Timestamp, ToSpan};
 use onda_app::seams::DownloadUpdateKind;
 use onda_app::views::{
-    DayHeading, GeneralPage, HistoryContent, HistoryPage, ModelRowControl, OnboardingContent,
-    OnboardingView, PostProcessingPage, ReplacementsPage, SpeechPage,
+    DayHeading, GeneralPage, HistoryContent, HistoryPage, ModelRowControl, ModelsNotice,
+    OnboardingContent, OnboardingView, PostProcessingPage, ReplacementsPage, SpeechPage,
 };
 use onda_app::{Event, MainWindowSection};
 use onda_domain::history::{HistoryEntry, NewEntry};
@@ -2654,8 +2654,10 @@ async fn the_model_sheet_picks_the_model_in_one_click() {
     );
     let dialog = sheet(&h);
     assert_eq!(
-        dialog.models_error.as_deref(),
-        Some("Couldn't load OpenRouter models: OpenRouter request failed: offline")
+        dialog.models_notice,
+        Some(ModelsNotice::Failed {
+            text: "Couldn't load OpenRouter models: OpenRouter request failed: offline".to_owned()
+        })
     );
     assert_eq!(
         dialog.selected_model.as_deref(),
@@ -2670,13 +2672,13 @@ async fn the_model_sheet_picks_the_model_in_one_click() {
     h.app.refresh_cleanup_models();
     sleep(10).await;
     let dialog = sheet(&h);
-    assert_eq!(dialog.models_error, None);
+    assert_eq!(dialog.models_notice, None);
     let titles: Vec<&str> = dialog
         .model_groups
         .iter()
         .map(|g| g.title.as_str())
         .collect();
-    assert_eq!(titles, ["Recommended", "All OpenRouter Models"]);
+    assert_eq!(titles, ["Recommended", "All models"]);
 
     // clicking a listed model uses it at once
     h.app.select_cleanup_model(openrouter, "openai/gpt-4o");
@@ -2760,7 +2762,7 @@ async fn fireworks_lists_its_models_only_with_its_key() {
     );
     assert_eq!(
         dialog.model_groups.last().map(|g| g.title.as_str()),
-        Some("All Fireworks AI Models")
+        Some("All models")
     );
     assert!(
         lock(&h.secrets.2).iter().all(|(_, p)| *p == fireworks),
@@ -2781,8 +2783,10 @@ async fn fireworks_lists_its_models_only_with_its_key() {
     h.app.api_key_commit();
     sleep(10).await;
     assert_eq!(
-        sheet(&h).models_error.as_deref(),
-        Some("Enter your Fireworks AI API key to see its models.")
+        sheet(&h).models_notice,
+        Some(ModelsNotice::NeedsKey {
+            text: "Enter your Fireworks AI API key to see its models.".to_owned()
+        })
     );
 }
 
@@ -2803,6 +2807,8 @@ async fn picking_another_providers_model_switches_the_provider() {
         .expect("sheet");
     assert_eq!(dialog.selected_provider, "fireworks");
     assert_eq!(dialog.selected_model, None, "OpenRouter is still in use");
+    assert_eq!(dialog.in_use_provider, "OpenRouter");
+    assert_eq!(dialog.in_use_model, "GPT Luna (latest)");
 
     h.app.select_cleanup_model(
         CleanupProvider::Fireworks,

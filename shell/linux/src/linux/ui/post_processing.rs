@@ -9,7 +9,7 @@ use std::{
 };
 
 use adw::prelude::*;
-use onda_app::views::{PostProcessingPage, ProvidersDialog};
+use onda_app::views::{ModelsNotice, PostProcessingPage, ProvidersDialog};
 use onda_domain::cleanup::{CleanupProvider, custom_model_slug};
 
 use super::{Window, clear, label, page, scrolled};
@@ -180,7 +180,7 @@ struct Chooser {
     search: gtk::SearchEntry,
     refresh: gtk::Button,
     busy: gtk::Spinner,
-    models_error: gtk::Label,
+    models_notice: gtk::Label,
     models: gtk::Box,
     view: RefCell<Option<ProvidersDialog>>,
     key_revision: RefCell<Option<(String, u64)>>,
@@ -232,8 +232,10 @@ impl Chooser {
         actions.append(&refresh);
         actions.append(&busy);
         content.append(&actions);
-        let models_error = error_label();
-        content.append(&models_error);
+        let models_notice = label("");
+        models_notice.set_xalign(0.0);
+        models_notice.set_selectable(true);
+        content.append(&models_notice);
         let models = gtk::Box::new(gtk::Orientation::Vertical, 16);
         let model_scroll = scrolled(&models);
         model_scroll.set_vexpand(true);
@@ -250,7 +252,7 @@ impl Chooser {
             search,
             refresh,
             busy,
-            models_error,
+            models_notice,
             models,
             view: RefCell::new(None),
             key_revision: RefCell::new(None),
@@ -371,9 +373,21 @@ impl Chooser {
         self.status
             .set_text(view.status_message.as_deref().unwrap_or_default());
         self.status.set_visible(view.status_message.is_some());
-        self.models_error
-            .set_text(view.models_error.as_deref().unwrap_or_default());
-        self.models_error.set_visible(view.models_error.is_some());
+        // a missing key is a request; only a failed listing reads as an error
+        let (notice, failed) = match &view.models_notice {
+            Some(ModelsNotice::NeedsKey { text }) => (text.as_str(), false),
+            Some(ModelsNotice::Failed { text }) => (text.as_str(), true),
+            None => ("", false),
+        };
+        self.models_notice.set_text(notice);
+        self.models_notice.set_visible(view.models_notice.is_some());
+        if failed {
+            self.models_notice.remove_css_class("dim-label");
+            self.models_notice.add_css_class("error");
+        } else {
+            self.models_notice.remove_css_class("error");
+            self.models_notice.add_css_class("dim-label");
+        }
         self.refresh.set_visible(view.refresh_models.is_some());
         self.refresh.set_sensitive(
             view.refresh_models

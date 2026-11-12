@@ -22,9 +22,9 @@ use crate::events::Event;
 use crate::pipeline::refine;
 use crate::seams::{CleanupTransport, SettingChange};
 use crate::views::{
-    ApiKeyFieldView, CleanupTestResult, MainWindowSection, PostProcessingInputs,
-    PostProcessingPage, PromptDraftInputs, ProvidersDialogInputs, key_placeholder,
-    models_error_text, post_processing_page, prompt_saved_text,
+    ApiKeyFieldView, CleanupTestResult, MainWindowSection, ModelsNotice, PostProcessingInputs,
+    PostProcessingPage, PromptDraftInputs, ProvidersDialogInputs, models_notice,
+    post_processing_page, prompt_saved_text,
 };
 
 // a credential-store call waiting its turn
@@ -99,7 +99,7 @@ pub(super) struct CleanupPageState {
     listed: HashMap<CleanupProvider, Vec<CleanupModel>>,
     listing: Option<(CleanupProvider, Task)>,
     list_generation: u64,
-    list_error: Option<(CleanupProvider, String)>,
+    list_notice: Option<(CleanupProvider, ModelsNotice)>,
     // Apple Intelligence, as last read; refreshed when the page or the
     // sheet shows
     on_device: OnDeviceStatus,
@@ -132,7 +132,7 @@ impl Default for CleanupPageState {
             listed: HashMap::new(),
             listing: None,
             list_generation: 0,
-            list_error: None,
+            list_notice: None,
             on_device: OnDeviceStatus::DeviceNotEligible,
             prompt_draft: None,
             prompt_revision: 0,
@@ -529,7 +529,7 @@ impl Actor {
         let transport = self.ports.cleanup.clone();
         let page = &mut self.ui.cleanup;
         page.list_generation += 1;
-        page.list_error = None;
+        page.list_notice = None;
         let generation = page.list_generation;
         let task = self.spawn(async move {
             let key = match stored {
@@ -567,7 +567,7 @@ impl Actor {
             Ok(models) => {
                 page.listed.insert(provider, models);
             }
-            Err(error) => page.list_error = Some((provider, models_error_text(provider, &error))),
+            Err(error) => page.list_notice = Some((provider, models_notice(provider, &error))),
         }
     }
 
@@ -659,13 +659,13 @@ impl Actor {
         let listed = |provider| page.listed.get(&provider).map_or(&[][..], Vec::as_slice);
         let key = page
             .dialog
-            .filter(|provider| provider.uses_key())
-            .map(|provider| ApiKeyFieldView {
-                placeholder: key_placeholder(provider),
+            .and_then(ApiKeyFieldView::for_provider)
+            .map(|field| ApiKeyFieldView {
                 text: page.text.clone(),
                 revision: page.revision,
                 loading: page.loading,
                 error: page.error.clone(),
+                ..field
             });
         let provider = self.settings.cleanup_provider;
         // Apple Intelligence is offered only on a Mac that can run it,
@@ -685,14 +685,13 @@ impl Actor {
                 .on_device()
                 .then(|| page.on_device.message())
                 .flatten(),
-            selected: (shown == provider).then_some(&self.settings.cleanup_model),
             listed_models: listed(shown),
             models_loading: page.listing.as_ref().is_some_and(|(p, _)| *p == shown),
-            models_error: page
-                .list_error
+            models_notice: page
+                .list_notice
                 .as_ref()
                 .filter(|(p, _)| *p == shown)
-                .map(|(_, error)| error.as_str()),
+                .map(|(_, notice)| notice),
             key: key.as_ref(),
         });
         post_processing_page(PostProcessingInputs {

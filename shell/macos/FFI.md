@@ -131,33 +131,40 @@ The device list updates live (the core hears device changes itself).
 - Sheet sidebar `dialog.providers` / `dialog.selectedProvider`:
   `selectDialogProvider(id:)`. Each entry's logo is the bundled
   `<id>-light.svg` / `<id>-dark.svg` or `<id>.svg` (assets/providers), else
-  its `systemSymbol`. The core leaves Apple Intelligence out on a Mac that
-  cannot run it.
+  its `systemSymbol`; the entry with `inUse` carries a checkmark. The core
+  leaves Apple Intelligence out on a Mac that cannot run it.
+- The pane is headed by `dialog.providerName` over `dialog.privacyNote`.
 - `dialog.statusMessage`, when set, says why the provider cannot run now
   (e.g. Apple Intelligence turned off); show it above the models.
 - Sheet API key secure field `dialog.key` (nil for a provider without a
   key, such as Apple Intelligence), holding the key of the sheet's selected
-  provider (each provider has its own): show `text` when `revision`
-  changes (never overwrite while typing); `loading`; red `error`. Every
-  edit: `apiKeyEdited(text:)`. Return / end of editing: `apiKeyCommit()`.
+  provider (each provider has its own): `label` beside it, `placeholder`
+  inside it; show `text` when `revision` changes (never overwrite while
+  typing); `loading`; red `error`. Under it, `note` and a link titled
+  `getKeyTitle` that opens `getKeyUrl` in the browser. Every edit:
+  `apiKeyEdited(text:)`. Return / end of editing: `apiKeyCommit()`.
   The core saves when the sheet closes, on page disappear, window close,
   and quit by itself. It reads the Keychain (and sends `ActivateApp`) only
   when the sheet opens or its provider changes.
-- Sheet models `dialog.modelGroups` (one section per group), with a
-  checkmark on `dialog.selectedModel` (nil when another provider is in
-  use). Clicking a row → `selectCleanupModel(provider:slug:)` with the
-  sheet's provider; that provider and model are used at once. One field
-  above the list (`searchPlaceholder`) filters rows by name or slug in the
-  shell. When its trimmed text has no spaces and matches no row's slug, a
-  row showing that text over `useIdCaption` heads the list; clicking it
-  (or Return) sends `selectCleanupModel(provider:slug:)` with the text. `refreshModels`
-  (nil for a provider with one fixed model, which also hides the search
-  field) → `refreshCleanupModels()`. While
-  `modelsLoading`, show a spinner by it and a `loadingTitle` row with a
-  spinner above the list; `modelsError` under the search field (a failed
-  listing, or a request for the key from a provider that lists only with
-  one). The list can hold hundreds of
+- Sheet models `dialog.modelGroups` (a heading per group), each row its
+  `name` followed by its `shortId` when set (the whole `slug` is the row's
+  tooltip), with a checkmark and tint on `dialog.selectedModel` (nil when
+  another provider is in use). Clicking a row →
+  `selectCleanupModel(provider:slug:)` with the sheet's provider; that
+  provider and model are used at once. One search field above the list
+  (`searchPlaceholder`) filters rows by name or slug in the shell. When its
+  trimmed text has no spaces and matches no row's slug, a row showing that
+  text and `useIdCaption` heads the list; clicking it (or Return) sends
+  `selectCleanupModel(provider:slug:)` with the text. `refreshModels` (nil
+  for a provider with one fixed model, which also hides the search field)
+  is an icon button beside the field, its title the tooltip →
+  `refreshCleanupModels()`. While `modelsLoading`, show a `loadingTitle`
+  row with a spinner above the list. `modelsNotice` goes under the search
+  field: `.needsKey` (a provider that lists only with a key has none) in
+  plain secondary text, `.failed` in red. The list can hold hundreds of
   rows: render it lazily (a `List`, not a `Form`).
+- Sheet footer: `inUseLabel`, then `inUseModel` and `inUseProvider`, the
+  model and provider cleanup uses now whichever pane shows, beside "Done".
 - `prompt`, a section titled `prompt.title` with `prompt.caption` under
   it: a clickable row showing `name` over `subtitle` and a chevron, with
   `preview` below it in up to three lines → `openPromptEditor()`. One

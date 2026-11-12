@@ -38,8 +38,12 @@ pub fn resolve_model(stored: Option<&str>) -> CleanupModel {
     if let Some(model) = FIREWORKS_MODELS.iter().find(|m| m.slug == stored) {
         return model.clone();
     }
-    let name = stored.strip_prefix(MODEL_PREFIX).unwrap_or(stored);
-    CleanupModel::listed(stored, name)
+    CleanupModel::listed(stored, short_id(stored))
+}
+
+/// The slug without the path every Fireworks-hosted model shares.
+pub(super) fn short_id(slug: &str) -> &str {
+    slug.strip_prefix(MODEL_PREFIX).unwrap_or(slug)
 }
 
 /// The Fireworks chat body. Opaque; only serialized.

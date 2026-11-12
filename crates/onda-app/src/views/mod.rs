@@ -37,9 +37,9 @@ pub use onboarding::{
 };
 pub use post_processing::{
     ApiKeyFieldView, CleanupModelGroup, CleanupModelOption, CleanupProviderOption,
-    CleanupTestResult, PostProcessingDetails, PostProcessingInputs, PostProcessingPage,
-    PromptDraftInputs, PromptEditorView, PromptSummaryView, ProvidersDialog, ProvidersDialogInputs,
-    key_placeholder, models_error_text, post_processing_page, prompt_saved_text,
+    CleanupTestResult, ModelsNotice, PostProcessingDetails, PostProcessingInputs,
+    PostProcessingPage, PromptDraftInputs, PromptEditorView, PromptSummaryView, ProvidersDialog,
+    ProvidersDialogInputs, models_notice, post_processing_page, prompt_saved_text,
 };
 pub use replacements::{ReplacementRowView, ReplacementsPage, replacements_page};
 pub use speech::{

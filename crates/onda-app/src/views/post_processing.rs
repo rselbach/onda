@@ -33,24 +33,59 @@ fn caption(provider: CleanupProvider) -> String {
     }
 }
 
-/// Why the model list is missing, as shown in the sheet. A provider that
-/// lists only with a key asks for one instead of reporting an error.
-pub fn models_error_text(provider: CleanupProvider, error: &CleanupError) -> String {
-    let name = provider.display_name();
-    match error {
-        CleanupError::MissingKey => format!("Enter your {name} API key to see its models."),
-        _ => format!("Couldn't load {name} models: {}", error.describe(provider)),
+/// The line under the provider's name in the sheet: where the transcript
+/// goes.
+fn privacy_note(provider: CleanupProvider) -> &'static str {
+    match provider {
+        CleanupProvider::OpenRouter => {
+            "Your transcript goes to OpenRouter and the model's provider. Onda asks for \
+             providers that don't retain it."
+        }
+        CleanupProvider::Fireworks => {
+            "Your transcript goes to Fireworks AI, which says it doesn't retain prompts or \
+             outputs."
+        }
+        CleanupProvider::AppleIntelligence => {
+            "Runs on this Mac with Apple Intelligence. Your transcript never leaves it."
+        }
     }
 }
 
-/// The API key field's placeholder (CLN-26).
-pub fn key_placeholder(provider: CleanupProvider) -> String {
-    format!("{} API key", provider.display_name())
+/// Why the provider's list is not showing, in the sheet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelsNotice {
+    /// The provider lists only with a key and none is stored. A request,
+    /// not a failure: show it plainly.
+    NeedsKey {
+        /// "Enter your Fireworks AI API key to see its models."
+        text: String,
+    },
+    /// The listing failed; show it in red.
+    Failed {
+        /// "Couldn't load OpenRouter models: OpenRouter returned HTTP 503."
+        text: String,
+    },
+}
+
+/// What a failed listing shows in the sheet. A provider that lists only
+/// with a key asks for one instead of reporting an error.
+pub fn models_notice(provider: CleanupProvider, error: &CleanupError) -> ModelsNotice {
+    let name = provider.display_name();
+    match error {
+        CleanupError::MissingKey => ModelsNotice::NeedsKey {
+            text: format!("Enter your {name} API key to see its models."),
+        },
+        _ => ModelsNotice::Failed {
+            text: format!("Couldn't load {name} models: {}", error.describe(provider)),
+        },
+    }
 }
 
 /// The API key field (CLN-25). `Debug` never prints the key (CLN-8).
 #[derive(Clone, PartialEq, Eq)]
 pub struct ApiKeyFieldView {
+    /// "API key", beside the field.
+    pub label: String,
     /// "OpenRouter API key".
     pub placeholder: String,
     /// The field text as the core knows it. Replace the field's contents
@@ -64,6 +99,31 @@ pub struct ApiKeyFieldView {
     /// Inline Keychain error in red, e.g. "Keychain read failed (OSStatus
     /// -25293)." (CLN-24).
     pub error: Option<String>,
+    /// "Stored in your system keychain.", under the field.
+    pub note: String,
+    /// "Get a key": opens `get_key_url` in the browser.
+    pub get_key_title: String,
+    /// The provider's page for creating a key.
+    pub get_key_url: String,
+}
+
+impl ApiKeyFieldView {
+    /// `provider`'s key field, empty and idle; `None` for a provider that
+    /// uses no key.
+    pub fn for_provider(provider: CleanupProvider) -> Option<Self> {
+        let url = provider.key_url()?;
+        Some(Self {
+            label: "API key".to_owned(),
+            placeholder: format!("{} API key", provider.display_name()),
+            text: String::new(),
+            revision: 0,
+            loading: false,
+            error: None,
+            note: "Stored in your system keychain.".to_owned(),
+            get_key_title: "Get a key".to_owned(),
+            get_key_url: url.to_owned(),
+        })
+    }
 }
 
 impl fmt::Debug for ApiKeyFieldView {
@@ -87,6 +147,8 @@ pub struct CleanupProviderOption {
     pub name: String,
     /// An SF Symbol to show when the provider has no bundled logo.
     pub system_symbol: Option<String>,
+    /// The provider cleanup uses now; mark it.
+    pub in_use: bool,
 }
 
 /// One model row in the sheet.
@@ -96,12 +158,16 @@ pub struct CleanupModelOption {
     pub slug: String,
     /// Display name.
     pub name: String,
+    /// The ID to show beside the name: the slug without the part every
+    /// model of the provider shares. Absent when it would repeat the name,
+    /// and for a provider with one fixed model.
+    pub short_id: Option<String>,
 }
 
 /// A titled run of model rows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CleanupModelGroup {
-    /// "Recommended", "Custom", or "All OpenRouter Models".
+    /// "Recommended", "Custom", or "All models".
     pub title: String,
     /// The rows, in display order.
     pub models: Vec<CleanupModelOption>,
@@ -117,14 +183,16 @@ pub struct ProvidersDialog {
     pub providers: Vec<CleanupProviderOption>,
     /// The provider whose pane shows.
     pub selected_provider: String,
+    /// Its name, heading the pane.
+    pub provider_name: String,
+    /// Where the transcript goes with this provider, under its name.
+    pub privacy_note: String,
     /// The provider's API key field; absent for a provider that uses no
     /// key.
     pub key: Option<ApiKeyFieldView>,
     /// Why the provider cannot run now, e.g. "Turn on Apple Intelligence in
     /// System Settings…"; shown above its models.
     pub status_message: Option<String>,
-    /// "Models".
-    pub models_label: String,
     /// The provider's models: curated, then the model in use when it is a
     /// typed ID, then the rest of the provider's list by name. Empty groups
     /// are left out.
@@ -146,9 +214,14 @@ pub struct ProvidersDialog {
     pub models_loading: bool,
     /// "Loading models…".
     pub loading_title: String,
-    /// Why the list is missing, under the search field: a failed listing
-    /// or, for a provider that lists only with a key, a request for one.
-    pub models_error: Option<String>,
+    /// Why the list is missing, under the search field.
+    pub models_notice: Option<ModelsNotice>,
+    /// "In use", before the model and provider cleanup uses now.
+    pub in_use_label: String,
+    /// That model, by name; it may belong to another provider's pane.
+    pub in_use_model: String,
+    /// That provider, by name.
+    pub in_use_provider: String,
     /// "Done"; sends `close_providers_dialog`.
     pub done_title: String,
 }
@@ -304,40 +377,42 @@ pub struct ProvidersDialogInputs<'a> {
     pub offered: &'a [CleanupProvider],
     /// Why the provider cannot run now.
     pub status_message: Option<&'a str>,
-    /// The model in use, when it belongs to this provider.
-    pub selected: Option<&'a CleanupModel>,
     /// The models it listed; empty until a listing finishes.
     pub listed_models: &'a [CleanupModel],
     /// A listing is running.
     pub models_loading: bool,
-    /// The last listing error.
-    pub models_error: Option<&'a str>,
+    /// Why its list is missing.
+    pub models_notice: Option<&'a ModelsNotice>,
     /// The key field, for a provider that uses a key.
     pub key: Option<&'a ApiKeyFieldView>,
 }
 
-fn option(model: &CleanupModel) -> CleanupModelOption {
+// a typed ID takes the provider's name for it once listed
+fn model_name<'a>(model: &'a CleanupModel, listed: &'a [CleanupModel]) -> &'a str {
+    let named = listed.iter().find(|listed| listed.slug == model.slug);
+    &named.unwrap_or(model).display_name
+}
+
+fn option(provider: CleanupProvider, model: &CleanupModel) -> CleanupModelOption {
+    let short_id = provider.short_model_id(&model.slug);
+    let shows_id = provider.model_listing() != ModelListing::None && short_id != model.display_name;
     CleanupModelOption {
         slug: model.slug.clone().into_owned(),
         name: model.display_name.clone().into_owned(),
+        short_id: shows_id.then(|| short_id.to_owned()),
     }
 }
 
-// a typed ID takes the provider's name for it once listed
-fn named(model: &CleanupModel, listed: &[CleanupModel]) -> CleanupModelOption {
-    listed
-        .iter()
-        .find(|listed| listed.slug == model.slug)
-        .map_or_else(|| option(model), option)
-}
-
-fn model_groups(inputs: &ProvidersDialogInputs<'_>) -> Vec<CleanupModelGroup> {
+fn model_groups(
+    inputs: &ProvidersDialogInputs<'_>,
+    selected: Option<&CleanupModel>,
+) -> Vec<CleanupModelGroup> {
     let provider = inputs.provider;
     let listed = inputs.listed_models;
+    let option = |model| option(provider, model);
     // a typed ID the provider does not list still shows, so it stays visible
     // as the selection
-    let custom = inputs
-        .selected
+    let custom = selected
         .filter(|model| {
             !provider.is_curated(&model.slug) && !listed.iter().any(|m| m.slug == model.slug)
         })
@@ -351,48 +426,59 @@ fn model_groups(inputs: &ProvidersDialogInputs<'_>) -> Vec<CleanupModelGroup> {
         .collect();
     let groups = [
         (
-            "Recommended".to_owned(),
+            "Recommended",
             provider.curated_models().iter().map(option).collect(),
         ),
-        ("Custom".to_owned(), custom),
-        (format!("All {} Models", provider.display_name()), rest),
+        ("Custom", custom),
+        ("All models", rest),
     ];
     groups
         .into_iter()
-        .filter(|(_, models): &(String, Vec<CleanupModelOption>)| !models.is_empty())
-        .map(|(title, models)| CleanupModelGroup { title, models })
+        .filter(|(_, models): &(&str, Vec<CleanupModelOption>)| !models.is_empty())
+        .map(|(title, models)| CleanupModelGroup {
+            title: title.to_owned(),
+            models,
+        })
         .collect()
 }
 
-fn providers_dialog(inputs: &ProvidersDialogInputs<'_>) -> ProvidersDialog {
+fn providers_dialog(
+    page: &PostProcessingInputs<'_>,
+    inputs: &ProvidersDialogInputs<'_>,
+) -> ProvidersDialog {
     let provider = inputs.provider;
+    // the model in use shows as the selection only in its provider's pane
+    let selected = (provider == page.provider).then_some(page.model);
     ProvidersDialog {
         title: "Choose Model".to_owned(),
         providers: inputs
             .offered
             .iter()
-            .map(|provider| CleanupProviderOption {
-                id: provider.id().to_owned(),
-                name: provider.display_name().to_owned(),
+            .map(|offered| CleanupProviderOption {
+                id: offered.id().to_owned(),
+                name: offered.display_name().to_owned(),
                 // Apple's mark ships with the OS as a symbol
-                system_symbol: provider
-                    .on_device()
-                    .then(|| "apple.intelligence".to_owned()),
+                system_symbol: offered.on_device().then(|| "apple.intelligence".to_owned()),
+                in_use: *offered == page.provider,
             })
             .collect(),
         selected_provider: provider.id().to_owned(),
+        provider_name: provider.display_name().to_owned(),
+        privacy_note: privacy_note(provider).to_owned(),
         key: inputs.key.cloned(),
         status_message: inputs.status_message.map(str::to_owned),
-        models_label: "Models".to_owned(),
-        model_groups: model_groups(inputs),
-        selected_model: inputs.selected.map(|model| model.slug.clone().into_owned()),
+        model_groups: model_groups(inputs, selected),
+        selected_model: selected.map(|model| model.slug.clone().into_owned()),
         search_placeholder: "Search or enter a model ID".to_owned(),
         use_id_caption: "Use as model ID".to_owned(),
         refresh_models: (provider.model_listing() != ModelListing::None)
             .then(|| ButtonView::new("Refresh Models", !inputs.models_loading)),
         models_loading: inputs.models_loading,
         loading_title: "Loading models…".to_owned(),
-        models_error: inputs.models_error.map(str::to_owned),
+        models_notice: inputs.models_notice.cloned(),
+        in_use_label: "In use".to_owned(),
+        in_use_model: model_name(page.model, page.listed_models).to_owned(),
+        in_use_provider: page.provider.display_name().to_owned(),
         done_title: "Done".to_owned(),
     }
 }
@@ -495,8 +581,11 @@ pub fn post_processing_page(inputs: PostProcessingInputs<'_>) -> PostProcessingP
         details: inputs.enabled.then(|| PostProcessingDetails {
             model_label: "Model".to_owned(),
             provider_name: provider.display_name().to_owned(),
-            model_name: named(inputs.model, inputs.listed_models).name,
-            dialog: inputs.dialog.as_ref().map(providers_dialog),
+            model_name: model_name(inputs.model, inputs.listed_models).to_owned(),
+            dialog: inputs
+                .dialog
+                .as_ref()
+                .map(|dialog| providers_dialog(&inputs, dialog)),
             caption: caption(provider),
             prompt: prompt_summary(&inputs),
             test_button: ButtonView::new("Test with Sample Text", !inputs.test_running),
@@ -524,13 +613,7 @@ mod tests {
     }
 
     fn key() -> ApiKeyFieldView {
-        ApiKeyFieldView {
-            placeholder: "OpenRouter API key".to_owned(),
-            text: String::new(),
-            revision: 0,
-            loading: false,
-            error: None,
-        }
+        ApiKeyFieldView::for_provider(CleanupProvider::OpenRouter).expect("OpenRouter uses a key")
     }
 
     fn inputs<'a>(model: &'a CleanupModel, listed: &'a [CleanupModel]) -> PostProcessingInputs<'a> {
@@ -550,7 +633,6 @@ mod tests {
     }
 
     fn dialog_inputs<'a>(
-        selected: Option<&'a CleanupModel>,
         listed: &'a [CleanupModel],
         key: &'a ApiKeyFieldView,
     ) -> ProvidersDialogInputs<'a> {
@@ -558,10 +640,9 @@ mod tests {
             provider: CleanupProvider::OpenRouter,
             offered: &CleanupProvider::ALL,
             status_message: None,
-            selected,
             listed_models: listed,
             models_loading: false,
-            models_error: None,
+            models_notice: None,
             key: Some(key),
         }
     }
@@ -603,9 +684,35 @@ mod tests {
              retain your transcript. The API key is stored in your system keychain, not in \
              preferences. Falls back to the raw transcript if the request fails."
         );
+    }
+
+    #[test]
+    fn the_key_field_names_its_provider_and_where_to_get_a_key() {
+        let cases = [
+            (
+                CleanupProvider::OpenRouter,
+                "OpenRouter API key",
+                "https://openrouter.ai/workspaces/default/keys",
+            ),
+            (
+                CleanupProvider::Fireworks,
+                "Fireworks AI API key",
+                "https://app.fireworks.ai/settings/users/api-keys",
+            ),
+        ];
+        for (provider, want_placeholder, want_url) in cases {
+            let field = ApiKeyFieldView::for_provider(provider).expect(want_placeholder);
+            assert_eq!(field.label, "API key");
+            assert_eq!(field.placeholder, want_placeholder);
+            assert_eq!(field.note, "Stored in your system keychain.");
+            assert_eq!(field.get_key_title, "Get a key");
+            assert_eq!(field.get_key_url, want_url);
+            assert_eq!(field.text, "", "empty until the stored key loads");
+        }
         assert_eq!(
-            key_placeholder(CleanupProvider::OpenRouter),
-            "OpenRouter API key"
+            ApiKeyFieldView::for_provider(CleanupProvider::AppleIntelligence),
+            None,
+            "no key to enter"
         );
     }
 
@@ -819,7 +926,7 @@ mod tests {
         ];
         let typed = CleanupModel::custom("greendale/human-being");
         let key = key();
-        let dialog = providers_dialog(&dialog_inputs(Some(&typed), &listed, &key));
+        let dialog = providers_dialog(&inputs(&typed, &listed), &dialog_inputs(&listed, &key));
         assert_eq!(
             titles_and_slugs(&dialog),
             [
@@ -832,7 +939,7 @@ mod tests {
                     ]
                 ),
                 ("Custom", vec!["greendale/human-being"]),
-                ("All OpenRouter Models", vec!["openai/gpt-4o", "x-ai/grok"]),
+                ("All models", vec!["openai/gpt-4o", "x-ai/grok"]),
             ]
         );
         assert_eq!(
@@ -841,6 +948,12 @@ mod tests {
         );
         assert_eq!(dialog.title, "Choose Model");
         assert_eq!(dialog.selected_provider, "openrouter");
+        assert_eq!(dialog.provider_name, "OpenRouter");
+        assert_eq!(
+            dialog.privacy_note,
+            "Your transcript goes to OpenRouter and the model's provider. Onda asks for \
+             providers that don't retain it."
+        );
         assert_eq!(
             dialog.key.map(|key| key.placeholder).as_deref(),
             Some("OpenRouter API key")
@@ -851,28 +964,116 @@ mod tests {
 
         // a listed selection needs no Custom group
         let listed_pick = CleanupModel::custom("x-ai/grok");
-        let dialog = providers_dialog(&dialog_inputs(Some(&listed_pick), &listed, &key));
+        let dialog = providers_dialog(
+            &inputs(&listed_pick, &listed),
+            &dialog_inputs(&listed, &key),
+        );
         let titles: Vec<&str> = dialog
             .model_groups
             .iter()
             .map(|g| g.title.as_str())
             .collect();
-        assert_eq!(titles, ["Recommended", "All OpenRouter Models"]);
+        assert_eq!(titles, ["Recommended", "All models"]);
+    }
+
+    #[test]
+    fn the_sheet_names_what_is_in_use_from_any_pane() {
+        let listed = vec![CleanupModel::listed("openai/gpt-4o", "OpenAI: GPT-4o")];
+        let model = CleanupModel::custom("openai/gpt-4o");
+        let key = key();
+        let cases = [
+            (CleanupProvider::OpenRouter, Some("openai/gpt-4o")),
+            (CleanupProvider::Fireworks, None),
+        ];
+        for (shown, want_selected) in cases {
+            let dialog = providers_dialog(
+                &inputs(&model, &listed),
+                &ProvidersDialogInputs {
+                    provider: shown,
+                    listed_models: &[],
+                    ..dialog_inputs(&listed, &key)
+                },
+            );
+            assert_eq!(dialog.in_use_label, "In use", "{shown:?}");
+            assert_eq!(dialog.in_use_model, "OpenAI: GPT-4o", "{shown:?}");
+            assert_eq!(dialog.in_use_provider, "OpenRouter", "{shown:?}");
+            assert_eq!(dialog.selected_model.as_deref(), want_selected, "{shown:?}");
+            let marked: Vec<&str> = dialog
+                .providers
+                .iter()
+                .filter(|provider| provider.in_use)
+                .map(|provider| provider.id.as_str())
+                .collect();
+            assert_eq!(marked, ["openrouter"], "{shown:?}");
+        }
+    }
+
+    #[test]
+    fn a_row_shows_its_id_without_the_part_every_model_shares() {
+        struct Case {
+            name: &'static str,
+            provider: CleanupProvider,
+            model: CleanupModel,
+            want: Option<&'static str>,
+        }
+        let cases = [
+            Case {
+                name: "Fireworks drops its account path",
+                provider: CleanupProvider::Fireworks,
+                model: CleanupModel::listed("accounts/fireworks/models/kimi-k3", "Kimi K3"),
+                want: Some("kimi-k3"),
+            },
+            Case {
+                name: "OpenRouter keeps the vendor",
+                provider: CleanupProvider::OpenRouter,
+                model: CleanupModel::listed("openai/gpt-4o", "OpenAI: GPT-4o"),
+                want: Some("openai/gpt-4o"),
+            },
+            Case {
+                name: "a typed ID is already its own name",
+                provider: CleanupProvider::OpenRouter,
+                model: CleanupModel::custom("greendale/human-being"),
+                want: None,
+            },
+            Case {
+                name: "an unlisted Fireworks ID is named by its short ID",
+                provider: CleanupProvider::Fireworks,
+                model: CleanupProvider::Fireworks
+                    .resolve_model(Some("accounts/fireworks/models/human-being")),
+                want: None,
+            },
+            Case {
+                name: "one fixed model has no ID worth showing",
+                provider: CleanupProvider::AppleIntelligence,
+                model: CleanupProvider::AppleIntelligence.default_model().clone(),
+                want: None,
+            },
+        ];
+        for tc in cases {
+            let got = option(tc.provider, &tc.model);
+            assert_eq!(got.short_id.as_deref(), tc.want, "{}", tc.name);
+            assert_eq!(got.slug, tc.model.slug, "{}", tc.name);
+        }
     }
 
     #[test]
     fn the_on_device_pane_has_no_key_list_or_refresh() {
         let model = CleanupProvider::AppleIntelligence.default_model();
-        let dialog = providers_dialog(&ProvidersDialogInputs {
-            provider: CleanupProvider::AppleIntelligence,
-            offered: &CleanupProvider::ALL,
-            status_message: Some("Turn on Apple Intelligence."),
-            selected: Some(model),
-            listed_models: &[],
-            models_loading: false,
-            models_error: None,
-            key: None,
-        });
+        let dialog = providers_dialog(
+            &PostProcessingInputs {
+                provider: CleanupProvider::AppleIntelligence,
+                ..inputs(model, &[])
+            },
+            &ProvidersDialogInputs {
+                provider: CleanupProvider::AppleIntelligence,
+                offered: &CleanupProvider::ALL,
+                status_message: Some("Turn on Apple Intelligence."),
+                listed_models: &[],
+                models_loading: false,
+                models_notice: None,
+                key: None,
+            },
+        );
         assert_eq!(dialog.key, None);
         assert_eq!(dialog.refresh_models, None, "nothing to list or search");
         assert_eq!(
@@ -887,48 +1088,56 @@ mod tests {
     }
 
     #[test]
-    fn models_error_names_the_provider() {
+    fn the_sheet_shows_why_the_list_is_missing_while_it_reloads() {
         let key = key();
-        let dialog = providers_dialog(&ProvidersDialogInputs {
-            models_loading: true,
-            models_error: Some("Couldn't load OpenRouter models: OpenRouter returned HTTP 503."),
-            ..dialog_inputs(None, &[], &key)
-        });
-        assert_eq!(
-            dialog.models_error.as_deref(),
-            Some("Couldn't load OpenRouter models: OpenRouter returned HTTP 503.")
+        let notice = ModelsNotice::Failed {
+            text: "Couldn't load OpenRouter models: OpenRouter returned HTTP 503.".to_owned(),
+        };
+        let dialog = providers_dialog(
+            &PostProcessingInputs {
+                provider: CleanupProvider::Fireworks,
+                ..inputs(&CLEANUP_MODELS[0], &[])
+            },
+            &ProvidersDialogInputs {
+                models_loading: true,
+                models_notice: Some(&notice),
+                ..dialog_inputs(&[], &key)
+            },
         );
+        assert_eq!(dialog.models_notice, Some(notice));
         assert_eq!(dialog.refresh_models.map(|b| b.enabled), Some(false));
         assert_eq!(dialog.loading_title, "Loading models…");
-        assert_eq!(dialog.selected_model, None);
+        assert_eq!(dialog.selected_model, None, "another provider is in use");
     }
 
     #[test]
-    fn models_error_text_asks_for_a_missing_key() {
+    fn a_missing_key_is_a_request_and_a_failed_listing_an_error() {
         assert_eq!(
-            models_error_text(CleanupProvider::Fireworks, &CleanupError::MissingKey),
-            "Enter your Fireworks AI API key to see its models."
+            models_notice(CleanupProvider::Fireworks, &CleanupError::MissingKey),
+            ModelsNotice::NeedsKey {
+                text: "Enter your Fireworks AI API key to see its models.".to_owned()
+            }
         );
         assert_eq!(
-            models_error_text(
+            models_notice(
                 CleanupProvider::OpenRouter,
                 &CleanupError::Http {
                     status: 503,
                     message: None
                 }
             ),
-            "Couldn't load OpenRouter models: OpenRouter returned HTTP 503."
+            ModelsNotice::Failed {
+                text: "Couldn't load OpenRouter models: OpenRouter returned HTTP 503.".to_owned()
+            }
         );
     }
 
     #[test]
     fn cln_8_debug_never_prints_the_key() {
         let field = ApiKeyFieldView {
-            placeholder: "OpenRouter API key".to_owned(),
             text: "sk-or-troy-barnes".to_owned(),
             revision: 1,
-            loading: false,
-            error: None,
+            ..key()
         };
         let printed = format!("{field:?}");
         assert!(!printed.contains("troy"), "{printed}");

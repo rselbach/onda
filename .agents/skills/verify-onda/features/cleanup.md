@@ -9,11 +9,14 @@ page. Verify the UI only: no real API key, no requests.
 - `cln-toggle`: enable toggle; details hidden while off.
 - `cln-model-row`: clickable "Model" row naming the model and provider,
   with a chevron.
-- `cln-model-sheet`: the sheet the Model row opens: provider sidebar, the
-  provider's secure API key field (loading and error states), a searchable
-  model list where one click uses a model (checkmark), one "Search or
-  enter a model ID" field that filters the list or offers "Use as model
-  ID", "Refresh Models" with a spinner and red error, and "Done".
+- `cln-model-sheet`: the sheet the Model row opens: provider sidebar with
+  a checkmark (`image "In use"`) on the provider in use, the provider's
+  name and privacy note, its secure API key field (loading and error
+  states) with a "Get a key" link, a searchable model list where one click
+  uses a model (checkmark and tint), one "Search or enter a model ID"
+  search field that filters the list or offers "Use as model ID", a
+  "Refresh Models" icon button, a red line for a failed listing, and a
+  footer reading "In use: <model> · <provider>" beside "Done".
 - `cln-prompt`: "Prompt" section naming the prompt in use ("Onda default"
   or "Custom prompt") over a three-line preview, and the "Post-processing
   prompt" sheet it opens: editor, "Onda default"/"Custom" badge, status
@@ -67,8 +70,12 @@ Main window > Post-Processing.
   it is turned off or still getting ready, and dictation then delivers the
   raw transcript with history note "Apple Intelligence unavailable".
 - Fireworks AI lists its models only with its key, so with no key stored its
-  sheet shows "Enter your Fireworks AI API key to see its models." and only
-  the curated models. That is expected; do not add a key to get the list.
+  sheet shows "Enter your Fireworks AI API key to see its models." in
+  secondary text, not red, and only the curated models. That is expected;
+  do not add a key to get the list.
+- Never press "Get a key": it opens the provider's site in the browser.
+- The search field takes `llama-cu set-value`; background `type-text`
+  does not reach it.
 - Never type a key, paste one, or press Test; never put the field's value in
   evidence.
 - With no stored key, dictating with post-processing on is safe: CLN-2
