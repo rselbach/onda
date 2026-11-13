@@ -43,7 +43,7 @@ pub fn join(text: &str, preceding: &str) -> String {
 // Chinese, Japanese, Thai, Lao, Khmer, and Burmese text, with its own
 // punctuation, puts no space between words or sentences. Korean does, so
 // Hangul is not here.
-fn is_written_without_spaces(c: char) -> bool {
+pub(crate) fn is_written_without_spaces(c: char) -> bool {
     matches!(
         u32::from(c),
         0x0E00..=0x0EFF      // Thai, Lao

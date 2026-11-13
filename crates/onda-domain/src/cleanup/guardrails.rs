@@ -4,6 +4,8 @@
 
 use std::fmt;
 
+use crate::joiner::is_written_without_spaces;
+
 /// Only check shrinkage once the raw transcript has this many words (CLN-16).
 const SHRINKAGE_MIN_RAW_WORDS: usize = 8;
 
@@ -120,8 +122,21 @@ fn check_growth(raw: &str, cleaned: &str) -> Result<(), GuardrailViolation> {
     Ok(())
 }
 
+// scripts written without spaces count each letter as a word, so their
+// counts move with the text's length the way spaced words do
 fn word_count(text: &str) -> usize {
-    text.split_whitespace().count()
+    text.split_whitespace()
+        .map(|token| {
+            let unspaced = token
+                .chars()
+                .filter(|c| c.is_alphanumeric() && is_written_without_spaces(*c))
+                .count();
+            let spaced = token
+                .chars()
+                .any(|c| c.is_alphanumeric() && !is_written_without_spaces(c));
+            unspaced + usize::from(unspaced == 0 || spaced)
+        })
+        .sum()
 }
 
 // CLN-17: case-insensitive, with no letter right before or after; digits do
@@ -559,6 +574,20 @@ mod tests {
     }
 
     #[test]
+    fn languages_without_spaces_get_the_length_checks() {
+        let raw = "请告诉特洛伊和阿布德学习小组三点在图书馆见面";
+        assert_eq!(check_guardrails(raw, "好的。"), shrinkage(22, 2));
+        assert!(matches!(
+            check_guardrails(raw, &raw.repeat(3)),
+            Err(GuardrailViolation::Growth { .. })
+        ));
+        assert_eq!(
+            check_guardrails(raw, "请告诉特洛伊和阿布德，学习小组三点在图书馆见面。"),
+            Ok(())
+        );
+    }
+
+    #[test]
     fn word_count_cln_19() {
         struct Case {
             name: &'static str,
@@ -589,6 +618,21 @@ mod tests {
             Case {
                 name: "mixed whitespace",
                 text: "one\ntwo\tthree",
+                want: 3,
+            },
+            Case {
+                name: "chinese letters, punctuation not counted",
+                text: "格林代尔社区学院。",
+                want: 8,
+            },
+            Case {
+                name: "japanese mixed with latin",
+                text: "Greendaleで勉強する",
+                want: 6,
+            },
+            Case {
+                name: "korean is spaced",
+                text: "그린데일 커뮤니티 칼리지",
                 want: 3,
             },
         ];
