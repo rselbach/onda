@@ -170,8 +170,9 @@ pub enum CleanupStep {
 /// Decides what follows request 1 (CLN-12..CLN-14).
 ///
 /// Custom instructions may deliberately change length and formatting, so
-/// their output bypasses the default prompt's transcript-preservation checks.
-/// Transport errors still fall back to the raw transcript.
+/// their output bypasses the default prompt's transcript-preservation checks,
+/// except that empty output gets the default prompt's rule below without a
+/// retry. Transport errors still fall back to the raw transcript.
 ///
 /// With the default prompt, empty output is used only where the shrinkage
 /// check allows it: a short transcript or one with a
@@ -199,6 +200,14 @@ pub fn after_first_attempt(
         }
     };
     if prompt.custom().is_some() {
+        if cleaned.is_empty()
+            && let Err(violation) = check_guardrails(raw, &cleaned)
+        {
+            return CleanupStep::Done(CleanupOutcome::FellBack {
+                error: violation.to_string(),
+                notice: Some(CleanupNotice::UsedRawTranscript),
+            });
+        }
         return CleanupStep::Done(CleanupOutcome::Cleaned { text: cleaned });
     }
     match check_guardrails(raw, &cleaned) {
@@ -453,7 +462,7 @@ mod tests {
         let prompt = CleanupPrompt::from_text("Rewrite the transcript as requested.")
             .expect("custom prompt");
         let expanded = GREENDALE.repeat(4);
-        for output in ["Studying at Greendale.", "# Greendale", &expanded, ""] {
+        for output in ["Studying at Greendale.", "# Greendale", &expanded] {
             assert!(
                 matches!(
                     after_first_attempt(
@@ -475,6 +484,26 @@ mod tests {
                 ),
                 CleanupStep::Done(cleaned(output)),
                 "custom instructions control output length and formatting"
+            );
+        }
+        assert_eq!(
+            after_first_attempt(
+                CleanupProvider::OpenRouter,
+                &prompt,
+                GREENDALE,
+                Ok(String::new())
+            ),
+            CleanupStep::Done(fell_back(
+                SHRINKAGE_MESSAGE,
+                Some(CleanupNotice::UsedRawTranscript)
+            )),
+            "a dropped reply does not make a long dictation vanish"
+        );
+        for raw in ["Greendale", "Troy and Abed scratch that"] {
+            assert_eq!(
+                after_first_attempt(CleanupProvider::OpenRouter, &prompt, raw, Ok(String::new())),
+                CleanupStep::Done(cleaned("")),
+                "empty output stays where the default prompt keeps it"
             );
         }
         for provider in CleanupProvider::ALL {
