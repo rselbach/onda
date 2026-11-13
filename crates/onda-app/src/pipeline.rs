@@ -123,6 +123,23 @@ pub(crate) struct PreviewContext {
     pub(crate) messages: mpsc::UnboundedSender<Msg>,
 }
 
+// each read is a round trip to the audio thread, which can be busy
+// rebuilding a device; blocking threads keep that wait off the runtime's
+// two workers. None when the read panicked.
+async fn read_audio<T: Send + 'static>(
+    audio: &Arc<dyn AudioSource>,
+    read: impl FnOnce(&dyn AudioSource) -> T + Send + 'static,
+) -> Option<T> {
+    let audio = audio.clone();
+    match spawn_blocking(move || read(audio.as_ref())).await {
+        Ok(value) => Some(value),
+        Err(error) => {
+            tracing::error!(%error, "preview audio read failed");
+            None
+        }
+    }
+}
+
 async fn run_preview(
     context: PreviewContext,
     mut stopped: watch::Receiver<bool>,
@@ -134,9 +151,13 @@ async fn run_preview(
         if *stopped.borrow() {
             break;
         }
-        let count = context.audio.sample_count();
+        let Some(count) = read_audio(&context.audio, |audio| audio.sample_count()).await else {
+            break;
+        };
         if preview.tick(count) == onda_domain::preview::TickDecision::Decode {
-            let samples = context.audio.samples();
+            let Some(samples) = read_audio(&context.audio, |audio| audio.samples()).await else {
+                break;
+            };
             let decoded = samples.len();
             let started = Instant::now();
             match context.service.preview(samples, context.language).await {
