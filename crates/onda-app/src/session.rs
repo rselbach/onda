@@ -702,7 +702,7 @@ impl Actor {
             tracing::info!("no dictation while Onda restarts to update");
             return;
         }
-        if self.model_state != ModelState::Ready {
+        if self.load_in_flight() || self.model_state != ModelState::Ready {
             // guidance shares the notice's 1.5 s rate limit (DICT-2)
             if self.notify(match self.declined() {
                 true => UserMessage::ModelNotDownloaded,
@@ -1658,6 +1658,9 @@ impl Actor {
             return;
         }
         self.loads.started();
+        if unload_first {
+            self.loads.announce();
+        }
         let service = self.service.clone();
         tokio::spawn(send_when(self.messages.clone(), async move {
             if unload_first {

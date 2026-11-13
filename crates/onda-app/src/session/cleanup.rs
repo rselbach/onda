@@ -496,7 +496,9 @@ impl Actor {
         let model = provider.resolve_model(Some(&slug));
         self.apply_setting(SettingChange::CleanupModel(provider, model));
         // the result resets when the model changes (CLN-27)
+        self.cancel_cleanup_test();
         self.ui.cleanup.test_result = None;
+        self.ui.cleanup.test_error = None;
     }
 
     // lists once per provider per run; a failed listing retries when asked

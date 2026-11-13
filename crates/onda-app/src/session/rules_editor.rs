@@ -53,6 +53,9 @@ impl Actor {
     // flush pending edits before reloading on appear (REP-12)
     pub(super) fn reload_replacements(&mut self) {
         self.flush_replacements();
+        if self.ui.replacements.dirty {
+            return;
+        }
         self.refresh_settings();
         let rules = self.settings.replacement_rules.clone();
         let editor = &mut self.ui.replacements;
@@ -131,15 +134,26 @@ impl Actor {
     pub(super) fn flush_replacements(&mut self) {
         let editor = &mut self.ui.replacements;
         editor.debounce = None;
-        if !std::mem::take(&mut editor.dirty) {
+        if !editor.dirty {
             return;
         }
         let rules = rules_to_persist(&editor.rules());
         if rules == editor.saved {
+            editor.dirty = false;
             return;
         }
-        editor.saved = rules.clone();
-        self.apply_setting(SettingChange::ReplacementRules(rules));
+        match self
+            .ports
+            .settings
+            .apply(SettingChange::ReplacementRules(rules.clone()))
+        {
+            Ok(()) => {
+                editor.saved = rules;
+                editor.dirty = false;
+            }
+            Err(error) => tracing::error!(%error, "could not save replacement rules"),
+        }
+        self.refresh_settings();
     }
 
     pub(super) fn replacements_view(&self) -> ReplacementsPage {

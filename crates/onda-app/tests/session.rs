@@ -2457,6 +2457,31 @@ async fn asr_8_explicit_model_change_cancels_the_session_and_reloads() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn asr_8_model_switch_blocks_dictation_until_the_new_model_is_ready() {
+    let h = Harness::new().await;
+    lock(&h.models.downloaded).push(ModelId::ParakeetUnified);
+    h.app.menu_will_open();
+    sleep(10).await;
+    let held = Hold::new();
+    *lock(&h.script.hold_load) = Some(held.clone());
+    h.app.select_model(ModelId::ParakeetUnified);
+    h.app.start_dictation();
+    eventually("the new model load", || held.started()).await;
+    eventually("the dictation start decision", || {
+        h.audio.is_open() || h.notices().iter().any(|title| title == "Model Not Ready")
+    })
+    .await;
+    let starts = h.audio.starts.load(Ordering::SeqCst);
+    held.release();
+    sleep(10).await;
+    assert_eq!(starts, 0, "loading must not open the microphone");
+    assert_eq!(h.tray().icon, TrayIcon::Ready);
+    h.dictate().await;
+    assert_eq!(h.typed(), ["hello world"]);
+    assert!(h.notifications().is_empty());
+}
+
+#[tokio::test(start_paused = true)]
 async fn asr_6_load_failure_notifies_and_offers_retry() {
     let h = Harness::unstarted(|_| {});
     h.script.fail_load.store(true, Ordering::SeqCst);

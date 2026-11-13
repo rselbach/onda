@@ -1426,6 +1426,50 @@ async fn cln_27_the_test_runs_resets_and_cancels_silently() {
     assert_eq!(details.test_error, None);
 }
 
+#[tokio::test(start_paused = true)]
+async fn cln_27_model_changes_cancel_running_tests_and_discard_their_results() {
+    use onda_domain::cleanup::{CleanupError, CleanupProvider, TEST_SAMPLE};
+
+    let cases = [
+        (CleanupProvider::OpenRouter, Ok(TEST_SAMPLE.to_owned())),
+        (
+            CleanupProvider::Fireworks,
+            Err(CleanupError::Http {
+                status: 429,
+                message: None,
+            }),
+        ),
+    ];
+    for (provider, result) in cases {
+        let h = Harness::with(|s| s.cleanup_enabled = true).await;
+        h.app.page_appeared(MainWindowSection::PostProcessing);
+        let held = Arc::new(tokio::sync::Notify::new());
+        *lock(&h.cleanup.hold) = Some(held.clone());
+        h.cleanup.respond(vec![result]);
+        h.app.test_cleanup();
+        sleep(10).await;
+        assert!(post_processing(&h).details.expect("details").test_running);
+        h.app.select_cleanup_model(provider, "greendale/new-model");
+        sleep(1).await;
+        let details = post_processing(&h).details.expect("details");
+        assert!(!details.test_running, "{provider:?}");
+        assert!(details.test_button.enabled, "{provider:?}");
+        held.notify_waiters();
+        sleep(10).await;
+        let details = post_processing(&h).details.expect("details");
+        assert_eq!(details.test_result, None, "{provider:?}");
+        assert_eq!(details.test_error, None, "{provider:?}");
+        *lock(&h.cleanup.hold) = None;
+        h.cleanup.respond(vec![Ok(TEST_SAMPLE.to_owned())]);
+        h.app.test_cleanup();
+        sleep(10).await;
+        let details = post_processing(&h).details.expect("details");
+        assert!(details.test_result.is_some(), "{provider:?}");
+        assert_eq!(h.cleanup.calls(), 2);
+        assert_eq!(lock(&h.cleanup.requests)[1]["model"], "greendale/new-model");
+    }
+}
+
 const CUSTOM_PROMPT: &str = "Fix punctuation only.\n\nKeep every word Troy said.";
 
 #[tokio::test(start_paused = true)]
@@ -1930,6 +1974,53 @@ async fn rep_12_debounced_writes_flush_on_disappear_and_skip_unchanged() {
             .map(String::as_str),
         Some("settings:ReplacementRules([])")
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn rep_12_failed_save_is_retried_when_the_page_disappears() {
+    let h = Harness::new().await;
+    h.app.page_appeared(MainWindowSection::Replacements);
+    h.app.add_replacement_rule();
+    sleep(1).await;
+    let id = replacements(&h).rows[0].id.clone();
+    h.app.set_replacement_triggers(id.clone(), "troy");
+    h.app.set_replacement_text(id, "Troy Barnes");
+    *lock(&h.settings.fail_apply) = Some("Greendale disk is full".to_owned());
+    sleep(600).await;
+    assert!(lock(&h.settings.settings).replacement_rules.is_empty());
+    h.app.page_disappeared(MainWindowSection::Replacements);
+    sleep(1).await;
+    let saved = lock(&h.settings.settings).replacement_rules.clone();
+    assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0].triggers, ["troy"]);
+    assert_eq!(saved[0].replacement, "Troy Barnes");
+    h.app.page_appeared(MainWindowSection::Replacements);
+    sleep(1).await;
+    assert_eq!(replacements(&h).rows[0].replacement, "Troy Barnes");
+}
+
+#[tokio::test(start_paused = true)]
+async fn rep_12_failed_reload_preserves_the_draft_until_a_successful_flush() {
+    let h = Harness::new().await;
+    h.app.page_appeared(MainWindowSection::Replacements);
+    h.app.add_replacement_rule();
+    sleep(1).await;
+    let id = replacements(&h).rows[0].id.clone();
+    h.app.set_replacement_triggers(id.clone(), "troy, ");
+    h.app.set_replacement_text(id, "Troy Barnes");
+    *lock(&h.settings.fail_apply) = Some("Greendale disk is full".to_owned());
+    h.app.page_disappeared(MainWindowSection::Replacements);
+    sleep(1).await;
+    *lock(&h.settings.fail_apply) = Some("Greendale disk is still full".to_owned());
+    h.app.page_appeared(MainWindowSection::Replacements);
+    sleep(1).await;
+    assert!(lock(&h.settings.settings).replacement_rules.is_empty());
+    assert_eq!(replacements(&h).rows[0].triggers, "troy, ");
+    assert_eq!(replacements(&h).rows[0].replacement, "Troy Barnes");
+    h.app.shutdown_async().await;
+    let saved = lock(&h.settings.settings).replacement_rules.clone();
+    assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0].replacement, "Troy Barnes");
 }
 
 #[tokio::test(start_paused = true)]
