@@ -6,6 +6,8 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::joiner::is_written_without_spaces;
+
 /// Stable identifier of a rule, stored as a UUID string (REP-7).
 ///
 /// Domain code cannot generate one (no randomness, ARCH-2); the caller mints
@@ -225,9 +227,15 @@ fn match_end(graphemes: &[&str], pos: usize, folded_trigger: &[char]) -> Option<
     None
 }
 
-// REP-2: letters and digits block a match
+// REP-2: letters and digits block a match, except letters of scripts
+// written without spaces, where a word can start or end at any letter
 fn is_word_grapheme(grapheme: &str) -> bool {
-    grapheme.chars().next().is_some_and(char::is_alphanumeric)
+    grapheme.chars().next().is_some_and(|c| {
+        let unspaced_letter = c.is_alphabetic()
+            && is_written_without_spaces(c)
+            && !('\u{FF01}'..='\u{FF5E}').contains(&c);
+        c.is_alphanumeric() && !unspaced_letter
+    })
 }
 
 fn is_horizontal_space(grapheme: &str) -> bool {
@@ -496,6 +504,18 @@ mod tests {
                 rules: vec![rule(&["greendale"], "  Greendale Community College\n")],
                 text: "go greendale",
                 want: "go Greendale Community College",
+            },
+            ApplyCase {
+                name: "REP-2 matches inside text written without spaces",
+                rules: vec![rule(&["東京"], "Tokyo"), rule(&["abed"], "Abed")],
+                text: "私は東京に行くabedと",
+                want: "私はTokyoに行くAbedと",
+            },
+            ApplyCase {
+                name: "REP-2 digits and fullwidth Latin still block",
+                rules: vec![rule(&["troy"], "Troy")],
+                text: "troy１ ๑troy Ａtroy",
+                want: "troy１ ๑troy Ａtroy",
             },
         ];
         for tc in cases {
