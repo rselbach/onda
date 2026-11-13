@@ -67,6 +67,15 @@ jobs:
             echo "::error::${TAG} is not on main" >&2
             exit 1
           fi
+          # clients compare build numbers, which only grow, so an older
+          # version tagged later would install as an update
+          latest="$(git tag --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            | grep -vxF "${TAG}" | sort -V | tail -n 1 || true)"
+          newest="$(printf '%s\n' "${latest}" "${TAG}" | sort -V | tail -n 1)"
+          if [[ -n "${latest}" && "${newest}" != "${TAG}" ]]; then
+            echo "::error::${TAG} is not newer than ${latest}" >&2
+            exit 1
+          fi
 
   linux:
     needs: check-tag
