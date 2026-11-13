@@ -93,7 +93,7 @@ impl onda_update::Host for DesktopHost {
         send(&self.0, Message::UpdaterChanged);
     }
     fn open_url(&self, url: &str) {
-        if let Err(error) = process::run("xdg-open", &[url], &[]) {
+        if let Err(error) = process::open_uri(url) {
             send(
                 &self.0,
                 Message::Notice("Could not open update download".into(), error.to_string()),

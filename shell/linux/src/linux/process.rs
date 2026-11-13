@@ -48,6 +48,29 @@ pub fn write(program: &str, args: &[&str], input: &[u8]) -> anyhow::Result<()> {
     Ok(())
 }
 
+// a desktop program that keeps running, such as a settings window, is
+// started with no pipes and never killed; a thread reaps it when it exits
+pub fn launch(program: &str, args: &[&str]) -> anyhow::Result<()> {
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    std::thread::spawn(move || {
+        if let Err(error) = child.wait() {
+            tracing::debug!(%error, "could not reap a launched program");
+        }
+    });
+    Ok(())
+}
+
+// opens `uri` in the desktop's handler; the handler is not waited on
+pub fn open_uri(uri: &str) -> anyhow::Result<()> {
+    gtk::gio::AppInfo::launch_default_for_uri(uri, None::<&gtk::gio::AppLaunchContext>)?;
+    Ok(())
+}
+
 fn execute(
     program: &str,
     args: &[&str],

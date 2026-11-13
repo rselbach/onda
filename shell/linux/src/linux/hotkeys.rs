@@ -105,7 +105,7 @@ impl HotkeySource for Hotkeys {
         GlobeKeyAction::Unknown
     }
     fn open_keyboard_settings(&self) {
-        if let Err(error) = super::process::run("gnome-control-center", &["keyboard"], &[]) {
+        if let Err(error) = super::process::launch("gnome-control-center", &["keyboard"]) {
             tracing::debug!(%error);
         }
     }

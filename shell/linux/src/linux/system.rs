@@ -1,6 +1,7 @@
 //! Linux desktop services supplied to the application core.
 
 use super::{Message, process, send};
+use gtk::gio::prelude::FileExt;
 use onda_app::{ports::*, seams::SecretSource};
 use onda_domain::{
     cleanup::CleanupProvider,
@@ -27,7 +28,7 @@ impl Permissions for Desktop {
     }
     fn prompt_accessibility(&self) {}
     fn open_settings(&self, _: PrivacyPane) {
-        if let Err(error) = process::run("gnome-control-center", &["privacy"], &[]) {
+        if let Err(error) = process::launch("gnome-control-center", &["privacy"]) {
             tracing::debug!(%error);
         }
     }
@@ -72,9 +73,7 @@ impl Files for Desktop {
         self.open(path.parent().unwrap_or(path))
     }
     fn open(&self, path: &Path) -> Result<(), String> {
-        process::run("xdg-open", &[&path.to_string_lossy()], &[])
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        process::open_uri(&gtk::gio::File::for_path(path).uri()).map_err(|e| e.to_string())
     }
 }
 
