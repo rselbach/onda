@@ -382,10 +382,8 @@ impl Inner {
             total: manifest.total_size(),
             start: Instant::now(),
             throttle: ProgressThrottle::new(),
-            network_gave_out: false,
         };
         let result = job.fetch_all(manifest, &folder).await;
-        let network_gave_out = job.network_gave_out;
         let elapsed_ms = job.start.elapsed().as_millis() as u64;
         let (result, event) = match result {
             Ok(()) => {
@@ -397,14 +395,9 @@ impl Inner {
                 (Err(Error::Cancelled), DownloadEventKind::Cancelled)
             }
             Err(error) => {
-                tracing::error!(%model, elapsed_ms, %error, network_gave_out, "download failed");
-                // what a dropped connection leaves is a clean prefix the next
-                // download resumes; any other failure may have left bad data
-                if !network_gave_out
-                    && let Err(cleanup) = remove_descendant(&self.models_dir, &folder)
-                {
-                    tracing::error!(%model, error = %cleanup, "could not delete partial download");
-                }
+                // finished files were verified and stay for the next
+                // download; fetch_file already dropped any bad partial data
+                tracing::error!(%model, elapsed_ms, %error, "download failed");
                 let event = DownloadEventKind::Failed {
                     error: error.to_string(),
                 };
@@ -431,9 +424,6 @@ struct Job<'a> {
     total: u64,
     start: Instant,
     throttle: ProgressThrottle,
-    /// The failure was the network running out of retries, so the partial
-    /// data is intact and kept for a resume.
-    network_gave_out: bool,
 }
 
 impl Job<'_> {
@@ -510,11 +500,10 @@ impl Job<'_> {
             let (message, timed_out) = match self.fetch_attempt(&url, file, &part, done).await {
                 Ok(()) => break,
                 Err(Attempt::Cancelled) => return Err(Error::Cancelled),
-                Err(Attempt::Fatal(error)) => return Err(error),
+                Err(Attempt::Fatal(error)) => return Err(discard(&part, error).await),
                 Err(Attempt::Retry { message, timed_out }) => (message, timed_out),
             };
             if retries == RETRIES {
-                self.network_gave_out = true;
                 return Err(match timed_out {
                     true => ModelError::DownloadTimedOut {
                         model_id: model.as_str().to_string(),
@@ -535,7 +524,11 @@ impl Job<'_> {
             }
         }
         if let Some(want) = file.sha256 {
-            verify_sha256(model, &part, file.path, want, self.token).await?;
+            match verify_sha256(model, &part, file.path, want, self.token).await {
+                Ok(()) => {}
+                Err(Error::Cancelled) => return Err(Error::Cancelled),
+                Err(error) => return Err(discard(&part, error).await),
+            }
         }
         tokio::fs::rename(&part, &dest)
             .await
@@ -712,6 +705,20 @@ async fn verify_sha256(
     }
     tracing::debug!(%model, path, elapsed_ms, "checksum verified");
     Ok(())
+}
+
+// a failure other than a dropped connection may have left bad data in
+// `part`; a dropped connection leaves a clean prefix the next download
+// resumes
+async fn discard(part: &Path, error: Error) -> Error {
+    match tokio::fs::remove_file(part).await {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            tracing::error!(path = %part.display(), error = %e, "could not delete partial file")
+        }
+    }
+    error
 }
 
 async fn file_len(path: &Path) -> Option<u64> {
