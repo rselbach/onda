@@ -33,10 +33,18 @@
     if (typeof release.version !== "string" || !Array.isArray(release.artifacts)) {
       throw new Error("feed payload has no version or artifacts");
     }
-    release.artifacts = release.artifacts.filter(
-      (a) => typeof a.url === "string" && a.url.startsWith(ASSET_PREFIX),
-    );
+    release.artifacts = release.artifacts.filter((a) => isReleaseAsset(a.url));
     return release;
+  }
+
+  // parsed first, so a path like ".../download/../../other/repo" that
+  // leaves the release folder is rejected the way the browser resolves it
+  function isReleaseAsset(url) {
+    try {
+      return typeof url === "string" && new URL(url).href.startsWith(ASSET_PREFIX);
+    } catch {
+      return false;
+    }
   }
 
   // returns { os: "macos" | "linux" | "windows" | "other", arch?: "arm64" | "x86_64" }
