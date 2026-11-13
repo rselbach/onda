@@ -2,7 +2,7 @@
 //! (DL-2, DL-4).
 
 use crate::messages::UserMessage;
-use crate::routing::percent;
+use crate::tray::percent;
 use crate::types::MonoTime;
 use std::time::Duration;
 

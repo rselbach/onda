@@ -3,6 +3,7 @@
 
 use crate::languages::{Language, LanguageSetting, display_name_for_code};
 use crate::models::{Catalog, ModelFamily, ModelId, PARAKEET_ULTRA_LANGUAGES};
+use crate::tray::percent;
 
 /// One model offered for a language.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -282,12 +283,6 @@ fn note_action(catalog: &Catalog, model: ModelId, availability: ModelAvailabilit
         label,
         enabled,
     }
-}
-
-/// Whole percent for a progress fraction, truncated and clamped to 0..=100.
-pub fn percent(progress: f64) -> u8 {
-    // the clamp keeps the cast in range; NaN casts to 0
-    (progress.clamp(0.0, 1.0) * 100.0) as u8
 }
 
 #[cfg(test)]
@@ -1220,45 +1215,6 @@ mod tests {
                 .as_ref()
                 .map(|a| (a.label.as_str(), a.kind, a.enabled));
             assert_eq!(got, tc.want_action, "{}", tc.name);
-        }
-    }
-
-    #[test]
-    fn percent_truncates_and_clamps() {
-        struct Case {
-            name: &'static str,
-            progress: f64,
-            want: u8,
-        }
-        let cases = [
-            Case {
-                name: "truncates",
-                progress: 0.429,
-                want: 42,
-            },
-            Case {
-                name: "full",
-                progress: 1.0,
-                want: 100,
-            },
-            Case {
-                name: "over",
-                progress: 1.5,
-                want: 100,
-            },
-            Case {
-                name: "negative",
-                progress: -0.2,
-                want: 0,
-            },
-            Case {
-                name: "nan",
-                progress: f64::NAN,
-                want: 0,
-            },
-        ];
-        for tc in cases {
-            assert_eq!(percent(tc.progress), tc.want, "{}", tc.name);
         }
     }
 }

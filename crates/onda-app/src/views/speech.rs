@@ -5,8 +5,9 @@ use onda_domain::model_selection::has_delete_control;
 use onda_domain::models::{Catalog, ModelId};
 use onda_domain::non_dictation_ui::DownloadTracker;
 use onda_domain::routing::{
-    ModelAvailability, NoteActionKind, compatibility_note, percent, recommended_model, supports,
+    ModelAvailability, NoteActionKind, compatibility_note, recommended_model, supports,
 };
+use onda_domain::tray::percent;
 
 /// One "Language" picker entry (WIN-18).
 #[derive(Debug, Clone, PartialEq, Eq)]
