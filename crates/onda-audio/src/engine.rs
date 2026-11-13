@@ -189,6 +189,8 @@ struct Prepared<I> {
     input: I,
     resampler: Resampler,
     running: bool,
+    // the input channel recorded as mono
+    channel: usize,
 }
 
 struct Capture {
@@ -457,6 +459,7 @@ impl<B: Backend> Engine<B> {
             input,
             resampler,
             running: false,
+            channel: 0,
         });
         self.needs_rebuild = false;
         Ok(())
@@ -491,10 +494,10 @@ impl<B: Backend> Engine<B> {
             return;
         }
         let channels = prepared.input.channels().max(1);
-        let channel = loudest_channel(&self.raw, channels);
+        prepared.channel = pick_channel(&self.raw, channels, prepared.channel);
         self.mono.clear();
         self.mono
-            .extend(self.raw.iter().skip(channel).step_by(channels));
+            .extend(self.raw.iter().skip(prepared.channel).step_by(channels));
 
         let Some(capture) = self.capture.as_mut() else {
             if !prepared.running {
@@ -676,7 +679,10 @@ impl<B: Backend> Engine<B> {
 // the channel of interleaved `raw` with the most energy, the lowest on a
 // tie. a microphone on input 2 of an interface leaves channel 0 silent, and
 // mixing instead would halve a microphone that has one channel to itself.
-fn loudest_channel(raw: &[f32], channels: usize) -> usize {
+// the loudest channel once it has over 4x the energy of `current` (6 dB),
+// else `current`: channels of similar energy, like a stereo pair, would
+// otherwise trade places every batch and splice their waveforms
+fn pick_channel(raw: &[f32], channels: usize, current: usize) -> usize {
     let energy = |channel: usize| -> f32 {
         raw.iter()
             .skip(channel)
@@ -691,7 +697,10 @@ fn loudest_channel(raw: &[f32], channels: usize) -> usize {
             loudest = (channel, energy);
         }
     }
-    loudest.0
+    match loudest.1 > 4.0 * energy(current) {
+        true => loudest.0,
+        false => current,
+    }
 }
 
 fn emit(events: &Sender<AudioEvent>, event: AudioEvent) {
@@ -723,6 +732,8 @@ mod tests {
         rate: u32,
         channels: usize,
         signal_channel: usize,
+        // what the channels other than `signal_channel` carry
+        other_channels: f32,
         build_failures: VecDeque<AudioError>,
         start_failures: VecDeque<AudioError>,
         builds: Vec<String>,
@@ -757,7 +768,8 @@ mod tests {
         }
 
         // the device delivers `frames` of `value` on `signal_channel` and
-        // silence on the others, if its stream runs and is not stalled.
+        // `other_channels` on the others, if its stream runs and is not
+        // stalled.
         fn deliver(&mut self, frames: usize, value: f32) {
             if !self.running || self.stalled {
                 return;
@@ -767,7 +779,7 @@ mod tests {
                     let sample = if channel == self.signal_channel {
                         value
                     } else {
-                        0.0
+                        self.other_channels
                     };
                     self.queue.push(sample);
                 }
@@ -1134,6 +1146,36 @@ mod tests {
             h.advance(ms(1_000));
             assert!(h.events().is_empty(), "no levels in standby");
         }
+    }
+
+    #[test]
+    fn the_recorded_channel_changes_only_for_a_clearly_louder_one() {
+        let mut h = Harness::new(DeviceSelection::SystemDefault);
+        h.world.borrow_mut().channels = 2;
+        h.world.borrow_mut().other_channels = 0.2;
+        h.start().expect("start");
+        h.advance(ms(500));
+        h.world.borrow_mut().signal_channel = 1;
+        h.advance(ms(500));
+        h.world.borrow_mut().other_channels = 0.0;
+        h.advance(ms(500));
+        let recording = h.stop();
+        let at = |ms: usize| recording.samples[ms * 16];
+        assert!(
+            (at(250) - 0.25).abs() < 0.01,
+            "channel 0 first: {}",
+            at(250)
+        );
+        assert!(
+            (at(750) - 0.2).abs() < 0.01,
+            "a slightly louder channel 1 does not take over: {}",
+            at(750)
+        );
+        assert!(
+            (at(1_250) - 0.25).abs() < 0.01,
+            "a silent channel 0 hands over: {}",
+            at(1_250)
+        );
     }
 
     #[test]
