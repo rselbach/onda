@@ -1822,6 +1822,14 @@ async fn delivery_outcomes_show_their_notices() {
             want_notices: vec!["Transcript Copied to Clipboard"],
         },
         Case {
+            name: "target quit or lost focus (OUT-3)",
+            output_mode: OutputMode::Type,
+            accessibility_at_delivery: true,
+            insert: InsertOutcome::TargetLeft,
+            copy_ok: true,
+            want_notices: vec!["Transcript Copied to Clipboard"],
+        },
+        Case {
             name: "paste failed (OUT-4)",
             output_mode: OutputMode::Type,
             accessibility_at_delivery: true,

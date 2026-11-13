@@ -181,6 +181,9 @@ pub enum UserMessage {
     },
     /// OUT-1: copied because Accessibility is missing.
     TranscriptCopiedToClipboard,
+    /// OUT-3: the app dictated into quit or lost focus before the text
+    /// reached it, so the text was copied instead.
+    TargetLeft,
     /// OUT-4: paste could not be simulated.
     PasteFailed,
     /// OUT-5: the previous clipboard could not be restored.
@@ -236,7 +239,9 @@ impl UserMessage {
             Self::NoSpeechDetected => speech_gate::NO_SPEECH_TITLE,
             Self::MicrophoneUnavailable { .. } => "Microphone Unavailable",
             Self::AudioProcessingError { .. } => "Audio Processing Error",
-            Self::TranscriptCopiedToClipboard => "Transcript Copied to Clipboard",
+            Self::TranscriptCopiedToClipboard | Self::TargetLeft => {
+                "Transcript Copied to Clipboard"
+            }
             Self::PasteFailed => "Paste Failed",
             Self::ClipboardRestoreFailed => "Clipboard Restore Failed",
             Self::CopyFailed => "Copy Failed",
@@ -269,6 +274,10 @@ impl UserMessage {
             Self::MicrophoneUnavailable { error } => error.clone(),
             Self::AudioProcessingError { error } => format!("Failed to process audio: {error}"),
             Self::TranscriptCopiedToClipboard => naming.copied_to_clipboard_body().to_owned(),
+            Self::TargetLeft => {
+                "The app you dictated into quit or lost focus, so Onda copied the transcript instead."
+                    .to_owned()
+            }
             Self::PasteFailed => "Could not simulate paste command. Text is in clipboard.".to_owned(),
             Self::ClipboardRestoreFailed => {
                 "Could not restore your previous clipboard contents. They may have been lost."
@@ -323,6 +332,7 @@ impl UserMessage {
             | Self::MicrophoneUnavailable { .. }
             | Self::AudioProcessingError { .. }
             | Self::TranscriptCopiedToClipboard
+            | Self::TargetLeft
             | Self::PasteFailed
             | Self::ClipboardRestoreFailed
             | Self::CopyFailed
@@ -793,6 +803,14 @@ mod tests {
                 term: "menu bar icon",
                 want_title: "Transcript Copied to Clipboard",
                 want_body: "Grant Accessibility permission in Privacy & Security to enable direct typing into apps.",
+                want_class: MessageClass::Feedback,
+            },
+            Case {
+                name: "target left",
+                message: UserMessage::TargetLeft,
+                term: "menu bar icon",
+                want_title: "Transcript Copied to Clipboard",
+                want_body: "The app you dictated into quit or lost focus, so Onda copied the transcript instead.",
                 want_class: MessageClass::Feedback,
             },
             Case {

@@ -187,3 +187,17 @@ struct PasteboardSnapshotTests {
         NSPasteboard(name: NSPasteboard.Name("edu.greendale.onda-tests.\(UUID().uuidString)"))
     }
 }
+
+struct TargetLeftTests {
+    @Test
+    func `OUT-3: a target that quit has left, an unknown one has not`() throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/true")
+        try process.run()
+        process.waitUntilExit()
+        let gone = TargetApp(processId: UInt32(process.processIdentifier), name: "Troy", appId: nil)
+        #expect(TextOutput.targetLeft(gone))
+        #expect(!TextOutput.targetLeft(nil))
+        #expect(!TextOutput.targetLeft(TargetApp(processId: 0, name: nil, appId: nil)))
+    }
+}

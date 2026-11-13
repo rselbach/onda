@@ -91,6 +91,9 @@ pub struct FieldContents {
 pub enum InsertResult {
     /// The text reached the target.
     Inserted,
+    /// The target quit or lost focus before the fallbacks that type into
+    /// the focused app; the text was copied instead (OUT-3).
+    TargetLeft,
     /// The paste key event could not be created (OUT-4).
     PasteFailed,
     /// The previous clipboard could not be restored (OUT-5).
@@ -464,6 +467,7 @@ impl TextOutput for Shell {
             Arc::new(Delivery(delivery.clone())),
         ) {
             InsertResult::Inserted => InsertOutcome::Inserted,
+            InsertResult::TargetLeft => InsertOutcome::TargetLeft,
             InsertResult::PasteFailed => InsertOutcome::PasteFailed,
             InsertResult::ClipboardRestoreFailed => InsertOutcome::ClipboardRestoreFailed,
             InsertResult::CopyFailed => InsertOutcome::CopyFailed,

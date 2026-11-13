@@ -18,17 +18,7 @@ final class TextOutput: TextOutputPort, @unchecked Sendable {
     private static let vKey: CGKeyCode = 0x09
 
     func focusedTarget() -> TargetApp? {
-        guard AXIsProcessTrusted() else { return nil }
-        // every dictation start waits on this read, and without a timeout a
-        // hung frontmost app holds it for the system default of seconds
-        let systemWide = AXUIElementCreateSystemWide()
-        AXUIElementSetMessagingTimeout(systemWide, Self.readTimeout)
-        guard let element = Self.elementAttribute(
-            systemWide,
-            kAXFocusedUIElementAttribute as CFString
-        ) else { return nil }
-        var pid: pid_t = 0
-        guard AXUIElementGetPid(element, &pid) == .success, pid > 0 else { return nil }
+        guard let pid = Self.focusedPid() else { return nil }
         let app = NSRunningApplication(processIdentifier: pid)
         return TargetApp(
             processId: UInt32(pid),
@@ -57,6 +47,12 @@ final class TextOutput: TextOutputPort, @unchecked Sendable {
         // no earlier point, so a cancel can no longer stop the fallbacks
         if insertViaAccessibility(text, target: target, delivery: delivery) {
             return .inserted
+        }
+        // strategies 3 and 4 reach whatever has focus now, which is no
+        // longer the target once it quit or the user moved on
+        if Self.targetLeft(target) {
+            guard delivery.commit() else { return .cancelled }
+            return copy(text: text) ? .targetLeft : .copyFailed
         }
         switch Self.postUnicode(chunks, delivery: delivery, { $0.post(tap: .cghidEventTap) }) {
         case .posted: return .inserted
@@ -213,6 +209,36 @@ final class TextOutput: TextOutputPort, @unchecked Sendable {
     }
 
     // MARK: - Accessibility helpers
+
+    /// The process that owns the keyboard focus; nil without Accessibility
+    /// or when the read fails.
+    private static func focusedPid() -> pid_t? {
+        guard AXIsProcessTrusted() else { return nil }
+        // every dictation start waits on this read, and without a timeout a
+        // hung frontmost app holds it for the system default of seconds
+        let systemWide = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(systemWide, readTimeout)
+        guard let element = elementAttribute(systemWide, kAXFocusedUIElementAttribute as CFString) else {
+            return nil
+        }
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(element, &pid) == .success, pid > 0 else { return nil }
+        return pid
+    }
+
+    /// The known target quit, or the focus is now in another process. An
+    /// unknown target or an unreadable focus counts as still there.
+    static func targetLeft(_ target: TargetApp?) -> Bool {
+        guard let target, target.processId > 0 else { return false }
+        let pid = pid_t(target.processId)
+        guard let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated else {
+            Log.output.info("Target process \(pid, privacy: .public) quit; copying instead")
+            return true
+        }
+        guard let focused = focusedPid(), focused != pid else { return false }
+        Log.output.info("Focus moved from \(pid, privacy: .public) to \(focused, privacy: .public); copying instead")
+        return true
+    }
 
     private static func focusedElement(target: TargetApp?, timeout: Float) -> AXUIElement? {
         let container = target.flatMap { $0.processId > 0 ? AXUIElementCreateApplication(pid_t($0.processId)) : nil }

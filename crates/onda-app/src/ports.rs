@@ -42,6 +42,9 @@ pub struct FieldText {
 pub enum InsertOutcome {
     /// The text reached the target.
     Inserted,
+    /// The target quit or lost focus before the fallbacks that type into
+    /// the focused app; the text was copied instead (OUT-3).
+    TargetLeft,
     /// The paste key event could not be created; the text stays on the
     /// clipboard (OUT-4).
     PasteFailed,
@@ -59,6 +62,7 @@ impl InsertOutcome {
     pub fn notice(self) -> Option<UserMessage> {
         match self {
             Self::Inserted | Self::Cancelled => None,
+            Self::TargetLeft => Some(UserMessage::TargetLeft),
             Self::PasteFailed => Some(UserMessage::PasteFailed),
             Self::ClipboardRestoreFailed => Some(UserMessage::ClipboardRestoreFailed),
             Self::CopyFailed => Some(UserMessage::CopyFailed),
