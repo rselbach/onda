@@ -10,7 +10,8 @@ name: Release
 # verify: update.json, the signed feed current Onda reads, and appcast.xml,
 # the Sparkle appcast that builds from before the switch still read.
 #
-# Repository secrets (names match the github-deployment-secrets helper):
+# Secrets of the `release` environment, so only jobs deploying from a v* tag
+# can read them (names match the github-deployment-secrets helper):
 #   MACOS_CERTIFICATE_P12_BASE64  Developer ID Application certificate and
 #                                 private key, base64-encoded P12
 #   MACOS_CERTIFICATE_PASSWORD    password of that P12
@@ -22,6 +23,8 @@ name: Release
 #                                 shell/macos/Info.plist and
 #                                 onda_update::PUBLIC_KEY; signs update.json
 #                                 and the legacy appcast's DMG
+#
+# Repository secret:
 #   DEEPSEEK_API_TOKEN            release notes (rselbach/actions/pi-release-notes)
 #
 # GitHub Pages must use "GitHub Actions" as its source.
@@ -130,6 +133,7 @@ jobs:
   macos:
     needs: check-tag
     runs-on: xcode-27
+    environment: release
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -227,6 +231,7 @@ jobs:
   publish:
     needs: [linux, macos, release-notes]
     runs-on: xcode-27
+    environment: release
     steps:
       - name: Checkout
         uses: actions/checkout@v5
