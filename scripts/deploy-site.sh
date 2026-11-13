@@ -15,13 +15,16 @@ die() {
   exit 1
 }
 
-# runs on the VM: installs the snippet, includes it in the rselbach.com server
-# block once, and rolls both files back if nginx rejects the result
+# runs on the VM: installs the snippet uploaded to $1, includes it in the
+# rselbach.com server block once, and rolls both files back if nginx rejects
+# the result
 configure_nginx() {
+  local upload="$1"
   # shellcheck disable=SC2087 # expand the constants locally on purpose
   ssh "${HOST}" bash -s <<REMOTE
 set -euo pipefail
 backup="\$(mktemp -d)"
+trap 'sudo rm -rf "\${backup}" "${upload}"' EXIT
 sudo cp -p "${SERVER_CONF}" "\${backup}/server.conf"
 if [[ -f "${SNIPPET}" ]]; then
   sudo cp -p "${SNIPPET}" "\${backup}/snippet.conf"
@@ -35,8 +38,7 @@ restore() {
   fi
 }
 
-sudo install -m 644 /tmp/onda-site-nginx.conf "${SNIPPET}"
-rm -f /tmp/onda-site-nginx.conf
+sudo install -m 644 "${upload}/site-nginx.conf" "${SNIPPET}"
 if ! grep -qF "include ${SNIPPET};" "${SERVER_CONF}"; then
   if (( \$(grep -c '^ *server_name rselbach.com;' "${SERVER_CONF}") != 1 )); then
     echo "expected one 'server_name rselbach.com;' in ${SERVER_CONF}" >&2
@@ -52,8 +54,11 @@ if ! sudo nginx -t 2>"\${backup}/nginx-t.log"; then
   echo "nginx rejected the configuration; restored the previous files" >&2
   exit 1
 fi
-sudo systemctl reload nginx
-sudo rm -rf "\${backup}"
+if ! sudo systemctl reload nginx; then
+  restore
+  echo "nginx did not reload; restored the previous files" >&2
+  exit 1
+fi
 REMOTE
 }
 
@@ -86,8 +91,11 @@ main() {
   rsync -rlt --delete --delay-updates "${repo}/site/" "${HOST}:${WEB_DIR}/"
   # shellcheck disable=SC2029 # WEB_DIR is a local constant
   ssh "${HOST}" "chmod -R u=rwX,go=rX '${WEB_DIR}'"
-  scp -q "${repo}/scripts/site-nginx.conf" "${HOST}:/tmp/onda-site-nginx.conf"
-  configure_nginx
+  # a private folder, not a fixed /tmp name another user could claim
+  local upload
+  upload="$(ssh "${HOST}" mktemp -d)"
+  scp -q "${repo}/scripts/site-nginx.conf" "${HOST}:${upload}/site-nginx.conf"
+  configure_nginx "${upload}"
   verify
 }
 
