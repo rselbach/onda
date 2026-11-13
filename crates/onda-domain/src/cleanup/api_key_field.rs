@@ -4,8 +4,11 @@
 //! editing, page disappear, window close, and quit. These rules keep those
 //! saves from clobbering the stored key.
 
-/// What the field knows about the stored key.
-#[derive(Debug, Clone, PartialEq, Eq)]
+use std::fmt;
+
+/// What the field knows about the stored key. `Debug` never prints the key
+/// (CLN-8).
+#[derive(Clone, PartialEq, Eq)]
 pub enum KeyBaseline {
     /// The initial load is in flight.
     Loading,
@@ -27,13 +30,33 @@ impl KeyBaseline {
     }
 }
 
-/// A credential-store write the field should perform (CLN-24).
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl fmt::Debug for KeyBaseline {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Loading => f.write_str("Loading"),
+            Self::Unknown => f.write_str("Unknown"),
+            Self::Known(_) => f.write_str("Known(<redacted>)"),
+        }
+    }
+}
+
+/// A credential-store write the field should perform (CLN-24). `Debug`
+/// never prints the key (CLN-8).
+#[derive(Clone, PartialEq, Eq)]
 pub enum KeyWrite {
     /// Store this trimmed key; afterwards the baseline is `Known(key)`.
     Save(String),
     /// Delete the stored key; afterwards the baseline is `Known("")`.
     Delete,
+}
+
+impl fmt::Debug for KeyWrite {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Save(_) => f.write_str("Save(<redacted>)"),
+            Self::Delete => f.write_str("Delete"),
+        }
+    }
 }
 
 /// Decides whether saving `field` writes anything (CLN-24, CLN-25).
@@ -59,6 +82,16 @@ pub fn key_write(baseline: &KeyBaseline, field: &str) -> Option<KeyWrite> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn debug_never_prints_the_key_cln_8() {
+        let printed = format!(
+            "{:?} {:?}",
+            KeyBaseline::Known("sk-troy-barnes".to_owned()),
+            KeyWrite::Save("sk-troy-barnes".to_owned())
+        );
+        assert!(!printed.contains("troy"), "{printed}");
+    }
 
     #[test]
     fn key_write_cln_25() {
