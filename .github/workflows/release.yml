@@ -74,6 +74,50 @@ jobs:
     with:
       version: ${{ github.ref_name }}
 
+  # the notes action installs npm packages whose dependencies float, so it
+  # runs apart from the artifacts and the feed key; only its Markdown
+  # crosses over
+  release-notes:
+    needs: check-tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Validate required secrets
+        env:
+          DEEPSEEK_API_TOKEN: ${{ secrets.DEEPSEEK_API_TOKEN }}
+        run: |
+          if [[ -z "${DEEPSEEK_API_TOKEN}" ]]; then
+            echo "::error::secret DEEPSEEK_API_TOKEN is not set" >&2
+            exit 1
+          fi
+
+      - name: Generate release notes
+        uses: rselbach/actions/pi-release-notes@93af3769b4088fb0bca1dc942e558b774876432f # v1
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_TOKEN }}
+          DEEPSEEK_API_TOKEN: ${{ secrets.DEEPSEEK_API_TOKEN }}
+        with:
+          project-name: Onda
+          project-description: macOS and Linux app for local, on-device speech-to-text dictation.
+          output-file: build/release-notes.md
+          additional-context: >-
+            Keep notes user-facing and concise. Do not include installation
+            instructions; macOS DMG and ZIP and Linux DEB, RPM, Arch, and tar.gz
+            packages are attached. The signed update feed is updated separately.
+
+      - name: Upload release notes
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: build/release-notes.md
+          if-no-files-found: error
+
   macos:
     needs: check-tag
     runs-on: xcode-27
@@ -172,7 +216,7 @@ jobs:
           fi
 
   publish:
-    needs: [linux, macos]
+    needs: [linux, macos, release-notes]
     runs-on: xcode-27
     steps:
       - name: Checkout
@@ -183,16 +227,11 @@ jobs:
       - name: Validate required secrets
         env:
           SPARKLE_EDDSA_PRIVATE_KEY: ${{ secrets.SPARKLE_EDDSA_PRIVATE_KEY }}
-          DEEPSEEK_API_TOKEN: ${{ secrets.DEEPSEEK_API_TOKEN }}
         run: |
-          missing=0
-          for name in SPARKLE_EDDSA_PRIVATE_KEY DEEPSEEK_API_TOKEN; do
-            if [[ -z "${!name}" ]]; then
-              echo "::error::secret ${name} is not set" >&2
-              missing=1
-            fi
-          done
-          exit "${missing}"
+          if [[ -z "${SPARKLE_EDDSA_PRIVATE_KEY}" ]]; then
+            echo "::error::secret SPARKLE_EDDSA_PRIVATE_KEY is not set" >&2
+            exit 1
+          fi
 
       - name: Set version
         id: version
@@ -208,29 +247,27 @@ jobs:
       - name: Prepare the update tool
         run: chmod +x build/onda-update-tool
 
-      - name: Download Linux packages
+      # by exact name: any job in this run can upload an artifact, and a
+      # pattern would sign whatever matched
+      - name: Download x86_64 Linux packages
         uses: actions/download-artifact@v4
         with:
-          pattern: onda-linux-*
-          merge-multiple: true
+          name: onda-linux-x86_64
           path: build/linux
 
-      - name: Generate release notes
-        id: release_notes
-        # pinned to a commit because it runs beside the artifacts the next
-        # steps sign
-        uses: rselbach/actions/pi-release-notes@93af3769b4088fb0bca1dc942e558b774876432f # v1
-        env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_TOKEN }}
-          DEEPSEEK_API_TOKEN: ${{ secrets.DEEPSEEK_API_TOKEN }}
+      - name: Download arm64 Linux packages
+        uses: actions/download-artifact@v4
         with:
-          project-name: Onda
-          project-description: macOS and Linux app for local, on-device speech-to-text dictation.
-          output-file: build/release-notes.md
-          additional-context: >-
-            Keep notes user-facing and concise. Do not include installation
-            instructions; macOS DMG and ZIP and Linux DEB, RPM, Arch, and tar.gz
-            packages are attached. The signed update feed is updated separately.
+          name: onda-linux-arm64
+          path: build/linux
+
+      # outside build/: the artifact is untrusted and must not be able to
+      # overwrite a file the next steps sign
+      - name: Download release notes
+        uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+          path: ${{ runner.temp }}/release-notes
 
       - name: Sign the legacy Sparkle appcast
         env:
@@ -308,7 +345,7 @@ jobs:
             build/linux/*.pkg.tar.zst
             build/linux/*.tar.gz
             build/linux/*.sha256
-          body_path: ${{ steps.release_notes.outputs.body-path }}
+          body_path: ${{ runner.temp }}/release-notes/release-notes.md
 
       - name: Verify the published Linux checksum files
         run: |
