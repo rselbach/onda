@@ -2025,7 +2025,7 @@ async fn his_19_his_21_his_26_search_sections_and_empty_states() {
         page.content,
         HistoryContent::Empty {
             title: "History Is Off".to_owned(),
-            message: "Turn it on to keep your transcripts on this Mac.".to_owned(),
+            message: "Turn it on to keep your transcripts on this computer.".to_owned(),
             action: Some("Turn On History".to_owned()),
         }
     );

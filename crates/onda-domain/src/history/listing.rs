@@ -258,7 +258,7 @@ impl EmptyState {
             }),
             Self::HistoryOff => Some(EmptyStateCopy {
                 title: "History Is Off",
-                message: "Turn it on to keep your transcripts on this Mac.",
+                message: "Turn it on to keep your transcripts on this computer.",
                 action: Some("Turn On History"),
             }),
             Self::NoSearchResults => None,
@@ -822,7 +822,7 @@ mod tests {
                 state: EmptyState::HistoryOff,
                 want: Some(EmptyStateCopy {
                     title: "History Is Off",
-                    message: "Turn it on to keep your transcripts on this Mac.",
+                    message: "Turn it on to keep your transcripts on this computer.",
                     action: Some("Turn On History"),
                 }),
             },
