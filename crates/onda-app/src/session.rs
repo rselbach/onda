@@ -497,6 +497,10 @@ impl Actor {
                 return;
             }
             self.handle(msg);
+            // a failed or aborted start returns to idle without go_idle
+            if let Phase::Idle = self.phase {
+                self.apply_deferred();
+            }
             self.publish();
         }
     }
@@ -1476,10 +1480,14 @@ impl Actor {
             self.preventing_sleep = false;
             self.effects.send(Effect::AllowIdleSleep);
         }
+        self.apply_deferred();
+    }
+
+    // model changes that waited for the session to end (DICT-29)
+    fn apply_deferred(&mut self) {
         if let Some(model) = self.reload_when_idle.take() {
             self.reload_after_download(model);
         }
-        // a "Download & Use" that finished mid-session applies now (DICT-29)
         if let Some(model) = self.pending.session_idle(&self.downloaded) {
             self.switch_model(model, false);
         }
@@ -1729,16 +1737,17 @@ impl Actor {
         }
         self.loads.download_ended(model);
         match self.phase {
-            // the engine is in use; the reload waits for the session to end,
-            // as a "Download & Use" does (DICT-29)
-            Phase::Recording(_) | Phase::Transcribing(_) => {
+            // the engine is in use, or about to be; the reload waits for the
+            // session to end, as a "Download & Use" does (DICT-29)
+            Phase::Starting(_)
+            | Phase::Aborting(_)
+            | Phase::Recording(_)
+            | Phase::Transcribing(_) => {
                 if model == self.settings.selected_model {
                     self.reload_when_idle = Some(model);
                 }
             }
-            Phase::Idle | Phase::Starting(_) | Phase::Aborting(_) => {
-                self.reload_after_download(model);
-            }
+            Phase::Idle => self.reload_after_download(model),
         }
         let idle = matches!(self.phase, Phase::Idle);
         if let Some(selected) = self.pending.download_finished(model, idle) {

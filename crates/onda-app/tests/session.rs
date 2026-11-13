@@ -2290,6 +2290,76 @@ async fn dict_29_download_and_use_applies_when_the_session_ends() {
     assert_eq!(h.tray().icon, TrayIcon::Ready);
 }
 
+// the clock moves only after the held start is released: a running blocking
+// task stops a paused clock from advancing
+#[tokio::test(start_paused = true)]
+async fn dict_29_download_and_use_applies_after_a_failed_start() {
+    let h = Harness::with(|s| s.activation_mode = ActivationMode::Toggle).await;
+    let opening = h.audio.hold_next_start();
+    h.tap();
+    eventually("the microphone opening", || opening.started()).await;
+    h.app.download_and_use(ModelId::ParakeetUnified);
+    lock(&h.models.downloaded).push(ModelId::ParakeetUnified);
+    h.app.download_event(common::download(
+        ModelId::ParakeetUnified,
+        onda_app::seams::DownloadUpdateKind::Finished,
+    ));
+    eventually("the download", || !h.log.with("download:").is_empty()).await;
+    assert!(h.log.with("settings:").is_empty(), "waits for the start");
+    *lock(&h.audio.start_error) = Some(UserMessage::MicrophoneUnavailable {
+        error: "Greendale's microphone is unplugged".to_owned(),
+    });
+    opening.release();
+    sleep(100).await;
+    assert_eq!(
+        h.log.with("settings:"),
+        vec!["settings:selected parakeet-unified"]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_selected_models_download_waits_for_a_pending_start() {
+    let h = Harness::with(|s| s.activation_mode = ActivationMode::Toggle).await;
+    {
+        let mut settings = lock(&h.settings.settings);
+        settings.selected_model = ModelId::ParakeetUnified;
+        settings.stored_model = ModelId::ParakeetUnified.as_str().to_owned();
+    }
+    let opening = h.audio.hold_next_start();
+    h.tap();
+    eventually("the microphone opening", || opening.started()).await;
+    lock(&h.models.downloaded).push(ModelId::ParakeetUnified);
+    h.app.download_event(common::download(
+        ModelId::ParakeetUnified,
+        onda_app::seams::DownloadUpdateKind::Finished,
+    ));
+    opening.release();
+    sleep(500).await;
+    assert_eq!(h.tray().icon, TrayIcon::Recording);
+    h.tap();
+    sleep(1_000).await;
+    assert_eq!(h.typed(), vec!["hello world"]);
+    let calls = h.script.calls();
+    let at = |call: &EngineCall| {
+        calls
+            .iter()
+            .position(|c| c == call)
+            .unwrap_or_else(|| panic!("no {call:?}: {calls:?}"))
+    };
+    let decoded = calls
+        .iter()
+        .position(|c| matches!(c, EngineCall::Final(_)))
+        .unwrap_or_else(|| panic!("no final decode: {calls:?}"));
+    assert!(
+        decoded < at(&EngineCall::Unload(ModelId::ParakeetTdtV2)),
+        "the engine about to be used stays loaded: {calls:?}"
+    );
+    assert_eq!(
+        calls.last(),
+        Some(&EngineCall::Load(ModelId::ParakeetUnified))
+    );
+}
+
 #[tokio::test(start_paused = true)]
 async fn the_selected_models_download_finishing_mid_session_reloads_afterwards() {
     let h = Harness::with(|s| s.activation_mode = ActivationMode::Toggle).await;
