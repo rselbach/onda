@@ -315,9 +315,19 @@ impl Settings {
         self.put(Key::HistoryKeepsAudio, Value::from(enabled))
     }
 
-    /// How long history is kept. Default `month`.
+    /// How long history is kept. Default `month`. A stored value this build
+    /// does not recognize reads as `forever`: it may come from a newer build,
+    /// and a guessed shorter limit would delete history.
     pub fn history_retention(&self) -> HistoryRetention {
-        self.enum_value()
+        if self.raw(Key::HistoryRetention).is_none() {
+            return HistoryRetention::default();
+        }
+        self.string(Key::HistoryRetention)
+            .and_then(|raw| HistoryRetention::from_setting(&raw))
+            .unwrap_or_else(|| {
+                tracing::warn!(key = %Key::HistoryRetention, "unrecognized value; keeping all history");
+                HistoryRetention::Forever
+            })
     }
 
     /// Stores `historyRetention`.

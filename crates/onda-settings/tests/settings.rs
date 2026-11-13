@@ -445,8 +445,6 @@ fn corrupt_values_read_as_defaults_set_2() {
         ("hotkey".into(), json!(null)),
         ("hotkeyActivationMode".into(), json!("changnesia")),
         ("hotkeyActivationMode".into(), json!(0)),
-        ("historyRetention".into(), json!("fortnight")),
-        ("historyRetention".into(), json!(30)),
         ("replacementEntries".into(), json!("{broken")),
         ("replacementEntries".into(), json!({"id": "x"})),
         ("replacementEntries".into(), json!([{"id": "a"}])),
@@ -481,6 +479,18 @@ fn corrupt_values_read_as_defaults_set_2() {
         let (_dir, settings) = with_json(&file);
         assert_eq!(snapshot(&settings), defaults(), "{key} = {bad}");
         assert!(settings.first_run_pending(), "{key} = {bad}");
+    }
+}
+
+#[test]
+fn unrecognized_history_retention_keeps_everything() {
+    for bad in [json!("fortnight"), json!(30)] {
+        let (_dir, settings) = with_json(&json!({ "historyRetention": bad.clone() }));
+        assert_eq!(
+            settings.history_retention(),
+            HistoryRetention::Forever,
+            "{bad}"
+        );
     }
 }
 
@@ -878,7 +888,7 @@ fn canonicalize_rewrites_stale_values_once_set_3() {
     let want = json!({
         "outputMode": "type",
         "hotkeyActivationMode": "hold",
-        "historyRetention": "month",
+        "historyRetention": "forever",
         "openRouterModel": "google/gemini-3.1-flash-lite",
         "inputDeviceUID": "GreendalePodcastMicrophone",
     });
