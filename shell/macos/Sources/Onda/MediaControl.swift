@@ -17,10 +17,12 @@ final class MediaControl: MediaControlPort, Sendable {
 
     private let library: URL
     private let script: URL
+    private let muteRecord: URL
 
     /// Nil when the adapter's dylib or helper script is missing; the core
-    /// then never pauses media.
-    init?() {
+    /// then never pauses media. `muteRecord` is where a mute is remembered
+    /// until it is undone (`OutputMute.restore`).
+    init?(muteRecord: URL) {
         guard let library = Self.locateLibrary() else {
             Log.media.error("MediaRemoteAdapter library not found; media pause unavailable")
             return nil
@@ -31,6 +33,7 @@ final class MediaControl: MediaControlPort, Sendable {
         }
         self.library = library
         self.script = script
+        self.muteRecord = muteRecord
     }
 
     /// The raw now-playing facts; the core decides whether they mean
@@ -75,11 +78,11 @@ final class MediaControl: MediaControlPort, Sendable {
     }
 
     func muteAudibleOutput() -> UInt32? {
-        OutputMute.muteIfAudible()
+        OutputMute.muteIfAudible(record: muteRecord)
     }
 
     func unmuteOutput(device: UInt32) -> Bool {
-        OutputMute.unmute(device)
+        OutputMute.unmute(device, record: muteRecord)
     }
 
     private func command(_ name: String) -> Bool {

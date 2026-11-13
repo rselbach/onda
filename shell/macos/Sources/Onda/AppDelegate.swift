@@ -19,6 +19,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_: Notification) {
         let dataDir = Self.dataDirectory()
+        let muteRecord = dataDir.appending(path: OutputMute.recordName)
+        OutputMute.restore(record: muteRecord)
         let hotkeyBridge = HotkeyBridge()
         let permissions = Permissions()
         Log.system.info(
@@ -37,7 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             loginItem: LoginItem(),
             updater: Updater(),
             updateHost: Updater.host(isolated: isolated),
-            media: MediaControl(),
+            media: MediaControl(muteRecord: muteRecord),
             systemSpeech: SystemSpeech(),
             onDevice: OnDeviceCleanup()
         )
