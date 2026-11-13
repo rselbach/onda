@@ -449,8 +449,8 @@ impl Job<'_> {
     }
 
     /// Fetches every file. When this run hashed all of them, marks the
-    /// folder verified so the first load skips a second hash; files kept from
-    /// an earlier run leave that to the load.
+    /// folder verified so the first load skips a second hash; unhashed files
+    /// kept from an earlier run leave that to the load.
     async fn fetch_all(&mut self, manifest: &ModelManifest, folder: &Path) -> Result<(), Error> {
         let mut done = 0;
         let mut fetched_all = true;
@@ -474,9 +474,9 @@ impl Job<'_> {
 
     /// Downloads one file to `<path>.part`, retrying with backoff, verifies
     /// its hash, and renames it into place. A file already in place with the
-    /// right size was verified by an earlier run and is skipped. `done` is
-    /// the byte count of the files before this one. Returns whether the file
-    /// was fetched (and so verified) by this call.
+    /// right size is kept once its hash matches: a new revision can change a
+    /// file's bytes but not its size. `done` is the byte count of the files
+    /// before this one. Returns whether this call verified the file.
     async fn fetch_file(
         &mut self,
         manifest: &ModelManifest,
@@ -487,7 +487,16 @@ impl Job<'_> {
         let model = self.model;
         let dest = folder.join(file.path);
         if file_len(&dest).await == Some(file.size) {
-            return Ok(false);
+            let Some(want) = file.sha256 else {
+                return Ok(false);
+            };
+            match verify_sha256(model, &dest, file.path, want, self.token).await {
+                Ok(()) => return Ok(true),
+                Err(Error::Download(_)) => tokio::fs::remove_file(&dest)
+                    .await
+                    .map_err(|e| Error::Io(format!("Could not delete {}: {e}", dest.display())))?,
+                Err(error) => return Err(error),
+            }
         }
         let part = part_path(&dest);
         if let Some(parent) = dest.parent() {

@@ -219,7 +219,7 @@ async fn fresh_download_writes_marker() {
 }
 
 #[tokio::test]
-async fn download_keeping_earlier_files_leaves_verification_to_load() {
+async fn download_keeping_earlier_files_hashes_them_once() {
     let f = Fixture::new().await;
     let (path, content) = fixture_files()
         .into_iter()
@@ -231,12 +231,11 @@ async fn download_keeping_earlier_files_leaves_verification_to_load() {
 
     f.manager.download(MODEL).await.expect("download");
     assert!(f.server.requests_for(WEIGHTS).is_empty());
-    assert!(!f.model_dir().join(VERIFIED_MARKER).exists());
+    assert!(f.model_dir().join(VERIFIED_MARKER).is_file());
     let mut hashed = false;
     let result = f.manager.verify(MODEL, &mut |_| hashed = true);
     assert_eq!(result, Ok(()));
-    assert!(hashed);
-    assert!(f.model_dir().join(VERIFIED_MARKER).is_file());
+    assert!(!hashed, "the download already hashed the kept file");
 }
 
 #[test]

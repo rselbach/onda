@@ -319,6 +319,17 @@ async fn failure_keeps_only_resumable_data_dl_4() {
 }
 
 #[tokio::test]
+async fn a_kept_file_with_other_bytes_is_fetched_again() {
+    let f = Fixture::new().await;
+    let marker = f.model_dir().join(MARKER);
+    std::fs::create_dir_all(marker.parent().expect("parent")).expect("folder");
+    std::fs::write(&marker, b"city college community club").expect("stale file");
+    let folder = f.manager.download(MODEL).await.expect("download");
+    assert_installed(&folder);
+    assert_eq!(f.server.requests_for(MARKER).len(), 1);
+}
+
+#[tokio::test]
 async fn unknown_model_is_not_found() {
     let f = Fixture::new().await;
     let got = f.manager.download(ModelId::SystemSpeech).await;
