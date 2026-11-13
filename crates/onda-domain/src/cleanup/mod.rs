@@ -32,8 +32,8 @@ pub use openrouter::{
 };
 pub use outcome::{
     CleanupNotice, CleanupOutcome, CleanupStart, CleanupStep, TEST_FAILED_TITLE, TEST_SAMPLE,
-    after_first_attempt, after_retry, start, test_result_line, test_said_line, unavailable,
-    unavailable_error,
+    after_first_attempt, after_retry, key_unreadable, start, test_result_line, test_said_line,
+    unavailable, unavailable_error,
 };
 pub use prompt::{BlankPrompt, CleanupPrompt, SYSTEM_PROMPT};
 pub use provider::{CleanupProvider, ModelListing, OnDeviceStatus};

@@ -158,6 +158,20 @@ pub fn unavailable(provider: CleanupProvider) -> CleanupOutcome {
     }
 }
 
+/// The outcome when the credential store holds a key that cannot be read,
+/// e.g. a locked keychain. Raw transcript, with a notice so the failure is
+/// not mistaken for a missing key (CLN-2).
+pub fn key_unreadable(provider: CleanupProvider) -> CleanupOutcome {
+    let error = format!("{} API key could not be read.", provider.display_name());
+    CleanupOutcome::FellBack {
+        notice: Some(CleanupNotice::CouldNotRefine {
+            provider,
+            error: error.clone(),
+        }),
+        error,
+    }
+}
+
 /// The decision after request 1.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CleanupStep {

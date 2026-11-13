@@ -1446,6 +1446,21 @@ async fn cln_2_missing_key_delivers_raw_silently() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn cln_2_an_unreadable_key_delivers_raw_with_a_notice() {
+    let h = Harness::with(|s| s.cleanup_enabled = true).await;
+    *lock(&h.secrets.0) = Err("the keychain is locked".to_owned());
+    h.dictate().await;
+    assert_eq!(h.cleanup.calls(), 0);
+    assert_eq!(h.typed(), vec!["hello world"]);
+    assert_eq!(h.notices(), vec!["Couldn't Refine Transcript"]);
+    let entry = &h.history.entries()[0];
+    assert_eq!(
+        entry.post_processing_error_description.as_deref(),
+        Some("OpenRouter API key could not be read.")
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn apple_intelligence_cleans_on_device_without_a_key() {
     use onda_domain::cleanup::{APPLE_MODELS, CleanupProvider, OnDeviceStatus};
 

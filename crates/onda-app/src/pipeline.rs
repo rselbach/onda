@@ -286,11 +286,11 @@ async fn ready(job: &CleanupJob) -> Result<Option<String>, CleanupOutcome> {
         Ok(Ok(key)) => Ok(key),
         Ok(Err(error)) => {
             tracing::warn!(%error, provider = provider.id(), "could not read the cleanup API key");
-            Ok(None)
+            Err(cleanup::key_unreadable(provider))
         }
         Err(error) => {
             tracing::error!(%error, "key read failed");
-            Ok(None)
+            Err(cleanup::key_unreadable(provider))
         }
     }
 }
