@@ -9,14 +9,15 @@ enum OutputMute {
     private static let system = AudioObjectID(kAudioObjectSystemObject)
 
     /// Mutes the default output device when another process is playing
-    /// through an output and the device is not muted already. Returns the
-    /// muted device for `unmute`.
+    /// through it and the device is not muted already. Returns the muted
+    /// device for `unmute`. Nothing is muted while another process records
+    /// and plays at once, such as a call, since muting would cut it off.
     static func muteIfAudible() -> AudioObjectID? {
-        guard let player = playingProcess() else { return nil }
         guard let device = value(kAudioHardwarePropertyDefaultOutputDevice, of: system, AudioObjectID(0)) else {
             Log.media.warning("No default audio output to mute")
             return nil
         }
+        guard let player = playingProcess(on: device) else { return nil }
         // a device the user muted stays theirs to unmute
         guard value(kAudioDevicePropertyMute, kAudioDevicePropertyScopeOutput, of: device, UInt32(0)) == 0 else {
             return nil
@@ -37,21 +38,41 @@ enum OutputMute {
         return unmuted
     }
 
-    /// The bundle identifier of a process other than Onda that is running
-    /// audio output.
-    private static func playingProcess() -> String? {
-        var address = address(kAudioHardwarePropertyProcessObjectList)
-        var size: UInt32 = 0
-        guard AudioObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr else { return nil }
-        var processes = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
-        guard AudioObjectGetPropertyData(system, &address, 0, nil, &size, &processes) == noErr else { return nil }
-        let playing = processes.first { process in
-            value(kAudioProcessPropertyIsRunningOutput, of: process, UInt32(0)) == 1
-                && value(kAudioProcessPropertyPID, of: process, pid_t(0)) != getpid()
+    /// The bundle identifier of a process other than Onda that is playing
+    /// through `device`, unless another process is in a call.
+    private static func playingProcess(on device: AudioObjectID) -> String? {
+        let others = objects(kAudioHardwarePropertyProcessObjectList, of: system).filter { process in
+            value(kAudioProcessPropertyPID, of: process, pid_t(0)) != getpid()
+                && value(kAudioProcessPropertyIsRunningOutput, of: process, UInt32(0)) == 1
+        }
+        if let caller = others.first(where: { value(kAudioProcessPropertyIsRunningInput, of: $0, UInt32(0)) == 1 }) {
+            Log.media.info("Not muting: \(bundleID(of: caller), privacy: .public) is recording and playing")
+            return nil
+        }
+        let playing = others.first { process in
+            objects(kAudioProcessPropertyDevices, kAudioObjectPropertyScopeOutput, of: process).contains(device)
         }
         guard let playing else { return nil }
-        let bundle = value(kAudioProcessPropertyBundleID, of: playing, nil as Unmanaged<CFString>?)
+        return bundleID(of: playing)
+    }
+
+    private static func bundleID(of process: AudioObjectID) -> String {
+        let bundle = value(kAudioProcessPropertyBundleID, of: process, nil as Unmanaged<CFString>?)
         return bundle??.takeRetainedValue() as String? ?? "unknown"
+    }
+
+    /// A list-of-objects property; empty when the object does not have it.
+    private static func objects(
+        _ selector: AudioObjectPropertySelector,
+        _ scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal,
+        of object: AudioObjectID
+    ) -> [AudioObjectID] {
+        var address = address(selector, scope)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(object, &address, 0, nil, &size) == noErr else { return [] }
+        var objects = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(object, &address, 0, nil, &size, &objects) == noErr else { return [] }
+        return objects
     }
 
     private static func set(muted: Bool, on device: AudioObjectID) -> Bool {
