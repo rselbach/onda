@@ -957,11 +957,12 @@ async fn upd_8_the_update_restart_waits_for_dictation() {
     assert!(h.menu().update.enabled);
     h.app.update_action(UpdateAction::Restart);
     h.app.update_action(UpdateAction::Download);
-    sleep(10).await;
-    assert_eq!(
-        h.log.with("updater:"),
-        vec!["updater:restart", "updater:download"]
-    );
+    // the restart runs on a blocking thread and the download on the effects
+    // queue, so either may log first
+    eventually("both updater calls", || h.log.with("updater:").len() >= 2).await;
+    let mut calls = h.log.with("updater:");
+    calls.sort();
+    assert_eq!(calls, vec!["updater:download", "updater:restart"]);
 }
 
 #[tokio::test(start_paused = true)]
