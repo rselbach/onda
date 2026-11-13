@@ -1517,9 +1517,11 @@ impl Actor {
         // nothing is delivered and no audio is kept (DICT-28a)
         self.cancel();
         self.redelivery = None;
-        if let Phase::Aborting(_) = self.phase {
-            self.phase = Phase::Idle;
+        if let Phase::Aborting(starting) = std::mem::replace(&mut self.phase, Phase::Idle) {
             self.ports.audio.stop();
+            if starting.opening.is_some_and(|opening| opening.media_begun) {
+                self.end_media(starting.id);
+            }
         }
         self.failed_audio = None;
         self.publish();

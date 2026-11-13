@@ -2648,3 +2648,19 @@ async fn dict_28a_quit_cancels_resumes_media_and_delivers_nothing() {
     assert_eq!(log.with("media:"), vec!["media:pause", "media:play"]);
     assert!(lock(&text.typed).is_empty());
 }
+
+// real time: the held start is a running blocking task, which stops a
+// paused clock from advancing to the shutdown drain's timers
+#[tokio::test]
+async fn dict_28a_quit_while_the_microphone_opens_resumes_media() {
+    let h = Harness::with(|s| s.pause_media = true).await;
+    h.media.playing_default.store(true, Ordering::SeqCst);
+    let opening = h.audio.hold_next_start();
+    h.stop_now();
+    eventually("the microphone opening", || opening.started()).await;
+    eventually("the media pause", || !h.log.with("media:pause").is_empty()).await;
+    let log = h.log.clone();
+    h.app.shutdown_async().await;
+    opening.release();
+    assert_eq!(log.with("media:"), vec!["media:pause", "media:play"]);
+}

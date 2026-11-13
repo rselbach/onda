@@ -490,9 +490,17 @@ pub struct FakeAudio {
     pub start_error: Mutex<Option<UserMessage>>,
     pub starts: AtomicU64,
     pub released_at: Mutex<Option<usize>>,
+    hold_start: Mutex<Option<Arc<Hold>>>,
 }
 
 impl FakeAudio {
+    /// Blocks the next `start` until the hold is released.
+    pub fn hold_next_start(&self) -> Arc<Hold> {
+        let hold = Hold::new();
+        *lock(&self.hold_start) = Some(hold.clone());
+        hold
+    }
+
     /// Samples every new capture starts with.
     pub fn starts_with(&self, samples: Vec<f32>) {
         *lock(&self.on_start) = samples;
@@ -515,6 +523,7 @@ impl FakeAudio {
 impl AudioSource for FakeAudio {
     fn start(&self) -> Result<CaptureInfo, UserMessage> {
         self.starts.fetch_add(1, Ordering::SeqCst);
+        wait_at(&self.hold_start);
         if let Some(error) = lock(&self.start_error).clone() {
             return Err(error);
         }
