@@ -3,6 +3,7 @@
 
 use std::time::Duration;
 
+use crate::joiner::is_written_without_spaces;
 use crate::level::rms_level;
 use crate::pre_roll::SAMPLE_RATE;
 use crate::types::MonoTime;
@@ -154,16 +155,13 @@ impl Stabilizer {
 
     /// Returns the text to display for the newly decoded `text`.
     ///
-    /// Words are separated by spaces. Agreement ignores case and leading or
+    /// Words are separated by spaces, and each letter of a script written
+    /// without spaces is a word of its own. Agreement ignores case and leading or
     /// trailing non-alphanumeric characters. Newly agreed words freeze in the
     /// older decode's spelling; frozen words are never rewritten or dropped,
     /// so a shorter decode still shows them.
     pub fn stabilize(&mut self, text: &str) -> String {
-        let words: Vec<String> = text
-            .split(' ')
-            .filter(|w| !w.is_empty())
-            .map(str::to_owned)
-            .collect();
+        let words = split_words(text);
         let agreed = agreement_len(&self.previous, &words);
         if agreed > self.committed.len() {
             let newly_agreed = &self.previous[self.committed.len()..agreed];
@@ -172,9 +170,9 @@ impl Stabilizer {
         let tail = words
             .get(tail_start(&self.committed, &words)..)
             .unwrap_or_default();
-        let shown = [self.committed.as_slice(), tail].concat().join(" ");
+        let shown = [self.committed.as_slice(), tail].concat().concat();
         self.previous = words;
-        shown
+        shown.trim_start().to_owned()
     }
 
     /// Forgets everything, for a new recording.
@@ -205,6 +203,34 @@ fn tail_start(committed: &[String], words: &[String]) -> usize {
         .filter(|&end| matches_at(end))
         .min_by_key(|&end| end.abs_diff(frozen))
         .unwrap_or(frozen)
+}
+
+// every word after the first keeps the one space that came before it, so
+// joining the words restores the text with runs of spaces collapsed
+fn split_words(text: &str) -> Vec<String> {
+    let unspaced_letter = |c: char| c.is_alphanumeric() && is_written_without_spaces(c);
+    let mut words: Vec<String> = Vec::new();
+    let mut spaced = false;
+    for c in text.chars() {
+        if c == ' ' {
+            spaced = true;
+            continue;
+        }
+        let after_unspaced = words
+            .last()
+            .and_then(|word| word.chars().next_back())
+            .is_some_and(unspaced_letter);
+        let starts_word = spaced || unspaced_letter(c) || (c.is_alphanumeric() && after_unspaced);
+        match words.last_mut() {
+            Some(word) if !starts_word => word.push(c),
+            last => {
+                let space = if spaced && last.is_some() { " " } else { "" };
+                words.push(format!("{space}{c}"));
+            }
+        }
+        spaced = false;
+    }
+    words
 }
 
 fn agreement_len(lhs: &[String], rhs: &[String]) -> usize {
@@ -508,6 +534,16 @@ mod tests {
                 name: "repeated spaces do not make empty words",
                 decodes: vec!["troy  and", "troy and  abed"],
                 want_last: "troy and abed",
+            },
+            Case {
+                name: "text without spaces keeps growing after agreement",
+                decodes: vec!["こんにちは", "こんにちは", "こんにちは今日は"],
+                want_last: "こんにちは今日は",
+            },
+            Case {
+                name: "text without spaces freezes letter by letter",
+                decodes: vec!["东京大学", "东京大雪。", "东亰大学。Greendale"],
+                want_last: "东京大学。Greendale",
             },
         ];
         for tc in cases {
