@@ -173,10 +173,20 @@ impl App {
         let actor_events = events.clone();
         let actor_messages = messages.clone();
         let actor_recorder = recorder.clone();
-        runtime.spawn(async move {
+        let actor = runtime.spawn(async move {
             Actor::new(ports, actor_events, actor_messages, actor_recorder)
                 .run(inbox)
                 .await;
+        });
+        // without the actor the app stays up but deaf to hotkeys and menus;
+        // crashing lets the OS report it and the user relaunch
+        runtime.spawn(async move {
+            if let Err(error) = actor.await
+                && error.is_panic()
+            {
+                tracing::error!(%error, "the core panicked; aborting");
+                std::process::abort();
+            }
         });
         Self {
             messages,
