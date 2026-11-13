@@ -21,30 +21,31 @@ use tokio::task::spawn_blocking;
 use crate::ports::{MediaControl, NowPlaying};
 use crate::session::SessionId;
 
-/// The playing query gives up after this long and counts as not playing
-/// (MEDIA-1).
+/// The playing query gives up after this long, and the session then
+/// neither pauses nor mutes (MEDIA-1).
 pub(crate) const QUERY_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Delay before checking that a pause took (MEDIA-1).
 pub(crate) const PAUSE_VERIFICATION_DELAY: Duration = Duration::from_millis(150);
 
 /// Whether a now-playing report means media is playing (MEDIA-1): the
-/// playing flag when reported, else a playback rate above zero. A failed
-/// query, no track, and a track without either fact count as not playing.
-pub(crate) fn is_playing(report: &NowPlaying) -> bool {
+/// playing flag when reported, else a playback rate above zero. No track
+/// and a track without either fact count as not playing; a failed query
+/// is unknown (`None`).
+pub(crate) fn is_playing(report: &NowPlaying) -> Option<bool> {
     match report {
         NowPlaying::Failed { reason } => {
-            tracing::warn!(%reason, "media query failed; treating media as not playing");
-            false
+            tracing::warn!(%reason, "media query failed; leaving media alone");
+            None
         }
         NowPlaying::NoTrack => {
             tracing::info!("no now-playing track");
-            false
+            Some(false)
         }
         NowPlaying::Track {
             is_playing,
             playback_rate,
-        } => is_playing.unwrap_or_else(|| playback_rate.is_some_and(|rate| rate > 0.0)),
+        } => Some(is_playing.unwrap_or_else(|| playback_rate.is_some_and(|rate| rate > 0.0))),
     }
 }
 
@@ -148,9 +149,11 @@ impl Worker {
             // a query that returns after its session ended never pauses
             return;
         }
-        if !playing {
-            self.mute(session).await;
-            return;
+        match playing {
+            // pausing or muting a player Onda cannot see could be wrong
+            None => return,
+            Some(false) => return self.mute(session).await,
+            Some(true) => {}
         }
         if !self.call(|port| port.pause()).await {
             let sent = self.call(|port| port.play_pause_key()).await;
@@ -162,7 +165,7 @@ impl Worker {
         if self.ended_already(session) {
             return;
         }
-        if self.query().await {
+        if self.query().await == Some(true) {
             tracing::info!("media still playing after pause; sending the play/pause key");
             self.call(|port| port.play_pause_key()).await;
         }
@@ -208,7 +211,7 @@ impl Worker {
         }
     }
 
-    async fn query(&self) -> bool {
+    async fn query(&self) -> Option<bool> {
         let port = self.port.clone();
         let guard = self.calls.clone().lock_owned().await;
         let call = spawn_blocking(move || {
@@ -219,11 +222,11 @@ impl Worker {
             Ok(Ok(playing)) => playing,
             Ok(Err(error)) => {
                 tracing::warn!(%error, "media query failed");
-                false
+                None
             }
             Err(_) => {
-                tracing::warn!("media query timed out; treating media as not playing");
-                false
+                tracing::warn!("media query timed out; leaving media alone");
+                None
             }
         }
     }
@@ -373,28 +376,32 @@ mod tests {
             playback_rate,
         };
         let cases = [
-            ("flag says playing", track(Some(true), None), true),
+            ("flag says playing", track(Some(true), None), Some(true)),
             (
                 "flag wins over a zero rate",
                 track(Some(true), Some(0.0)),
-                true,
+                Some(true),
             ),
             (
                 "flag says paused despite a rate",
                 track(Some(false), Some(1.0)),
-                false,
+                Some(false),
             ),
-            ("no flag, positive rate", track(None, Some(1.0)), true),
-            ("no flag, zero rate", track(None, Some(0.0)), false),
-            ("no flag, negative rate", track(None, Some(-1.0)), false),
-            ("neither fact", track(None, None), false),
-            ("no track", NowPlaying::NoTrack, false),
+            ("no flag, positive rate", track(None, Some(1.0)), Some(true)),
+            ("no flag, zero rate", track(None, Some(0.0)), Some(false)),
+            (
+                "no flag, negative rate",
+                track(None, Some(-1.0)),
+                Some(false),
+            ),
+            ("neither fact", track(None, None), Some(false)),
+            ("no track", NowPlaying::NoTrack, Some(false)),
             (
                 "query failed",
                 NowPlaying::Failed {
                     reason: "helper timed out and was stopped".to_owned(),
                 },
-                false,
+                None,
             ),
         ];
         for (name, report, want) in cases {
@@ -556,16 +563,25 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn media_1_a_query_slower_than_500_ms_counts_as_not_playing() {
+    async fn media_1_a_query_slower_than_500_ms_neither_pauses_nor_mutes() {
         let (release, held) = std_mpsc::channel();
-        let fake = Arc::new(Fake::default());
+        let fake = Arc::new(Fake {
+            audible: true,
+            ..Fake::default()
+        });
         *lock(&fake.hold_query) = Some(held);
         let media = Media::spawn(fake.clone());
         media.begin(A);
         eventually("the query", || *lock(&fake.queries) == 1).await;
-        tokio::time::advance(QUERY_TIMEOUT + Duration::from_millis(1)).await;
+        // the worker reacts to each timer before the clock moves again
+        for step in [QUERY_TIMEOUT, MUTE_DELAY] {
+            tokio::time::advance(step + Duration::from_millis(1)).await;
+            for _ in 0..10 {
+                tokio::task::yield_now().await;
+            }
+        }
         // the abandoned query still occupies the queue until it returns
-        // (MEDIA-5); afterwards nothing was paused
+        // (MEDIA-5); afterwards nothing was paused or muted
         let _ = release.send(true);
         media.end(A);
         media.flush().await;
