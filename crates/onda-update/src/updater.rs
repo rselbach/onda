@@ -426,8 +426,14 @@ impl Worker {
             match command {
                 Command::Check => self.check().await,
                 Command::Restart(reply) => {
-                    let relaunching = self.restart().await;
+                    let (relaunching, replacement) = self.restart().await;
                     let _ = reply.send(relaunching);
+                    // after the reply: the caller holds dictation until then
+                    if let Some(release) = replacement {
+                        let outcome = self.act(&release).await;
+                        let status = self.settle(outcome);
+                        self.shared.set_status(status);
+                    }
                 }
             }
             self.shared.finished.fetch_add(1, Ordering::SeqCst);
@@ -665,20 +671,22 @@ impl Worker {
             && matches!(feed::decide(release, &self.install()), Decision::Install(_))
     }
 
-    /// Installs the update [`Updater::restart_to_update`] claimed. First a
-    /// short feed refresh: a newer release replaces the staged one instead
-    /// (the user restarts again once it is ready). A refresh that fails or
-    /// times out (offline) does not hold the restart back: the staged app
-    /// was verified when staged and is verified again before the swap.
-    async fn restart(&self) -> bool {
+    /// Installs the update [`Updater::restart_to_update`] claimed and
+    /// returns whether Onda is relaunching. First a short feed refresh: a
+    /// newer release replaces the staged one instead, returned for the
+    /// caller to download once it has replied (the user restarts again once
+    /// it is ready). A refresh that fails or times out (offline) does not
+    /// hold the restart back: the staged app was verified when staged and is
+    /// verified again before the swap.
+    async fn restart(&self) -> (bool, Option<Release>) {
         let Some(installer) = self.installer.clone() else {
-            return false;
+            return (false, None);
         };
         let staged = {
             let state = self.shared.lock();
             match (&state.status, &state.staged) {
                 (UpdateStatus::Installing { .. }, Some(staged)) => staged.clone(),
-                _ => return false,
+                _ => return (false, None),
             }
         };
         match tokio::time::timeout(self.config.schedule.restart_refresh, self.fetch()).await {
@@ -691,7 +699,7 @@ impl Worker {
                 let outcome = self.act(&release).await;
                 let status = self.settle(outcome);
                 self.shared.set_status(status);
-                return false;
+                return (false, None);
             }
             Ok(Ok(release)) if self.replaces(&release, &staged) => {
                 tracing::info!(
@@ -699,10 +707,7 @@ impl Worker {
                     "a newer update replaces the staged one before restarting"
                 );
                 self.shared.set_status(UpdateStatus::Checking);
-                let outcome = self.act(&release).await;
-                let status = self.settle(outcome);
-                self.shared.set_status(status);
-                return false;
+                return (false, Some(release));
             }
             Ok(Ok(_)) => {}
             Ok(Err(failure)) => {
@@ -729,7 +734,7 @@ impl Worker {
                     "update installed; quitting to relaunch"
                 );
                 self.shared.host.terminate();
-                return true;
+                return (true, None);
             }
             Err(ApplyError::NotApplied(error)) => {
                 tracing::error!(%error, "could not install the update");
@@ -751,7 +756,7 @@ impl Worker {
             }
         };
         self.shared.set_status(UpdateStatus::Failed(failure));
-        false
+        (false, None)
     }
 }
 
@@ -1451,7 +1456,12 @@ mod tests {
         // a newer release takes the restart's place
         fixture.publish(43);
         assert!(!fixture.restart().await);
-        assert_eq!(fixture.updater.snapshot().status, Fixture::ready("2.0.43"));
+        assert_eq!(
+            fixture
+                .settle(|s| matches!(s, UpdateStatus::Ready { .. }))
+                .await,
+            Fixture::ready("2.0.43")
+        );
         assert!(fixture.logged("apply").is_empty());
 
         // offline: the staged update installs anyway
@@ -1463,6 +1473,25 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn a_restart_replies_before_downloading_a_newer_update() {
+        let fixture = Fixture::new(41, true).await;
+        fixture.publish(42);
+        fixture.check().await;
+        fixture.publish(43);
+        fixture.server.behave(ZIP_PATH, Behavior::Hang);
+        let replied = tokio::time::timeout(Duration::from_secs(5), fixture.restart()).await;
+        assert_eq!(
+            replied,
+            Ok(false),
+            "the reply does not wait for the download"
+        );
+        assert!(matches!(
+            fixture.updater.snapshot().status,
+            UpdateStatus::Checking | UpdateStatus::Downloading { .. }
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn a_restart_does_not_wait_again_for_a_newer_update_that_failed() {
         let fixture = Fixture::new(41, true).await;
         fixture.publish(42);
@@ -1470,7 +1499,12 @@ mod tests {
         fixture.publish(43);
         fixture.server.behave(ZIP_PATH, Behavior::Corrupt);
         assert!(!fixture.restart().await, "tries the newer one first");
-        assert_eq!(fixture.updater.snapshot().status, Fixture::ready("2.0.42"));
+        assert_eq!(
+            fixture
+                .settle(|s| matches!(s, UpdateStatus::Ready { .. }))
+                .await,
+            Fixture::ready("2.0.42")
+        );
         assert!(fixture.restart().await, "then installs what is staged");
         assert_eq!(fixture.logged("apply"), ["apply 42"]);
     }

@@ -326,6 +326,8 @@ pub(crate) mod tests {
         /// Redirects to the given path on the same server.
         Redirect(&'static str),
         Fail,
+        /// Never answers.
+        Hang,
     }
 
     #[derive(Default)]
@@ -441,6 +443,7 @@ pub(crate) mod tests {
             return;
         };
         match behavior {
+            Behavior::Hang => return std::future::pending().await,
             Behavior::Fail => {
                 let _ = writer
                     .write_all(
