@@ -283,6 +283,14 @@ pub trait MediaControlPort: Send + Sync {
 
     /// Posts the system play/pause key (a toggle). False on failure.
     fn play_pause_key(&self) -> bool;
+
+    /// Mutes the default audio output when another app is playing through
+    /// an output and the output is not muted already. Returns the muted
+    /// device for `unmute_output`, or nil when nothing was muted.
+    fn mute_audible_output(&self) -> Option<u32>;
+
+    /// Unmutes a device `mute_audible_output` muted. False on failure.
+    fn unmute_output(&self, device: u32) -> bool;
 }
 
 /// Cue playback (SND-2).
@@ -622,6 +630,14 @@ impl MediaControl for ShellMedia {
 
     fn play_pause_key(&self) -> bool {
         self.0.play_pause_key()
+    }
+
+    fn mute_audible_output(&self) -> Option<u32> {
+        self.0.mute_audible_output()
+    }
+
+    fn unmute_output(&self, device: u32) -> bool {
+        self.0.unmute_output(device)
     }
 }
 

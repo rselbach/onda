@@ -6,6 +6,10 @@
 //! still holds the queue until the shell returns. Before each decision the
 //! task looks at commands already queued behind the current one, which is
 //! how the MEDIA-3 races between back-to-back sessions resolve.
+//!
+//! Pause and play reach the system's current player only. When that player
+//! is idle while another app plays, the task mutes the audio output for the
+//! session instead. (Deviation: Jabber leaves such audio playing.)
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -44,6 +48,21 @@ pub(crate) fn is_playing(report: &NowPlaying) -> bool {
     }
 }
 
+/// How long a mute waits after its session's query. The start cue plays
+/// through the output being muted and lasts about 250 ms; the query took
+/// part of that already.
+pub(crate) const MUTE_DELAY: Duration = Duration::from_millis(200);
+
+/// What silenced media for the running session. The next session to begin
+/// inherits it (MEDIA-3).
+#[derive(Clone, Copy)]
+enum Hold {
+    /// The current player took a pause.
+    Paused,
+    /// The output device is muted.
+    Muted(u32),
+}
+
 enum Command {
     Begin(SessionId),
     End(SessionId),
@@ -64,18 +83,19 @@ impl Media {
             calls: Arc::new(Mutex::new(())),
             inbox,
             queued: VecDeque::new(),
-            paused: false,
+            hold: None,
         };
         tokio::spawn(worker.run());
         Self { commands }
     }
 
-    /// A confirmed session started: pause media if it is playing.
+    /// A confirmed session started: pause media if it is playing, or mute
+    /// audio that pause cannot reach.
     pub(crate) fn begin(&self, session: SessionId) {
         let _ = self.commands.send(Command::Begin(session));
     }
 
-    /// A session that began ended: resume media if it paused it.
+    /// A session that began ended: undo what it did to silence media.
     pub(crate) fn end(&self, session: SessionId) {
         let _ = self.commands.send(Command::End(session));
     }
@@ -94,8 +114,7 @@ struct Worker {
     calls: Arc<Mutex<()>>,
     inbox: mpsc::UnboundedReceiver<Command>,
     queued: VecDeque<Command>,
-    // media is paused because of us; the next session to begin inherits it
-    paused: bool,
+    hold: Option<Hold>,
 }
 
 impl Worker {
@@ -119,21 +138,26 @@ impl Worker {
     }
 
     async fn begin(&mut self, session: SessionId) {
-        if self.paused {
-            // a previous session's pause is still in effect: this session
+        if self.hold.is_some() {
+            // a previous session's hold is still in effect: this session
             // owns it now and must not query or pause again (MEDIA-3)
             return;
         }
         let playing = self.query().await;
-        if self.ended_already(session) || !playing {
+        if self.ended_already(session) {
             // a query that returns after its session ended never pauses
             return;
         }
-        if !self.call(|port| port.pause()).await {
-            self.paused = self.call(|port| port.play_pause_key()).await;
+        if !playing {
+            self.mute(session).await;
             return;
         }
-        self.paused = true;
+        if !self.call(|port| port.pause()).await {
+            let sent = self.call(|port| port.play_pause_key()).await;
+            self.hold = sent.then_some(Hold::Paused);
+            return;
+        }
+        self.hold = Some(Hold::Paused);
         tokio::time::sleep(PAUSE_VERIFICATION_DELAY).await;
         if self.ended_already(session) {
             return;
@@ -144,22 +168,43 @@ impl Worker {
         }
     }
 
+    // the current player is idle, so anything audible is out of pause's reach
+    async fn mute(&mut self, session: SessionId) {
+        tokio::time::sleep(MUTE_DELAY).await;
+        if self.ended_already(session) {
+            return;
+        }
+        let muted = self.call(|port| port.mute_audible_output()).await;
+        self.hold = muted.map(Hold::Muted);
+    }
+
     async fn end(&mut self, _session: SessionId) {
-        if !self.paused {
+        let Some(hold) = self.hold else {
             return;
-        }
+        };
         if self.next_session_begins() {
-            // hand our pause to the session that is already starting
+            // hand our hold to the session that is already starting
             return;
         }
-        self.paused = false;
-        if !self.call(|port| port.play()).await {
-            tracing::warn!("could not resume media");
-            return;
-        }
-        if self.next_session_begins() {
-            // the play landed after a new session started: pause again for it
-            self.paused = self.call(|port| port.pause()).await;
+        self.hold = None;
+        match hold {
+            Hold::Muted(device) => {
+                if !self.call(move |port| port.unmute_output(device)).await {
+                    tracing::warn!("could not unmute the audio output");
+                }
+            }
+            Hold::Paused => {
+                if !self.call(|port| port.play()).await {
+                    tracing::warn!("could not resume media");
+                    return;
+                }
+                if self.next_session_begins() {
+                    // the play landed after a new session started: pause
+                    // again for it
+                    let paused = self.call(|port| port.pause()).await;
+                    self.hold = paused.then_some(Hold::Paused);
+                }
+            }
         }
     }
 
@@ -183,7 +228,10 @@ impl Worker {
         }
     }
 
-    async fn call(&self, op: impl FnOnce(&dyn MediaControl) -> bool + Send + 'static) -> bool {
+    async fn call<T: Default + Send + 'static>(
+        &self,
+        op: impl FnOnce(&dyn MediaControl) -> T + Send + 'static,
+    ) -> T {
         let port = self.port.clone();
         let guard = self.calls.clone().lock_owned().await;
         spawn_blocking(move || {
@@ -191,7 +239,7 @@ impl Worker {
             op(port.as_ref())
         })
         .await
-        .unwrap_or(false)
+        .unwrap_or_default()
     }
 
     fn drain(&mut self) {
@@ -227,7 +275,11 @@ mod tests {
         Pause,
         Play,
         Key,
+        Mute,
+        Unmute,
     }
+
+    const DEVICE: u32 = 7;
 
     #[derive(Default)]
     struct Fake {
@@ -238,6 +290,8 @@ mod tests {
         pause_result: Option<bool>,
         play_result: Option<bool>,
         key_result: Option<bool>,
+        // another app is playing through an output
+        audible: bool,
         hold_query: StdMutex<Option<std_mpsc::Receiver<bool>>>,
         hold_send: StdMutex<Option<std_mpsc::Receiver<bool>>>,
     }
@@ -295,6 +349,20 @@ mod tests {
         fn play_pause_key(&self) -> bool {
             lock(&self.sent).push(Sent::Key);
             self.key_result.unwrap_or(true)
+        }
+
+        fn mute_audible_output(&self) -> Option<u32> {
+            if !self.audible {
+                return None;
+            }
+            lock(&self.sent).push(Sent::Mute);
+            Some(DEVICE)
+        }
+
+        fn unmute_output(&self, device: u32) -> bool {
+            assert_eq!(device, DEVICE);
+            lock(&self.sent).push(Sent::Unmute);
+            true
         }
     }
 
@@ -354,7 +422,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn pause_and_resume_outcomes() {
-        use Sent::{Key, Pause, Play};
+        use Sent::{Key, Mute, Pause, Play, Unmute};
         struct Case {
             name: &'static str,
             fake: Fake,
@@ -400,6 +468,24 @@ mod tests {
                 want: vec![Pause, Key, Play],
             },
             Case {
+                name: "current player idle while another app plays: mute, then unmute",
+                fake: Fake {
+                    audible: true,
+                    ..Fake::playing(&[false])
+                },
+                ends: 2,
+                want: vec![Mute, Unmute],
+            },
+            Case {
+                name: "a pause that took never mutes",
+                fake: Fake {
+                    audible: true,
+                    ..Fake::playing(&[true, false])
+                },
+                ends: 1,
+                want: vec![Pause, Play],
+            },
+            Case {
                 name: "a failed play is not retried",
                 fake: Fake {
                     play_result: Some(false),
@@ -435,6 +521,38 @@ mod tests {
         let _ = release.send(true);
         media.flush().await;
         assert_eq!(fake.sent(), vec![]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_session_that_ended_before_the_mute_never_mutes() {
+        let fake = Arc::new(Fake {
+            audible: true,
+            ..Fake::playing(&[false])
+        });
+        let media = Media::spawn(fake.clone());
+        media.begin(A);
+        tokio::time::sleep(MUTE_DELAY / 2).await;
+        media.end(A);
+        media.flush().await;
+        assert_eq!(fake.sent(), vec![]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn media_3_a_mute_is_handed_to_a_session_already_starting() {
+        let fake = Arc::new(Fake {
+            audible: true,
+            ..Fake::playing(&[false])
+        });
+        let media = Media::spawn(fake.clone());
+        media.begin(A);
+        settle().await;
+        media.end(A);
+        media.begin(B);
+        media.flush().await;
+        assert_eq!(fake.sent(), vec![Sent::Mute], "no unmute between sessions");
+        media.end(B);
+        media.flush().await;
+        assert_eq!(fake.sent(), vec![Sent::Mute, Sent::Unmute]);
     }
 
     #[tokio::test(start_paused = true)]

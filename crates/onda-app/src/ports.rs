@@ -246,6 +246,15 @@ pub trait MediaControl: Send + Sync {
 
     /// Sends the system play/pause key (a toggle). Returns false on failure.
     fn play_pause_key(&self) -> bool;
+
+    /// Mutes the default audio output when another app is playing through
+    /// an output and the output is not muted already. Returns the muted
+    /// device for `unmute_output`, or None when nothing was muted.
+    fn mute_audible_output(&self) -> Option<u32>;
+
+    /// Unmutes a device `mute_audible_output` muted. Returns false on
+    /// failure.
+    fn unmute_output(&self, device: u32) -> bool;
 }
 
 /// A cue sound (SND-1, SND-3).

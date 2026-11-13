@@ -299,6 +299,14 @@ impl MediaControl for FakeMedia {
         self.log.push("media:key");
         true
     }
+
+    fn mute_audible_output(&self) -> Option<u32> {
+        None
+    }
+
+    fn unmute_output(&self, _device: u32) -> bool {
+        true
+    }
 }
 
 pub struct FakeShell {

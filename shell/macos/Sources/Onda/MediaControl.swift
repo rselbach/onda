@@ -74,6 +74,14 @@ final class MediaControl: MediaControlPort, Sendable {
         return posted
     }
 
+    func muteAudibleOutput() -> UInt32? {
+        OutputMute.muteIfAudible()
+    }
+
+    func unmuteOutput(device: UInt32) -> Bool {
+        OutputMute.unmute(device)
+    }
+
     private func command(_ name: String) -> Bool {
         let run = helper(name)
         if !run.succeeded {

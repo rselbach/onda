@@ -192,7 +192,8 @@ pub fn general_page(inputs: GeneralInputs<'_>) -> GeneralPage {
         },
         pause_media: ToggleView::new("Pause media while recording", inputs.pause_media, true),
         pause_media_caption: "When enabled, Onda pauses current media playback when dictation \
-                              starts and resumes only if Onda paused it."
+                              starts and resumes only if Onda paused it. Audio it cannot pause \
+                              is muted until dictation ends."
             .to_owned(),
         sounds: ToggleView::new(
             "Play sounds when dictation starts and stops",
