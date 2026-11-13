@@ -172,15 +172,19 @@ fn microphone_step(microphone: MicrophonePermission) -> SetupStep {
             "Onda can record audio for dictation.",
             None,
         ),
-        MicrophonePermission::NotDetermined
-        | MicrophonePermission::Denied
-        | MicrophonePermission::Restricted => (
+        MicrophonePermission::NotDetermined | MicrophonePermission::Denied => (
             SetupStepStatus::NeedsAction,
             "Allow microphone access so Onda can record speech.",
             Some(SetupButton {
                 title: "Grant Access",
                 action: SetupAction::RequestMicrophone,
             }),
+        ),
+        // a device policy restricts it; no setting the user can change
+        MicrophonePermission::Restricted => (
+            SetupStepStatus::NeedsAction,
+            "Restricted on this Mac, so Onda can't record.",
+            None,
         ),
     };
     SetupStep {
@@ -582,6 +586,16 @@ mod tests {
                     Some(SetupAction::OpenAccessibilitySettings),
                     Some(SetupAction::DownloadBaseModel),
                 ],
+                want_complete: false,
+            },
+            Case {
+                name: "restricted microphone offers no fix",
+                input: SetupChecklistInput {
+                    microphone: Restricted,
+                    ..input()
+                },
+                want_status: [NeedsAction, Complete, Complete],
+                want_actions: [None, None, None],
                 want_complete: false,
             },
             Case {

@@ -542,10 +542,8 @@ fn microphone_card(microphone: MicrophonePermission) -> PermissionCard {
             Some("Turn it on in System Settings."),
             Some(PermissionFix::OpenMicrophoneSettings),
         ),
-        MicrophonePermission::Restricted => (
-            Some("Restricted on this Mac."),
-            Some(PermissionFix::OpenMicrophoneSettings),
-        ),
+        // a device policy restricts it; no setting the user can change
+        MicrophonePermission::Restricted => (Some("Restricted on this Mac."), None),
     };
     PermissionCard {
         title: "Microphone",
@@ -1834,11 +1832,7 @@ mod tests {
                 microphone: MicrophonePermission::Restricted,
                 accessibility: false,
                 skipped: false,
-                want_mic: (
-                    Some("Restricted on this Mac."),
-                    false,
-                    Some("Open Settings"),
-                ),
+                want_mic: (Some("Restricted on this Mac."), false, None),
                 want_typing: (
                     Some("Types transcripts into the app you're using."),
                     false,
