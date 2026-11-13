@@ -8,8 +8,9 @@
 //! how the MEDIA-3 races between back-to-back sessions resolve.
 //!
 //! Pause and play reach the system's current player only. When that player
-//! is idle while another app plays, the task mutes the audio output for the
-//! session instead. (Deviation: Jabber leaves such audio playing.)
+//! is idle while another app plays, the task mutes the audio output until
+//! the session stops recording instead. (Deviation: Jabber leaves such
+//! audio playing.)
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -66,6 +67,7 @@ enum Hold {
 
 enum Command {
     Begin(SessionId),
+    RecordingEnded(SessionId),
     End(SessionId),
     Flush(oneshot::Sender<()>),
 }
@@ -94,6 +96,12 @@ impl Media {
     /// audio that pause cannot reach.
     pub(crate) fn begin(&self, session: SessionId) {
         let _ = self.commands.send(Command::Begin(session));
+    }
+
+    /// A session that began stopped recording: unmute now, so the stop cue
+    /// and the muted audio are heard again; a pause lasts until `end`.
+    pub(crate) fn recording_ended(&self, session: SessionId) {
+        let _ = self.commands.send(Command::RecordingEnded(session));
     }
 
     /// A session that began ended: undo what it did to silence media.
@@ -130,6 +138,7 @@ impl Worker {
             };
             match command {
                 Command::Begin(session) => self.begin(session).await,
+                Command::RecordingEnded(_) => self.unmute().await,
                 Command::End(session) => self.end(session).await,
                 Command::Flush(done) => {
                     let _ = done.send(());
@@ -174,11 +183,25 @@ impl Worker {
     // the current player is idle, so anything audible is out of pause's reach
     async fn mute(&mut self, session: SessionId) {
         tokio::time::sleep(MUTE_DELAY).await;
-        if self.ended_already(session) {
+        if self.stopped_recording(session) {
             return;
         }
         let muted = self.call(|port| port.mute_audible_output()).await;
         self.hold = muted.map(Hold::Muted);
+    }
+
+    async fn unmute(&mut self) {
+        let Some(Hold::Muted(device)) = self.hold else {
+            return;
+        };
+        if self.next_session_begins() {
+            // hand the mute to the session that is already starting
+            return;
+        }
+        self.hold = None;
+        if !self.call(move |port| port.unmute_output(device)).await {
+            tracing::warn!("could not unmute the audio output");
+        }
     }
 
     async fn end(&mut self, _session: SessionId) {
@@ -256,6 +279,13 @@ impl Worker {
         self.queued
             .iter()
             .any(|command| matches!(command, Command::End(ended) if *ended == session))
+    }
+
+    fn stopped_recording(&mut self, session: SessionId) -> bool {
+        self.drain();
+        self.queued.iter().any(|command| {
+            matches!(command, Command::RecordingEnded(ended) | Command::End(ended) if *ended == session)
+        })
     }
 
     fn next_session_begins(&mut self) -> bool {
@@ -539,6 +569,45 @@ mod tests {
         let media = Media::spawn(fake.clone());
         media.begin(A);
         tokio::time::sleep(MUTE_DELAY / 2).await;
+        media.end(A);
+        media.flush().await;
+        assert_eq!(fake.sent(), vec![]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_mute_ends_when_recording_does_and_a_pause_at_the_end() {
+        let fake = Arc::new(Fake {
+            audible: true,
+            ..Fake::playing(&[false, true])
+        });
+        let media = Media::spawn(fake.clone());
+        media.begin(A);
+        settle().await;
+        media.recording_ended(A);
+        media.flush().await;
+        assert_eq!(fake.sent(), vec![Sent::Mute, Sent::Unmute]);
+        media.end(A);
+        media.begin(B);
+        settle().await;
+        media.recording_ended(B);
+        media.flush().await;
+        assert_eq!(fake.sent()[2..], [Sent::Pause], "paused while transcribing");
+        media.end(B);
+        media.flush().await;
+        assert_eq!(fake.sent()[2..], [Sent::Pause, Sent::Play]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn recording_that_ended_before_the_mute_never_mutes() {
+        let fake = Arc::new(Fake {
+            audible: true,
+            ..Fake::playing(&[false])
+        });
+        let media = Media::spawn(fake.clone());
+        media.begin(A);
+        tokio::time::sleep(MUTE_DELAY / 2).await;
+        media.recording_ended(A);
+        settle().await;
         media.end(A);
         media.flush().await;
         assert_eq!(fake.sent(), vec![]);

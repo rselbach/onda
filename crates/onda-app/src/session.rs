@@ -1060,6 +1060,8 @@ impl Actor {
         if let Some(preview) = &recording.preview {
             preview.stop();
         }
+        // before the stop cue, which plays through a muted output otherwise
+        self.recording_ended(&recording);
         self.enter_transcribing_ui(&recording);
         let now = Instant::now();
         let timer = self.timer(RELEASE_TAIL, Msg::TailElapsed(recording.id));
@@ -1127,6 +1129,7 @@ impl Actor {
             preview.stop();
         }
         let samples = self.ports.audio.stop();
+        self.recording_ended(&recording);
         let media_session = recording.media_begun.then_some(recording.id);
         // the gate runs before Transcribing, so a reject has no stop cue
         // (DICT-12)
@@ -1501,6 +1504,14 @@ impl Actor {
                 true
             }
             Some(_) | None => false,
+        }
+    }
+
+    fn recording_ended(&self, recording: &Recording) {
+        if recording.media_begun
+            && let Some(media) = &self.media
+        {
+            media.recording_ended(recording.id);
         }
     }
 

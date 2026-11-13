@@ -2664,6 +2664,28 @@ async fn dict_28a_quit_cancels_resumes_media_and_delivers_nothing() {
     assert!(lock(&text.typed).is_empty());
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_mute_ends_with_the_recording_not_the_delivery() {
+    let h = Harness::with(|s| s.pause_media = true).await;
+    h.media.audible.store(true, Ordering::SeqCst);
+    h.press();
+    sleep(1_500).await;
+    h.release();
+    sleep(1_000).await;
+    assert_eq!(h.typed(), vec!["hello world"]);
+    let log = h.log.all();
+    let at = |entry: &str| {
+        log.iter()
+            .position(|e| e == entry)
+            .unwrap_or_else(|| panic!("no {entry}: {log:?}"))
+    };
+    assert!(at("media:mute") < at("media:unmute"), "{log:?}");
+    assert!(
+        at("media:unmute") < at("text:insert"),
+        "unmuted before the transcript is typed: {log:?}"
+    );
+}
+
 // real time: the held start is a running blocking task, which stops a
 // paused clock from advancing to the shutdown drain's timers
 #[tokio::test]

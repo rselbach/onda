@@ -270,6 +270,8 @@ pub struct FakeMedia {
     pub log: Arc<Log>,
     pub playing: Mutex<VecDeque<bool>>,
     pub playing_default: AtomicBool,
+    /// Another app plays where pause cannot reach it.
+    pub audible: AtomicBool,
 }
 
 impl MediaControl for FakeMedia {
@@ -301,10 +303,15 @@ impl MediaControl for FakeMedia {
     }
 
     fn mute_audible_output(&self) -> Option<u32> {
-        None
+        if !self.audible.load(Ordering::SeqCst) {
+            return None;
+        }
+        self.log.push("media:mute");
+        Some(7)
     }
 
     fn unmute_output(&self, _device: u32) -> bool {
+        self.log.push("media:unmute");
         true
     }
 }
@@ -1250,6 +1257,7 @@ impl Harness {
             log: log.clone(),
             playing: Mutex::default(),
             playing_default: AtomicBool::new(false),
+            audible: AtomicBool::new(false),
         });
         let notifier = Arc::new(FakeNotifier {
             log: log.clone(),
