@@ -30,6 +30,7 @@ const INTERFACES: &str = r#"<node>
       <arg type="i" direction="out"/><arg type="i" direction="out"/>
     </method>
     <property name="CaretOffset" type="i" access="read"/>
+    <property name="CharacterCount" type="i" access="read"/>
   </interface>
 </node>"#;
 
@@ -54,6 +55,8 @@ struct Text {
     value: &'static str,
     caret: i32,
     selection: Option<(i32, i32)>,
+    /// counts in UTF-16 code units, as Qt does, instead of characters
+    counts_in_utf16: bool,
 }
 
 #[derive(Default)]
@@ -100,6 +103,7 @@ fn field(value: &'static str, caret: i32) -> Node {
             value,
             caret,
             selection: None,
+            counts_in_utf16: false,
         }),
         ..Node::default()
     }
@@ -138,13 +142,20 @@ fn serve(connection: &gio::DBusConnection, stage: &Rc<RefCell<Stage>>, nodes: us
                     let own = connection.unique_name().expect("a bus name");
                     answer(&asked, &own, index_of(path), method, invocation);
                 })
-                .property(move |_, _, path, _, _| {
+                .property(move |_, _, path, _, property| {
                     let stage = read.borrow();
                     let text = stage
                         .tree
                         .get(index_of(path))
                         .and_then(|node| node.text.as_ref());
-                    text.map_or(-1, |text| text.caret).to_variant()
+                    let value = match (property, text) {
+                        ("CharacterCount", Some(text)) if text.counts_in_utf16 => {
+                            text.value.encode_utf16().count() as i32
+                        }
+                        ("CharacterCount", Some(text)) => text.value.chars().count() as i32,
+                        (_, text) => text.map_or(-1, |text| text.caret),
+                    };
+                    value.to_variant()
                 })
                 .build()
                 .expect("a stand-in accessible");
@@ -321,12 +332,29 @@ fn the_focused_field_is_read_from_the_accessibility_bus() {
             takes: prompt,
         },
         Case {
+            name: "a caret already in UTF-16 code units, as Qt reports it",
+            tree: one_application(Node {
+                text: Some(Text {
+                    value: "🎓🎓 Troy. Abed studies",
+                    caret: 11,
+                    selection: None,
+                    counts_in_utf16: true,
+                }),
+                ..field("", 0)
+            }),
+            process_id: Some(ours),
+            want: found("🎓🎓 Troy. Abed studies", 11),
+            text_reads: 1,
+            takes: prompt,
+        },
+        Case {
             name: "a selection counts from its start, wherever the caret is",
             tree: one_application(Node {
                 text: Some(Text {
                     value: "Troy Barnes joined",
                     caret: 11,
                     selection: Some((5, 11)),
+                    counts_in_utf16: false,
                 }),
                 ..field("", 0)
             }),

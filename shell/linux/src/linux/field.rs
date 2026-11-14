@@ -210,14 +210,31 @@ impl Bus {
         }
         Ok(usize::try_from(self.selection_start(focused)?)
             .ok()
-            .map(|caret| FieldText {
-                caret_utf16: utf16_offset(&text, caret),
+            .map(|offset| FieldText {
+                caret_utf16: match self.counts_in_utf16(focused, &text) {
+                    true => offset.min(text.encode_utf16().count()),
+                    false => utf16_offset(&text, offset),
+                },
                 text,
             }))
     }
 
-    /// Where a paste lands, in characters: the start of the selection, or
-    /// the caret without one. Negative when the field has no caret.
+    /// Whether the field counts its offsets in UTF-16 code units, as Qt
+    /// does, where AT-SPI specifies characters. The field's own count of its
+    /// text tells once the text holds a character outside the BMP. Until
+    /// then the two units agree, and the field is not asked.
+    fn counts_in_utf16(&self, focused: &Accessible, text: &str) -> bool {
+        let units = text.encode_utf16().count();
+        units != text.chars().count()
+            && matches!(
+                self.text_property(focused, "CharacterCount"),
+                Ok(count) if usize::try_from(count) == Ok(units)
+            )
+    }
+
+    /// Where a paste lands, in the field's own unit: the start of the
+    /// selection, or the caret without one. Negative when the field has no
+    /// caret.
     fn selection_start(&self, focused: &Accessible) -> anyhow::Result<i32> {
         let (selections,) = self
             .ask(focused, TEXT, "GetNSelections", None)?
@@ -230,16 +247,22 @@ impl Bus {
                 .context("unexpected GetSelection reply")?;
             return Ok(start.min(end));
         }
-        let (caret,) = self
+        self.text_property(focused, "CaretOffset")
+    }
+
+    fn text_property(&self, focused: &Accessible, name: &str) -> anyhow::Result<i32> {
+        let (value,) = self
             .ask(
                 focused,
                 "org.freedesktop.DBus.Properties",
                 "Get",
-                Some(&(TEXT, "CaretOffset").to_variant()),
+                Some(&(TEXT, name).to_variant()),
             )?
             .get::<(glib::Variant,)>()
-            .context("unexpected CaretOffset reply")?;
-        caret.get::<i32>().context("unexpected CaretOffset value")
+            .with_context(|| format!("unexpected {name} reply"))?;
+        value
+            .get::<i32>()
+            .with_context(|| format!("unexpected {name} value"))
     }
 
     fn children(&self, parent: &Accessible) -> anyhow::Result<Vec<Accessible>> {
