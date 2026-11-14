@@ -1,0 +1,1196 @@
+#!/usr/bin/env bash
+#
+# Launches, drives, and tears down one Onda verification run on Linux. A run
+# is the real `onda` binary inside a private desktop session: its own D-Bus
+# session bus, Xvfb display, keyring, PipeWire server with a virtual
+# microphone, accessibility bus, and scratch home and data directories, with
+# a proxy that refuses all network traffic. Every command reaches the session
+# through `in_run`, which starts from an empty environment and adds only the
+# run's own, so no command can address the desktop session. Run
+# `verify-onda-linux help` for the command list.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
+readonly PROJECT_ROOT
+readonly RUNS_ROOT="/tmp/onda-verify-runs"
+readonly EVIDENCE_ROOT="/tmp/onda-verify-evidence"
+readonly TOOLS_ROOT="/tmp/onda-verify-tools"
+readonly DRIVER="${SCRIPT_DIR}/onda-driver.py"
+readonly FIXTURES="${PROJECT_ROOT}/shell/linux/tests"
+readonly BUILT_BINARY="${CARGO_TARGET_DIR:-${PROJECT_ROOT}/target}/debug/onda"
+readonly DEV_MODELS="${ONDA_DEV_MODELS:-${HOME}/.cache/onda-dev-models}"
+readonly DEFAULT_MODEL="parakeet-tdt-v2"
+readonly READY_LABEL="Onda, ready to dictate"
+# the null sink the app records from, and the default sink media plays to
+readonly MICROPHONE="onda-test"
+readonly SPEAKERS="onda-speakers"
+readonly DEFAULT_SHORTCUT="ctrl+alt+space"
+readonly NOT_COVERED="portal global shortcuts, the layer-shell overlay, and\
+ wtype paste need a Wayland compositor; a run is X11 in Xvfb with no window\
+ manager"
+
+# model id to the file the app loads, as in shell/linux/src/linux/speech.rs
+declare -rA MODEL_FILES=(
+  [parakeet-tdt-v2]="parakeet-tdt-0.6b-v2-Q8_0.gguf"
+  [parakeet-ultra]="parakeet-ultra-Q8_0.gguf"
+  [parakeet-unified]="parakeet-unified-en-0.6b-Q8_0.gguf"
+)
+
+# window kind to the pattern its X11 name matches
+declare -rA WINDOW_NAMES=(
+  [main]='^Onda$'
+  [onboarding]='^Set Up Onda$'
+  [overlay]='^onda-recording$'
+  [target]='^Greendale dictation target$'
+)
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: verify-onda-linux COMMAND RUN_ID [ARGS]
+
+  launch RUN_ID [--fresh] [--reuse] [--show-window] [--model ID]...
+                [--setting KEY=JSON]...
+  relaunch RUN_ID [--show-window]
+  doctor RUN_ID
+  wait-ready RUN_ID [--timeout SECONDS]
+  status RUN_ID
+  evidence-dir RUN_ID
+  record RUN_ID FEATURE ACTION RESULT
+  menu RUN_ID list
+  menu RUN_ID press LABEL [LABEL]...
+  ctl RUN_ID start|stop|toggle|cancel|paste-last|quit
+  hotkey RUN_ID hold SECONDS [KEYS]
+  hotkey RUN_ID tap [KEYS]
+  hotkey RUN_ID escape
+  say RUN_ID [WAV] [--after SECONDS]
+  target RUN_ID new [--password]
+  target RUN_ID focus|read|clear|close
+  ui RUN_ID tree [--all] [--save NAME]
+  ui RUN_ID press NAME [--role ROLE] [--index N]
+  click RUN_ID X Y
+  key RUN_ID KEYS...
+  type RUN_ID TEXT
+  windows RUN_ID
+  wait-window RUN_ID KIND [--gone] [--timeout SECONDS]
+  screenshot RUN_ID NAME [--window main|onboarding|overlay|target|screen|PATTERN]
+  log RUN_ID
+  history RUN_ID
+  exec RUN_ID -- COMMAND [ARGS]
+  cleanup RUN_ID
+EOF
+}
+
+die() {
+  printf 'verify-onda-linux: %s\n' "$*" >&2
+  exit 1
+}
+
+check_run_id() {
+  if [[ ! "$1" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,39}$ ]]; then
+    die "RUN_ID must start with a letter or digit and contain at most 40" \
+      "letters, digits, or hyphens"
+  fi
+}
+
+run_root() {
+  printf '%s/%s\n' "${RUNS_ROOT}" "$1"
+}
+
+evidence_dir() {
+  printf '%s/%s\n' "${EVIDENCE_ROOT}" "$1"
+}
+
+write_state() {
+  printf '%s\n' "$3" >"$1/$2"
+}
+
+read_state() {
+  local path="$1/$2"
+  local value
+  [[ -f "${path}" ]] || die "missing run state: ${path}"
+  IFS= read -r value <"${path}"
+  printf '%s\n' "${value}"
+}
+
+sha256_of() {
+  local sum
+  sum="$(sha256sum "$1")"
+  printf '%s\n' "${sum%% *}"
+}
+
+# polls a command every 100 ms, up to the given number of times
+wait_for() {
+  local tries="$1"
+  local attempt
+  shift
+  for ((attempt = 0; attempt < tries; attempt++)); do
+    if "$@"; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  return 1
+}
+
+# the value of NAME in a NUL-separated environment: the run's `env` file, or
+# a process's /proc/PID/environ
+variable_in() {
+  local entry
+  while IFS= read -r -d '' entry; do
+    if [[ "${entry}" == "$2="* ]]; then
+      printf '%s\n' "${entry#*=}"
+      return 0
+    fi
+  done <"$1"
+  return 1
+}
+
+# runs a command with the run's environment and nothing of the caller's
+in_run() {
+  local root="$1"
+  local -a variables
+  shift
+  [[ -f "${root}/env" ]] || die "no session at ${root}; launch the run first"
+  mapfile -d '' -t variables <"${root}/env"
+  env -i "${variables[@]}" "$@"
+}
+
+accessibility_launcher() {
+  local path
+  for path in /usr/libexec/at-spi-bus-launcher /usr/lib/at-spi-bus-launcher \
+    /usr/lib/at-spi2-core/at-spi-bus-launcher; do
+    if [[ -x "${path}" ]]; then
+      printf '%s\n' "${path}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+require_tools() {
+  local tool
+  local missing=()
+  for tool in dbus-run-session Xvfb xdotool xprop gdbus python3 \
+    gnome-keyring-daemon pipewire wireplumber pipewire-pulse pactl paplay \
+    setsid sha256sum; do
+    command -v "${tool}" >/dev/null || missing+=("${tool}")
+  done
+  accessibility_launcher >/dev/null || missing+=("at-spi-bus-launcher")
+  python3 -c 'import dbus, gi, PIL; gi.require_version("Atspi", "2.0")' \
+    2>/dev/null || missing+=("python3 with dbus, gi, Atspi, and PIL")
+  ((${#missing[@]} == 0)) || die "missing tools: ${missing[*]}"
+}
+
+# whether PID was started inside the run: such a process carries the run's
+# marker in its environment
+in_this_run() {
+  grep -qzxF "ONDA_VERIFY_RUN=$1" "/proc/$2/environ" 2>/dev/null
+}
+
+# every process of the run
+run_pids() {
+  local environ
+  local pid
+  for environ in /proc/[0-9]*/environ; do
+    pid="${environ#/proc/}"
+    pid="${pid%/environ}"
+    if in_this_run "$1" "${pid}"; then
+      printf '%s\n' "${pid}"
+    fi
+  done
+}
+
+# whether PID runs the run's own executable
+is_run_app() {
+  [[ "$(readlink "/proc/$2/exe" 2>/dev/null)" == "$1/bin/onda" ]]
+}
+
+# the recorded PID, after proving it still runs this run's executable
+live_pid() {
+  local root
+  local pid
+  root="$(run_root "$1")"
+  pid="$(read_state "${root}" pid)"
+  is_run_app "${root}" "${pid}" \
+    || die "Onda is not running (recorded PID ${pid}); see: log $1"
+  printf '%s\n' "${pid}"
+}
+
+bus_owns() {
+  local reply
+  reply="$(gdbus call --session --dest org.freedesktop.DBus \
+    --object-path /org/freedesktop/DBus \
+    --method org.freedesktop.DBus.NameHasOwner "$1" 2>/dev/null)" || return 1
+  [[ "${reply}" == *true* ]]
+}
+
+speakers_are_default() {
+  pactl set-default-sink "${SPEAKERS}" 2>/dev/null \
+    && [[ "$(pactl get-default-sink)" == "${SPEAKERS}" ]]
+}
+
+# The body of a run's session. `launch` starts it inside the private bus
+# with the run's environment. It starts the display, the keyring, the audio
+# server with its virtual devices, the accessibility bus, the proxy that
+# refuses all traffic, and the tray watcher, then publishes the environment
+# every other command runs in.
+session() {
+  local root
+  local evidence
+  local logs
+  local proxy
+  local config
+  local wireplumber
+  root="$(run_root "$1")"
+  evidence="$(evidence_dir "$1")"
+  logs="${evidence}/session"
+  [[ "${ONDA_VERIFY_RUN-}" == "${root}" ]] \
+    && [[ -n "${DBUS_SESSION_BUS_ADDRESS-}" ]] \
+    || die "__session is internal to launch"
+  trap 'kill $(jobs -p) 2>/dev/null || true' EXIT
+  trap 'exit 0' TERM INT
+
+  Xvfb -displayfd 3 -screen 0 1600x1000x24 -nolisten tcp \
+    3>"${root}/display" >"${logs}/xvfb.log" 2>&1 &
+  wait_for 50 test -s "${root}/display" || die "Xvfb did not start"
+  DISPLAY=":$(<"${root}/display")"
+  export DISPLAY
+
+  gnome-keyring-daemon --foreground --unlock --components=secrets \
+    --control-directory="${XDG_RUNTIME_DIR}/keyring" <<<'Greendale' \
+    >"${logs}/keyring.log" 2>&1 &
+  wait_for 50 bus_owns org.freedesktop.secrets \
+    || die "the keyring did not start"
+
+  export PIPEWIRE_RUNTIME_DIR="${XDG_RUNTIME_DIR}" PIPEWIRE_REMOTE=pipewire-0
+  export PIPEWIRE_CONFIG_DIR="${root}/pipewire"
+  export PULSE_RUNTIME_PATH="${XDG_RUNTIME_DIR}/pulse"
+  export PULSE_SERVER="unix:${PULSE_RUNTIME_PATH}/native"
+  export ALSA_CONFIG_PATH="${root}/alsa.conf"
+  wireplumber="${XDG_CONFIG_HOME}/wireplumber/wireplumber.conf.d"
+  mkdir -p "${PIPEWIRE_CONFIG_DIR}" "${wireplumber}"
+  for config in pipewire pipewire-pulse client; do
+    cp "/usr/share/pipewire/${config}.conf" "${PIPEWIRE_CONFIG_DIR}/"
+  done
+  # no hardware monitor runs, so the server never opens a real device
+  cat >"${wireplumber}/onda-verify.conf" <<'CONF'
+wireplumber.profiles = {
+  main = {
+    monitor.alsa = disabled
+    monitor.alsa-midi = disabled
+    monitor.bluez = disabled
+    monitor.bluez-midi = disabled
+    monitor.v4l2 = disabled
+    monitor.libcamera = disabled
+  }
+}
+CONF
+  # the only ALSA device is the virtual microphone, so an application that
+  # opens ALSA itself, as Onda does, cannot reach hardware either
+  cat >"${ALSA_CONFIG_PATH}" <<CONF
+pcm.!default {
+  type pipewire
+  server "pipewire-0"
+  capture_node "${MICROPHONE}"
+}
+CONF
+  pipewire >"${logs}/pipewire.log" 2>&1 &
+  wait_for 50 test -S "${PIPEWIRE_RUNTIME_DIR}/pipewire-0" \
+    || die "PipeWire did not start"
+  wireplumber >"${logs}/wireplumber.log" 2>&1 &
+  pipewire-pulse >"${logs}/pulse.log" 2>&1 &
+  wait_for 50 pactl info >/dev/null 2>&1 || die "pipewire-pulse did not start"
+  pactl load-module module-null-sink "sink_name=${MICROPHONE}" \
+    rate=16000 channels=1 >/dev/null
+  # media plays through its own default sink, so a mute never reaches the
+  # virtual microphone; the default can be set once WirePlumber is up
+  pactl load-module module-null-sink "sink_name=${SPEAKERS}" >/dev/null
+  wait_for 100 speakers_are_default || die "the default sink was not set"
+
+  "$(accessibility_launcher)" --launch-immediately >"${logs}/a11y.log" 2>&1 &
+  wait_for 50 bus_owns org.a11y.Bus \
+    || die "the accessibility bus did not start"
+
+  python3 "${FIXTURES}/refusing-proxy.py" "${evidence}/requests.log" \
+    "${root}/proxy-port" >"${logs}/proxy.log" 2>&1 &
+  wait_for 50 test -s "${root}/proxy-port" || die "the proxy did not start"
+  proxy="http://127.0.0.1:$(<"${root}/proxy-port")"
+  export HTTPS_PROXY="${proxy}" https_proxy="${proxy}" HTTP_PROXY="${proxy}"
+  export http_proxy="${proxy}" ALL_PROXY="${proxy}" all_proxy="${proxy}"
+
+  # an isolated session has no tray host, and without a watcher the app
+  # publishes no tray item
+  python3 "${FIXTURES}/tray-host.py" watch >"${logs}/tray-host.log" 2>&1 &
+  wait_for 50 bus_owns org.kde.StatusNotifierWatcher \
+    || die "the tray watcher did not start"
+
+  write_state "${root}" session-pid "$$"
+  env -0 | grep -zv '^\(PWD\|OLDPWD\|SHLVL\|_\)=' >"${root}/env.partial"
+  mv "${root}/env.partial" "${root}/env"
+  # a session that lost a service proves nothing, so it ends with the first
+  # one to exit
+  wait -n || true
+  die "a session service exited; see ${logs}"
+}
+
+session_alive() {
+  local pid
+  [[ -f "$1/env" && -f "$1/session-pid" ]] || return 1
+  pid="$(read_state "$1" session-pid)"
+  in_this_run "$1" "${pid}"
+}
+
+# whether the session came up, or ended while it was starting
+session_settled() {
+  session_alive "$1" \
+    || ! kill -0 "$(read_state "$1" session-leader)" 2>/dev/null
+}
+
+require_session() {
+  session_alive "$1" || die "the run's session is not running: $1"
+}
+
+build_binary() {
+  local log="$1"
+  printf 'building onda (log: %s)\n' "${log}" >&2
+  if ! "${PROJECT_ROOT}/scripts/build-linux.sh" debug >"${log}" 2>&1; then
+    tail -n 30 "${log}" >&2
+    die "scripts/build-linux.sh failed"
+  fi
+}
+
+# links a model the developer already has; a run never downloads one
+link_model() {
+  local data="$1"
+  local model="$2"
+  local file="${MODEL_FILES[${model}]-}"
+  [[ -n "${file}" ]] \
+    || die "unknown model ${model}; known: ${!MODEL_FILES[*]}"
+  [[ -f "${DEV_MODELS}/${file}" ]] \
+    || die "no dev model ${DEV_MODELS}/${file}. Download it once from the" \
+      "pinned URL in shell/linux/src/linux/speech.rs and check its SHA-256," \
+      "or launch with --fresh."
+  mkdir -p "${data}/Models/${model}"
+  ln -s "${DEV_MODELS}/${file}" "${data}/Models/${model}/${file}"
+}
+
+# "Open" actions (a download page, a provider's site, a history folder, a
+# recording) land in opened.log instead of starting a browser, a file
+# manager, or a player
+install_open_logger() {
+  local root="$1"
+  local evidence="$2"
+  local applications="${root}/home/.local/share/applications"
+  local kind
+  mkdir -p "${applications}" "${root}/home/.config"
+  cat >"${root}/bin/onda-verify-open" <<SCRIPT
+#!/bin/sh
+printf '%s\n' "\$@" >>"${evidence}/opened.log"
+SCRIPT
+  chmod +x "${root}/bin/onda-verify-open"
+  cat >"${applications}/onda-verify-open.desktop" <<ENTRY
+[Desktop Entry]
+Type=Application
+Name=Onda verification open log
+Exec=${root}/bin/onda-verify-open %u
+NoDisplay=true
+ENTRY
+  printf '[Default Applications]\n' >"${root}/home/.config/mimeapps.list"
+  for kind in x-scheme-handler/http x-scheme-handler/https inode/directory \
+    audio/x-wav audio/wav audio/vnd.wave; do
+    printf '%s=onda-verify-open.desktop\n' "${kind}" \
+      >>"${root}/home/.config/mimeapps.list"
+  done
+}
+
+start_session() {
+  local run_id="$1"
+  local root="$2"
+  local evidence="$3"
+  local -a variables=(
+    "PATH=${PATH}"
+    "HOME=${root}/home"
+    "USER=$(id -un)"
+    "LANG=C.UTF-8"
+    "XDG_RUNTIME_DIR=${root}/runtime"
+    "XDG_CONFIG_HOME=${root}/home/.config"
+    "XDG_DATA_HOME=${root}/home/.local/share"
+    "XDG_STATE_HOME=${root}/home/.local/state"
+    "XDG_CACHE_HOME=${root}/home/.cache"
+    "ONDA_DATA_DIR=${root}/data"
+    "ONDA_VERIFY_RUN=${root}"
+    "GDK_BACKEND=x11"
+    "GSK_RENDERER=cairo"
+    # keeps colour codes out of onda.log
+    "NO_COLOR=1"
+  )
+  setsid env -i "${variables[@]}" dbus-run-session \
+    --config-file="${FIXTURES}/dbus-session.conf" \
+    -- "${BASH_SOURCE[0]}" __session "${run_id}" \
+    >"${evidence}/session/session.log" 2>&1 </dev/null &
+  write_state "${root}" session-leader "$!"
+  if ! wait_for 300 session_settled "${root}" || ! session_alive "${root}"; then
+    tail -n 20 "${evidence}/session/session.log" >&2
+    die "the session did not start"
+  fi
+}
+
+# starts the run's Onda detached from this command and records its PID
+start_app() {
+  local root="$1"
+  local evidence="$2"
+  local -a variables
+  shift 2
+  mapfile -d '' -t variables <"${root}/env"
+  # the app records from the monitor of the virtual microphone's sink
+  env -i "${variables[@]}" "PIPEWIRE_PROPS={ stream.capture.sink = true }" \
+    setsid "${root}/bin/onda" "$@" >>"${evidence}/onda.log" 2>&1 </dev/null &
+  write_state "${root}" pid "$!"
+  sleep 0.5
+  if ! is_run_app "${root}" "$!"; then
+    tail -n 20 "${evidence}/onda.log" >&2
+    die "Onda exited right after it started"
+  fi
+}
+
+# removes what a failed launch left running, and keeps its evidence
+abandon_launch() {
+  local status=$?
+  if ((status != 0)); then
+    printf 'verify-onda-linux: launch failed; removing the run\n' >&2
+    (cleanup "$1") >&2 || true
+  fi
+  exit "${status}"
+}
+
+launch() {
+  local run_id="$1"
+  shift
+  local fresh=false
+  local reuse=false
+  local -a app_arguments=(--background)
+  local -a models=()
+  local -a settings=()
+  while (($# > 0)); do
+    case "$1" in
+      --fresh) fresh=true ;;
+      --reuse) reuse=true ;;
+      --show-window) app_arguments=() ;;
+      --model)
+        [[ $# -ge 2 ]] || die "--model needs an ID"
+        models+=("$2")
+        shift
+        ;;
+      --setting)
+        [[ $# -ge 2 && "$2" == *=* ]] || die "--setting needs KEY=JSON"
+        settings+=("$2")
+        shift
+        ;;
+      *) die "unknown launch option: $1" ;;
+    esac
+    shift
+  done
+
+  local root
+  local evidence
+  local data
+  local model
+  root="$(run_root "${run_id}")"
+  evidence="$(evidence_dir "${run_id}")"
+  data="${root}/data"
+  require_tools
+  [[ ! -e "${root}" ]] || die "run already exists: ${root}"
+  [[ ! -e "${evidence}" ]] \
+    || die "evidence already exists; choose a new RUN_ID: ${evidence}"
+  mkdir -p "${evidence}/session"
+  if [[ "${reuse}" == false ]]; then
+    build_binary "${evidence}/build.log"
+  fi
+  [[ -x "${BUILT_BINARY}" ]] \
+    || die "missing ${BUILT_BINARY}; launch without --reuse"
+
+  mkdir -p "${root}/bin" "${root}/home" "${data}"
+  trap 'abandon_launch "${run_id}"' EXIT
+  mkdir -m 700 "${root}/runtime"
+  # a private copy, so a rebuild cannot swap the binary under this run
+  cp "${BUILT_BINARY}" "${root}/bin/onda"
+  write_state "${root}" executable-sha256 "$(sha256_of "${root}/bin/onda")"
+  # an unpackaged binary finds its cue files in the user's data folder
+  install -Dm644 -t "${root}/home/.local/share/onda/sounds" \
+    "${PROJECT_ROOT}"/assets/sounds/*.wav
+  install_open_logger "${root}" "${evidence}"
+
+  if [[ "${fresh}" == false ]]; then
+    settings=("onboardingCompleted=true" "didShowFirstRunSetup=true"
+      ${settings[@]+"${settings[@]}"})
+    if ((${#models[@]} == 0)); then
+      models=("${DEFAULT_MODEL}")
+    fi
+  fi
+  for model in ${models[@]+"${models[@]}"}; do
+    link_model "${data}" "${model}"
+  done
+  if ((${#models[@]} > 0)) &&
+    [[ " ${settings[*]-} " != *" selectedModel="* ]]; then
+    settings+=("selectedModel=\"${models[0]}\"")
+  fi
+  if ((${#settings[@]} > 0)); then
+    python3 "${DRIVER}" settings "${data}/settings.json" "${settings[@]}"
+  fi
+
+  start_session "${run_id}" "${root}" "${evidence}"
+  start_app "${root}" "${evidence}" ${app_arguments[@]+"${app_arguments[@]}"}
+  trap - EXIT
+
+  printf 'run_id=%s\npid=%s\nexecutable=%s\ndata_dir=%s\nevidence_dir=%s\n' \
+    "${run_id}" "$(read_state "${root}" pid)" "${root}/bin/onda" "${data}" \
+    "${evidence}"
+  printf 'display=%s\nnot_covered=%s\n' \
+    "$(variable_in "${root}/env" DISPLAY)" "${NOT_COVERED}"
+}
+
+relaunch() {
+  local run_id="$1"
+  local root
+  local pid
+  local -a app_arguments=(--background)
+  root="$(run_root "${run_id}")"
+  require_session "${root}"
+  case "${2-}" in
+    "") ;;
+    --show-window) app_arguments=() ;;
+    *) die "unknown relaunch option: $2" ;;
+  esac
+  pid="$(read_state "${root}" pid)"
+  if is_run_app "${root}" "${pid}"; then
+    die "Onda still runs as PID ${pid}; quit it first"
+  fi
+  start_app "${root}" "$(evidence_dir "${run_id}")" \
+    ${app_arguments[@]+"${app_arguments[@]}"}
+  printf 'pid=%s\n' "$(read_state "${root}" pid)"
+}
+
+tray() {
+  local root="$1"
+  shift
+  in_run "${root}" python3 "${FIXTURES}/tray-host.py" "$@"
+}
+
+status() {
+  local run_id="$1"
+  local root
+  root="$(run_root "${run_id}")"
+  live_pid "${run_id}" >/dev/null
+  printf 'status %s\n' "$(in_run "${root}" "${root}/bin/onda" --status)"
+  tray "${root}" status
+}
+
+tray_title() {
+  local line
+  while IFS= read -r line; do
+    if [[ "${line}" == "title "* ]]; then
+      printf '%s\n' "${line#title }"
+    fi
+  done < <(tray "$1" status 2>/dev/null || true)
+}
+
+wait_ready() {
+  local run_id="$1"
+  local timeout=90
+  local root
+  local title=""
+  local attempt
+  if [[ "${2-}" == "--timeout" ]]; then
+    timeout="${3:?--timeout needs SECONDS}"
+  fi
+  root="$(run_root "${run_id}")"
+  for ((attempt = 0; attempt < timeout; attempt++)); do
+    live_pid "${run_id}" >/dev/null
+    title="$(tray_title "${root}")"
+    if [[ "${title}" == "${READY_LABEL}" ]]; then
+      printf '%s\n' "${title}"
+      return
+    fi
+    sleep 1
+  done
+  die "not ready after ${timeout}s; tray says: ${title:-(no tray item yet)}"
+}
+
+# the process that owns a name on the run's bus
+bus_owner() {
+  local reply
+  reply="$(in_run "$1" gdbus call --session --dest org.freedesktop.DBus \
+    --object-path /org/freedesktop/DBus \
+    --method org.freedesktop.DBus.GetConnectionUnixProcessID "$2" \
+    2>/dev/null)" || return 1
+  [[ "${reply}" =~ uint32\ ([0-9]+) ]] || return 1
+  printf '%s\n' "${BASH_REMATCH[1]}"
+}
+
+doctor() {
+  local run_id="$1"
+  local root
+  local evidence
+  local pid
+  local current
+  local name
+  local want
+  local got
+  local owner
+  local sinks
+  local refused=0
+  root="$(run_root "${run_id}")"
+  evidence="$(evidence_dir "${run_id}")"
+  require_session "${root}"
+  pid="$(live_pid "${run_id}")"
+  current="$(sha256_of "${root}/bin/onda")"
+  [[ "${current}" == "$(read_state "${root}" executable-sha256)" ]] \
+    || die "the executable changed after launch"
+
+  # read from the kernel, not from what launch meant to pass
+  for name in DISPLAY DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR HOME \
+    XDG_CONFIG_HOME XDG_DATA_HOME ONDA_DATA_DIR PULSE_SERVER HTTPS_PROXY; do
+    want="$(variable_in "${root}/env" "${name}")" \
+      || die "the run has no ${name}"
+    got="$(variable_in "/proc/${pid}/environ" "${name}" || true)"
+    [[ "${got}" == "${want}" ]] \
+      || die "Onda's ${name} is '${got}', not this run's '${want}'"
+  done
+  if variable_in "/proc/${pid}/environ" WAYLAND_DISPLAY >/dev/null; then
+    die "Onda has a WAYLAND_DISPLAY"
+  fi
+  for name in org.freedesktop.DBus org.freedesktop.secrets \
+    org.kde.StatusNotifierWatcher org.a11y.Bus; do
+    owner="$(bus_owner "${root}" "${name}")" \
+      || die "nothing owns ${name} on the run's bus"
+    in_this_run "${root}" "${owner}" \
+      || die "${name} belongs to PID ${owner}, which is outside this run"
+  done
+  sinks="$(in_run "${root}" pactl get-default-sink)"
+  [[ "${sinks}" == "${SPEAKERS}" ]] \
+    || die "the default sink is ${sinks}, not the run's ${SPEAKERS}"
+  sinks="$(in_run "${root}" pactl list short sinks
+    in_run "${root}" pactl list short sources)"
+  [[ "${sinks}" != *alsa* ]] \
+    || die "the run's audio server opened a hardware device"
+
+  printf 'healthy pid=%s sha256=%s\n' "${pid}" "${current:0:12}"
+  for name in DISPLAY DBUS_SESSION_BUS_ADDRESS HOME ONDA_DATA_DIR; do
+    printf '%s=%s\n' "${name}" "$(variable_in "${root}/env" "${name}")"
+  done
+  status "${run_id}"
+  if [[ -f "${evidence}/requests.log" ]]; then
+    refused="$(grep -c '' "${evidence}/requests.log" || true)"
+  fi
+  printf 'refused_requests=%s\n' "${refused}"
+  if [[ -x "${BUILT_BINARY}" &&
+        "$(sha256_of "${BUILT_BINARY}")" != "${current}" ]]; then
+    printf 'note: %s changed since launch; this run is stale\n' \
+      "${BUILT_BINARY}"
+  fi
+  printf 'not_covered=%s\n' "${NOT_COVERED}"
+}
+
+record() {
+  local evidence
+  local action="$3"
+  local result="$4"
+  evidence="$(evidence_dir "$1")"
+  [[ -d "${evidence}" ]] || die "missing evidence directory: ${evidence}"
+  action="${action//[$'\t\n']/ }"
+  result="${result//[$'\t\n']/ }"
+  printf '%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$2" \
+    "${action}" "${result}" >>"${evidence}/actions.tsv"
+}
+
+menu() {
+  local run_id="$1"
+  local root
+  root="$(run_root "${run_id}")"
+  live_pid "${run_id}" >/dev/null
+  shift
+  case "${1-}" in
+    list) tray "${root}" menu ;;
+    press)
+      (($# >= 2)) || die "menu press needs LABEL [LABEL]..."
+      tray "${root}" click "${@:2}"
+      ;;
+    *) die "menu needs list or press LABEL [LABEL]..." ;;
+  esac
+}
+
+ctl() {
+  local root
+  root="$(run_root "$1")"
+  live_pid "$1" >/dev/null
+  case "${2-}" in
+    start | stop | toggle | cancel | paste-last | quit)
+      in_run "${root}" "${root}/bin/onda" "--$2"
+      ;;
+    *) die "ctl needs start, stop, toggle, cancel, paste-last, or quit" ;;
+  esac
+}
+
+hotkey() {
+  local root
+  local keys
+  root="$(run_root "$1")"
+  live_pid "$1" >/dev/null
+  case "${2-}" in
+    hold)
+      [[ "${3-}" =~ ^[0-9]+([.][0-9]+)?$ ]] || die "hold needs SECONDS"
+      keys="${4:-${DEFAULT_SHORTCUT}}"
+      in_run "${root}" xdotool keydown "${keys}"
+      sleep "$3"
+      in_run "${root}" xdotool keyup "${keys}"
+      ;;
+    tap)
+      keys="${3:-${DEFAULT_SHORTCUT}}"
+      in_run "${root}" xdotool keydown "${keys}"
+      sleep 0.08
+      in_run "${root}" xdotool keyup "${keys}"
+      ;;
+    escape) in_run "${root}" xdotool key Escape ;;
+    *) die "hotkey needs hold SECONDS [KEYS], tap [KEYS], or escape" ;;
+  esac
+}
+
+speak() {
+  local run_id="$1"
+  local root
+  local after=0
+  local recording="${DEV_MODELS}/jfk.wav"
+  root="$(run_root "${run_id}")"
+  shift
+  while (($# > 0)); do
+    case "$1" in
+      --after)
+        after="${2:?--after needs SECONDS}"
+        shift
+        ;;
+      -*) die "unknown say option: $1" ;;
+      *) recording="$1" ;;
+    esac
+    shift
+  done
+  require_session "${root}"
+  [[ -f "${recording}" ]] || die "no recording at ${recording}"
+  sleep "${after}"
+  printf '%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${recording}" \
+    >>"$(evidence_dir "${run_id}")/spoken.tsv"
+  in_run "${root}" paplay "--device=${MICROPHONE}" "${recording}"
+}
+
+# the first visible window of a kind, or of a name pattern
+window_id() {
+  local root="$1"
+  local pattern="${WINDOW_NAMES[$2]-$2}"
+  local ids
+  ids="$(in_run "${root}" xdotool search --onlyvisible --name "${pattern}" \
+    2>/dev/null </dev/null)" || return 1
+  [[ -n "${ids}" ]] || return 1
+  printf '%s\n' "${ids%%$'\n'*}"
+}
+
+window_gone() {
+  ! window_id "$@" >/dev/null
+}
+
+# "x y width height" of a window
+geometry() {
+  local key
+  local value
+  local x=0 y=0 width=0 height=0
+  while IFS='=' read -r key value; do
+    case "${key}" in
+      X) x="${value}" ;;
+      Y) y="${value}" ;;
+      WIDTH) width="${value}" ;;
+      HEIGHT) height="${value}" ;;
+      *) ;;
+    esac
+  done < <(in_run "$1" xdotool getwindowgeometry --shell "$2" </dev/null)
+  printf '%s %s %s %s\n' "${x}" "${y}" "${width}" "${height}"
+}
+
+# No window manager runs in the display, so focus goes where it is put and
+# the active window is named as a window manager would name it.
+focus_window() {
+  in_run "$1" xdotool windowfocus --sync "$2"
+  in_run "$1" xprop -root -f _NET_ACTIVE_WINDOW 32x \
+    -set _NET_ACTIVE_WINDOW "$2"
+}
+
+# compiled once per source revision and shared by every run
+paste_target() {
+  local source="${FIXTURES}/paste-target.c"
+  local sum
+  local binary
+  local flags
+  local -a arguments
+  sum="$(sha256_of "${source}")"
+  binary="${TOOLS_ROOT}/paste-target-${sum:0:12}"
+  if [[ ! -x "${binary}" ]]; then
+    mkdir -p "${TOOLS_ROOT}"
+    flags="$(pkg-config --cflags --libs gtk4)" \
+      || die "paste-target.c needs the GTK 4 development files"
+    read -r -a arguments <<<"${flags}"
+    cc "${source}" -o "${binary}.tmp.$$" "${arguments[@]}" >&2 \
+      || die "could not compile ${source}"
+    mv "${binary}.tmp.$$" "${binary}"
+  fi
+  printf '%s\n' "${binary}"
+}
+
+target() {
+  local run_id="$1"
+  local action="${2-}"
+  local root
+  local evidence
+  local binary
+  local window
+  local pid
+  local text=""
+  local applications
+  local -a variables
+  local -a kind=()
+  root="$(run_root "${run_id}")"
+  evidence="$(evidence_dir "${run_id}")"
+  applications="${root}/home/.local/share/applications"
+  require_session "${root}"
+  case "${action}" in
+    new)
+      [[ ! -f "${root}/target-pid" ]] \
+        || die "this run already has a paste target; close it first"
+      case "${3-}" in
+        "") ;;
+        --password) kind=(--password) ;;
+        *) die "unknown target option: $3" ;;
+      esac
+      binary="$(paste_target)"
+      # the entry gives the target the application name history records
+      cat >"${applications}/com.rselbach.onda.TestTarget.desktop" <<'ENTRY'
+[Desktop Entry]
+Type=Application
+Name=Greendale Dictation Target
+Exec=true
+Icon=accessories-text-editor
+ENTRY
+      mapfile -d '' -t variables <"${root}/env"
+      env -i "${variables[@]}" setsid "${binary}" \
+        ${kind[@]+"${kind[@]}"} "${root}/target-text" \
+        "${root}/target-escapes" >"${evidence}/session/target.log" 2>&1 \
+        </dev/null &
+      write_state "${root}" target-pid "$!"
+      wait_for 50 window_id "${root}" target >/dev/null \
+        || die "the paste target did not open"
+      window="$(window_id "${root}" target)"
+      # every window opens at 0,0; this one moves beside Onda's
+      in_run "${root}" xdotool windowmove --sync "${window}" 1080 0
+      focus_window "${root}" "${window}"
+      ;;
+    focus)
+      window="$(window_id "${root}" target)" || die "no paste target window"
+      focus_window "${root}" "${window}"
+      ;;
+    read)
+      [[ -f "${root}/target-pid" ]] || die "this run has no paste target"
+      if [[ -f "${root}/target-text" ]]; then
+        text="$(<"${root}/target-text")"
+      fi
+      printf '%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        "${text//[$'\t\n']/ }" >>"${evidence}/target.tsv"
+      printf '%s\n' "${text}"
+      ;;
+    clear)
+      window="$(window_id "${root}" target)" || die "no paste target window"
+      focus_window "${root}" "${window}"
+      in_run "${root}" xdotool key ctrl+a BackSpace
+      ;;
+    close)
+      pid="$(read_state "${root}" target-pid)"
+      if in_this_run "${root}" "${pid}"; then
+        kill -TERM "${pid}"
+      fi
+      rm -f "${root}/target-pid"
+      ;;
+    *) die "target needs new [--password], focus, read, clear, or close" ;;
+  esac
+}
+
+ui() {
+  local run_id="$1"
+  local root
+  local pid
+  local out=""
+  local -a arguments=()
+  root="$(run_root "${run_id}")"
+  pid="$(live_pid "${run_id}")"
+  shift
+  case "${1-}" in
+    tree)
+      shift
+      while (($# > 0)); do
+        case "$1" in
+          --all) arguments+=(--all) ;;
+          --save)
+            [[ "${2-}" =~ ^[A-Za-z0-9._-]+$ ]] \
+              || die "--save needs a plain file NAME"
+            out="$(evidence_dir "${run_id}")/$2.tree.txt"
+            [[ ! -e "${out}" ]] || die "evidence already exists: ${out}"
+            shift
+            ;;
+          *) die "unknown ui tree option: $1" ;;
+        esac
+        shift
+      done
+      if [[ -n "${out}" ]]; then
+        in_run "${root}" python3 "${DRIVER}" tree "${pid}" \
+          ${arguments[@]+"${arguments[@]}"} | tee "${out}"
+      else
+        in_run "${root}" python3 "${DRIVER}" tree "${pid}" \
+          ${arguments[@]+"${arguments[@]}"}
+      fi
+      ;;
+    press)
+      (($# >= 2)) || die "ui press needs NAME"
+      in_run "${root}" python3 "${DRIVER}" press "${pid}" "${@:2}"
+      ;;
+    *) die "ui needs tree [--all] [--save NAME] or press NAME" ;;
+  esac
+}
+
+windows() {
+  local root
+  local id
+  local name
+  local kind
+  local known
+  local x y width height
+  root="$(run_root "$1")"
+  require_session "${root}"
+  printf 'id\tkind\tx\ty\twidth\theight\tname\n'
+  while IFS= read -r id; do
+    name="$(in_run "${root}" xdotool getwindowname "${id}" </dev/null)" \
+      || continue
+    kind="other"
+    for known in "${!WINDOW_NAMES[@]}"; do
+      if [[ "${name}" =~ ${WINDOW_NAMES[${known}]} ]]; then
+        kind="${known}"
+      fi
+    done
+    read -r x y width height < <(geometry "${root}" "${id}")
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${id}" "${kind}" "${x}" "${y}" \
+      "${width}" "${height}" "${name}"
+  done < <(in_run "${root}" xdotool search --onlyvisible --name '.+' \
+    2>/dev/null </dev/null || true)
+}
+
+wait_window() {
+  local run_id="$1"
+  local kind="${2:?wait-window needs KIND}"
+  local root
+  local gone=false
+  local timeout=10
+  root="$(run_root "${run_id}")"
+  require_session "${root}"
+  shift 2
+  while (($# > 0)); do
+    case "$1" in
+      --gone) gone=true ;;
+      --timeout)
+        timeout="${2:?--timeout needs SECONDS}"
+        shift
+        ;;
+      *) die "unknown wait-window option: $1" ;;
+    esac
+    shift
+  done
+  if [[ "${gone}" == true ]]; then
+    wait_for $((timeout * 10)) window_gone "${root}" "${kind}" \
+      || die "a ${kind} window is still visible after ${timeout}s"
+    printf 'no visible %s window\n' "${kind}"
+    return
+  fi
+  wait_for $((timeout * 10)) window_id "${root}" "${kind}" >/dev/null \
+    || die "no visible ${kind} window after ${timeout}s"
+  printf 'visible %s window %s\n' "${kind}" "$(window_id "${root}" "${kind}")"
+}
+
+screenshot() {
+  local run_id="$1"
+  local name="${2:?screenshot needs NAME}"
+  local kind="main"
+  local root
+  local out
+  local id
+  local -a region
+  if [[ "${3-}" == "--window" ]]; then
+    kind="${4:?--window needs a kind}"
+  fi
+  [[ "${name}" =~ ^[A-Za-z0-9._-]+$ ]] || die "NAME must be a plain file name"
+  root="$(run_root "${run_id}")"
+  require_session "${root}"
+  out="$(evidence_dir "${run_id}")/${name}.png"
+  [[ ! -e "${out}" ]] || die "evidence already exists: ${out}"
+  if [[ "${kind}" == "screen" ]]; then
+    in_run "${root}" python3 "${DRIVER}" screenshot "${out}"
+    printf '%s\n' "${out}"
+    return
+  fi
+  if ! wait_for 30 window_id "${root}" "${kind}" >/dev/null; then
+    windows "${run_id}" >&2
+    die "no visible ${kind} window"
+  fi
+  id="$(window_id "${root}" "${kind}")"
+  read -r -a region < <(geometry "${root}" "${id}")
+  in_run "${root}" python3 "${DRIVER}" screenshot "${out}" "${region[@]}"
+  printf '%s\n' "${out}"
+}
+
+show_log() {
+  local log
+  log="$(evidence_dir "$1")/onda.log"
+  [[ -f "${log}" ]] || die "no log at ${log}"
+  cat "${log}"
+}
+
+history() {
+  local run_id="$1"
+  local root
+  local out
+  root="$(run_root "${run_id}")"
+  [[ -d "${root}/data" ]] || die "run does not exist: ${root}"
+  out="$(evidence_dir "${run_id}")/history.tsv"
+  printf 'timestamp\tapp\tmodel\tduration\ttranscript\n' >"${out}"
+  python3 "${DRIVER}" history "${root}/data" >>"${out}"
+  cat "${out}"
+}
+
+run_command() {
+  local root
+  root="$(run_root "$1")"
+  require_session "${root}"
+  [[ "${2-}" == "--" && $# -ge 3 ]] || die "exec needs -- COMMAND [ARGS]"
+  in_run "${root}" "${@:3}"
+}
+
+stop_pids() {
+  local signal="$1"
+  local pid
+  shift
+  for pid in "$@"; do
+    if [[ "${pid}" != "$$" ]]; then
+      kill "-${signal}" "${pid}" 2>/dev/null || true
+    fi
+  done
+}
+
+run_is_empty() {
+  [[ -z "$(run_pids "$1")" ]]
+}
+
+cleanup() {
+  local run_id="$1"
+  local root
+  local pid
+  local -a pids
+  root="$(run_root "${run_id}")"
+  case "${root}" in
+    "${RUNS_ROOT}"/?*) ;;
+    *) die "refusing unsafe cleanup path: ${root}" ;;
+  esac
+  [[ -d "${root}" ]] || die "run does not exist: ${root}"
+
+  # Onda first, so it ends inside a session that still works
+  if [[ -f "${root}/pid" ]]; then
+    pid="$(read_state "${root}" pid)"
+    if in_this_run "${root}" "${pid}"; then
+      kill -TERM "${pid}" 2>/dev/null || true
+      wait_for 50 test ! -e "/proc/${pid}" || true
+      printf 'stopped pid=%s\n' "${pid}"
+    fi
+  fi
+  # only processes that prove they belong to this run, never a name
+  mapfile -t pids < <(run_pids "${root}")
+  stop_pids TERM ${pids[@]+"${pids[@]}"}
+  if ! wait_for 50 run_is_empty "${root}"; then
+    mapfile -t pids < <(run_pids "${root}")
+    stop_pids KILL ${pids[@]+"${pids[@]}"}
+    wait_for 20 run_is_empty "${root}" \
+      || die "processes of the run survived:" "$(run_pids "${root}" | tr '\n' ' ')"
+  fi
+  rm -rf "${root}"
+  printf 'removed runtime=%s\n' "${root}"
+  printf 'kept evidence=%s\n' "$(evidence_dir "${run_id}")"
+}
+
+main() {
+  local command="${1-}"
+  local run_id="${2-}"
+  [[ "$(uname -s)" == "Linux" ]] \
+    || die "this helper drives the Linux app; use verify-onda on macOS"
+  if [[ -z "${command}" || "${command}" == "help" || -z "${run_id}" ]]; then
+    usage
+    exit 1
+  fi
+  check_run_id "${run_id}"
+  shift 2
+  # Only the session's own body keeps the handles it was started with.
+  # Nothing else may reach the desktop session, not even a command that
+  # forgot `in_run`.
+  if [[ "${command}" != "__session" ]]; then
+    unset DISPLAY WAYLAND_DISPLAY XAUTHORITY DBUS_SESSION_BUS_ADDRESS \
+      XDG_RUNTIME_DIR
+  fi
+  case "${command}" in
+    __session) session "${run_id}" ;;
+    launch) launch "${run_id}" "$@" ;;
+    relaunch) relaunch "${run_id}" "$@" ;;
+    doctor) doctor "${run_id}" ;;
+    wait-ready) wait_ready "${run_id}" "$@" ;;
+    status) status "${run_id}" ;;
+    evidence-dir) evidence_dir "${run_id}" ;;
+    record)
+      (($# == 3)) || die "record needs RUN_ID FEATURE ACTION RESULT"
+      record "${run_id}" "$@"
+      ;;
+    menu) menu "${run_id}" "$@" ;;
+    ctl) ctl "${run_id}" "$@" ;;
+    hotkey) hotkey "${run_id}" "$@" ;;
+    say) speak "${run_id}" "$@" ;;
+    target) target "${run_id}" "$@" ;;
+    ui) ui "${run_id}" "$@" ;;
+    click)
+      require_session "$(run_root "${run_id}")"
+      in_run "$(run_root "${run_id}")" xdotool mousemove \
+        "${1:?click needs X}" "${2:?click needs Y}" click 1
+      ;;
+    key)
+      (($# >= 1)) || die "key needs KEYS"
+      require_session "$(run_root "${run_id}")"
+      in_run "$(run_root "${run_id}")" xdotool key "$@"
+      ;;
+    type)
+      (($# == 1)) || die "type needs TEXT"
+      require_session "$(run_root "${run_id}")"
+      in_run "$(run_root "${run_id}")" xdotool type -- "$1"
+      ;;
+    windows) windows "${run_id}" ;;
+    wait-window) wait_window "${run_id}" "$@" ;;
+    screenshot) screenshot "${run_id}" "$@" ;;
+    log) show_log "${run_id}" ;;
+    history) history "${run_id}" ;;
+    exec) run_command "${run_id}" "$@" ;;
+    cleanup) cleanup "${run_id}" ;;
+    *)
+      usage
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"

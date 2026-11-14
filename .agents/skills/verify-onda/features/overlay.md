@@ -45,3 +45,43 @@ session (for example right after launch with a fresh binary).
   retries for 3 s and then lists the PID's windows on stderr.
 - It follows the pointer's screen. Leave the pointer on the main display.
 - Fade-in is 0.2 s; a screenshot right at start can be translucent.
+
+## On Linux
+
+In a run the overlay is the X11 window `onda-recording`, 400x104, at the
+bottom center of the display. The same window shows a model download or
+load.
+
+What differs:
+
+- `ovl-preview` needs Parakeet Unified and four CPUs. The other models
+  transcribe only after the recording ends. Speech says which case applies,
+  for example "Live preview works with Parakeet Unified."
+- `ovl-waveform` shows the waveform, the target's icon, the clock, and the
+  cancel button.
+
+Driving it:
+
+- `wait-window RUN_ID overlay` and `wait-window RUN_ID overlay --gone` mark
+  the start and the end of a session.
+- `screenshot RUN_ID NAME --window overlay` during a recording, and again
+  right after the stop for the transcribing state.
+- Preview: `launch RUN_ID --model parakeet-unified`, `ctl RUN_ID start`,
+  `say RUN_ID &`, and a screenshot 7 s into the recording. The overlay
+  shows the words so far above the waveform, and `log RUN_ID` has
+  `preview decode` lines with `chars=` above zero.
+- Cancel button: `windows RUN_ID` gives the overlay's `x` and `y`. The
+  button is at `x+378, y+52`, and `click RUN_ID X Y` there ends the session
+  with no text and no history row.
+- Focus: `target RUN_ID read` after a dictation proves the text reached the
+  target, so the overlay took no focus.
+- Download overlay: `ui RUN_ID press "Download & Use"` on Speech. The
+  overlay and the tray show `preparing speech model, 0 percent` while Onda
+  retries, `requests.log` gains `CONNECT huggingface.co:443`, and nothing
+  is written under `<data>/Models`. That is as far as a run goes.
+
+Gotchas:
+
+- The overlay is drawn, not built from widgets, so `ui tree` shows nothing
+  of it. Proof is the screenshot, the window list, and the log.
+- On Wayland the overlay is a layer-shell surface. A run cannot prove it.

@@ -61,3 +61,56 @@ Click the Onda icon in the menu bar.
   run `wait-ready` first.
 - `Paste Last Transcript` types into the frontmost app; focus the run's
   TextEdit document before pressing it.
+
+## On Linux
+
+The tray is a StatusNotifierItem, built from the same core `StatusMenu`. A
+run reads and clicks it over D-Bus (see [../LINUX.md](../LINUX.md)).
+
+What differs:
+
+- `menu-header` names the Linux shortcut: `Ready to Dictate — Ctrl+Alt+Space`.
+- `menu-tray-label` is the item's `Title` and `ToolTip`, and
+  `onda --status` answers the same text. The icon is a themed name, not a
+  drawing: `audio-input-microphone-symbolic` (ready),
+  `media-record-symbolic` (recording), `content-loading-symbolic`
+  (transcribing), `folder-download-symbolic` (preparing a model), and
+  `dialog-warning-symbolic` (warning). A download's percentage is in the
+  title.
+- `menu-dictation` adds a `Cancel Dictation` row while recording.
+- `menu-language` has no subtitle, so its parent reads
+  `Language: <current>`.
+- `menu-recent` ends with `Show All History…`.
+- `menu-fix-permissions` never shows. The core reports no missing
+  permission on Linux.
+- `menu-updates` offers a download, never `Restart to Update`. Onda does
+  not replace a package-managed install.
+
+Driving it:
+
+- `status RUN_ID` prints the status, the icon, the title, and the tooltip.
+- `menu RUN_ID list` prints the rows: a submenu's rows indented, a disabled
+  row in brackets, `✓` and `·` on checkable rows, `---` for a separator.
+- `menu RUN_ID press "Settings…"`, then `wait-window RUN_ID main` and
+  `ui RUN_ID tree`. The `[selected]` sidebar row and the header label read
+  `General`. `press "Open Onda"` lands on `Getting Started`.
+- `menu RUN_ID press "Language: Automatic" "Other Language…"` opens Speech.
+  Launch with `--setting 'recentLanguages="en,pt"'` to get language rows.
+  `press "Language: Automatic" "Portuguese"` then sets `selectedLanguage`
+  to `pt` in `<data>/settings.json` and the parent reads
+  `Language: Portuguese`.
+- `menu RUN_ID press "Start Dictation"`, `say`, `press "Stop Dictation"`.
+- After a dictation, `menu RUN_ID press "Recent Transcripts" "<row>"`
+  pastes that transcript into the focused target.
+- `menu RUN_ID press "Quit Onda"` ends the process. `status` then fails
+  with `Onda is not running`, and `relaunch` starts it again.
+
+Gotchas:
+
+- `Check for Updates…` is safe to press. The proxy refuses the request,
+  `requests.log` gains `CONNECT rselbach.github.io:443`, and General shows
+  "Couldn't check for updates."
+- Labels double every underscore, because DBusMenu reads one as an
+  access-key marker.
+- A run proves what Onda publishes on the bus. How a desktop's tray host
+  draws the icon and the menu needs that desktop.

@@ -3,9 +3,11 @@
 
     tray-host.py watch                 own org.kde.StatusNotifierWatcher
     tray-host.py show                  print the icon, the tooltip, and the menu
+    tray-host.py status                print the icon, the title, and the tooltip
+    tray-host.py menu                  print the menu
     tray-host.py click LABEL [LABEL]   open the menu, then click the item
 
-`show` prints one menu row per line: a submenu's rows are indented, a disabled
+`show` and `menu` print one menu row per line: a submenu's rows are indented, a disabled
 row is in brackets, and a checkable row starts with its mark. `click` takes
 the labels down to the item, without marks or brackets.
 """
@@ -85,11 +87,19 @@ def layout(bus, name):
     return menu, list(rows(root))
 
 
-def show(bus, name):
+def status(bus, name, fields):
     item = bus.get_object(name, "/StatusNotifierItem")
     properties = item.GetAll(ITEM, dbus_interface=PROPERTIES)
-    print(f"icon {properties['IconName']}")
-    print(f"tooltip {properties['ToolTip'][2]}")
+    values = {
+        "icon": properties["IconName"],
+        "title": properties["Title"],
+        "tooltip": properties["ToolTip"][2],
+    }
+    for field in fields:
+        print(f"{field} {values[field]}")
+
+
+def menu(bus, name):
     for _, path, properties in layout(bus, name)[1]:
         label = path[-1]
         if properties.get("toggle-type") == "checkmark":
@@ -117,7 +127,13 @@ def main():
         return watch()
     bus = dbus.SessionBus()
     if command == "show" and not labels:
-        return show(bus, tray(bus))
+        name = tray(bus)
+        status(bus, name, ("icon", "tooltip"))
+        return menu(bus, name)
+    if command == "status" and not labels:
+        return status(bus, tray(bus), ("icon", "title", "tooltip"))
+    if command == "menu" and not labels:
+        return menu(bus, tray(bus))
     if command == "click" and labels:
         return click(bus, tray(bus), labels)
     sys.exit(__doc__)

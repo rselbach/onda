@@ -34,11 +34,33 @@ in the running app. Read this index, then the feature file.
 - Report anything unreachable with the attempted action, the tray label, and
   the missing precondition (permission, model, network).
 
+## On Linux
+
+The sections above describe macOS. On Linux the same features are proven in
+a private session (see [../LINUX.md](../LINUX.md)).
+
+- Baseline: `verify-onda launch <new-run-id>` then `wait-ready`. `doctor`
+  reports `healthy` and status `Onda, ready to dictate`, or
+  `finish setup to dictate` for `--fresh`. Nothing is shared with the user
+  or with another run, so several runs can go at once.
+- Driving: the tray through `menu`, dictation through `hotkey`, `ctl`,
+  `say`, and `target`, and windows through `ui tree`, `ui press`, `click`,
+  `key`, and `type`. `exec RUN_ID -- COMMAND` covers the rest.
+- Proof: a screenshot and a `ui tree --save` for a window, `menu list` and
+  `status` for the tray, and the side effect checked separately:
+  `target read`, `history`, `log`, `<data>/settings.json`, `requests.log`,
+  or `opened.log`.
+- Report what a run cannot prove: portal shortcuts, the layer-shell
+  overlay, `wtype` paste, and whatever a desktop adds. Name the session
+  the claim would need.
+
 ## Feature entry contract
 
-Each file has four H2s: `Sub-features` (stable IDs, requirement IDs in
+Each file has five H2s: `Sub-features` (stable IDs, requirement IDs in
 parentheses), `How to get to it (user POV)`, `Driving it with verify-onda`,
-and `Gotchas`.
+`Gotchas`, and `On Linux`. The first four describe macOS. `On Linux` says
+what differs there, how to drive it with the Linux helper, and what a run
+cannot prove.
 
 ## Features
 

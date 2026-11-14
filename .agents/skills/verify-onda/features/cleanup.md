@@ -90,3 +90,39 @@ Main window > Post-Processing.
   before any run that dictates with post-processing on.
 - Request behavior (headers, prompt, guardrails) is covered by Rust tests in
   `crates/onda-cleanup`, not by this skill.
+
+## On Linux
+
+The page offers OpenRouter and Fireworks AI. Apple Intelligence does not
+exist on Linux. Verify the UI and the refusal, never a real request.
+
+What differs:
+
+- With the switch off the page shows only `Post-process transcripts`. On,
+  it adds the `Model` row, the privacy note, the `Prompt` group, and
+  `Test with Sample Text`.
+- API keys live in the Secret Service, stored with `secret-tool` under the
+  attributes `application` and `account`. A run's keyring is its own and
+  starts empty, and its application attribute is a scratch id, so a real
+  key is out of reach by construction. `doctor` has nothing to warn about.
+
+Driving it:
+
+1. Open Post-Processing with a sidebar `click`, then `ui RUN_ID tree`.
+2. `ui RUN_ID press "Post-process transcripts"`. The tree gains the Model
+   row, and `postProcessingEnabled` in `<data>/settings.json` is `true`.
+3. Turning it on asks OpenRouter for its model list. `requests.log` gains
+   `CONNECT openrouter.ai:443`, refused.
+4. `exec RUN_ID -- secret-tool search --all account openRouterApiKey`
+   lists what the run stored. It prints nothing until a key is saved.
+
+Gotchas:
+
+- Use `sk-greendale-human-being` when a field needs a key. Every request
+  with it is refused, so "Refining..." and a real model list are out of
+  reach in a run.
+- `ui tree` never prints a password field. Keep keys out of screenshots
+  too.
+- A link that Onda asks the desktop to open lands in `opened.log`. No
+  browser starts.
+- Request behavior is covered by the Rust tests in `crates/onda-cleanup`.

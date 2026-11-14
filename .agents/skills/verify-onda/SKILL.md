@@ -1,9 +1,20 @@
 ---
 name: verify-onda
-description: Launch, drive, and capture proof from the real Onda.app (macOS menu-bar dictation app; Swift shell over the Rust core) against a scratch data directory. Use after changing dictation, hotkeys, the overlays, the status menu, onboarding, main-window pages, models, or history, when the proof must come from the running app rather than Rust or Swift tests.
+description: Launch, drive, and capture proof from the real Onda app against scratch data. On macOS that is Onda.app, the menu-bar dictation app (Swift shell over the Rust core). On Linux it is the GTK `onda` binary inside a private desktop session. Use after changing dictation, hotkeys, the overlays, the status or tray menu, onboarding, main-window pages, models, or history, when the proof must come from the running app rather than Rust or Swift tests.
 ---
 
 # Verify Onda
+
+This file covers macOS. On Linux, read [LINUX.md](LINUX.md) instead. The
+commands have the same names there, and `scripts/verify-onda` hands a Linux
+call to `scripts/verify-onda-linux`.
+
+Linux lives in this skill and not beside it because both platforms share
+one feature map. Linux is meant to offer what macOS offers, so each file
+under `features/` lists a feature once and says how to prove it on each
+platform. Two skills would keep two lists, and they would drift. The
+rules, the isolation, and the driver do differ, so they have their own
+file.
 
 Onda is a background (`LSUIElement`) menu-bar app. A verification run copies
 `build/Onda.app`, points it at a scratch data directory with `ONDA_DATA_DIR`,

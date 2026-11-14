@@ -65,7 +65,9 @@ jobs:
         run: |
           shellcheck scripts/build-linux.sh scripts/install-linux.sh \
             scripts/test-linux-dictation.sh scripts/test-linux-gui.sh \
-            scripts/test-linux-overlay.sh
+            scripts/test-linux-overlay.sh \
+            .agents/skills/verify-onda/scripts/verify-onda \
+            .agents/skills/verify-onda/scripts/verify-onda-linux
 
   build-and-test:
     runs-on: xcode-27

@@ -55,3 +55,42 @@ First launch, or Getting Started > "Run Setup Again".
   (`--model parakeet-ultra`, `parakeet-ja`, `parakeet-unified`).
 - The Hotkey step saves and re-registers immediately; picking a lone
   modifier changes which `verify-onda hotkey` gesture works.
+
+## On Linux
+
+The wizard is its own window, `Set Up Onda`, 720x560, with the steps
+Welcome, Language, Hotkey, Speech Model, and Ready. Linux has no permission
+grants, so there is no Permissions step.
+
+Driving it:
+
+1. `launch RUN_ID --fresh --model parakeet-tdt-v2`. Skip `wait-ready`.
+2. `status RUN_ID` reads `Onda, finish setup to dictate` with the icon
+   `dialog-warning-symbolic`, and `menu RUN_ID list` starts with
+   `[Finish Setup to Dictate]`.
+3. `wait-window RUN_ID onboarding`, then `ui RUN_ID tree` and
+   `screenshot RUN_ID onboarding-welcome --window onboarding`. The tree
+   names the step in its first `grouping`.
+4. Walk the steps by name: `ui RUN_ID press "Get Started"`, then
+   `ui RUN_ID press "Continue"` on each step and `ui RUN_ID press "Back"`
+   to return. Take a tree and a screenshot per step.
+5. Speech Model: the step shows the model recommended for the language.
+   `ui RUN_ID press "Show other models"` lists the rest, and the linked
+   model reads `Selected`.
+6. Ready: the step has a "Click here and try it." field. `ui RUN_ID press
+   "Start Dictating"` closes the window. `status` then reads
+   `Onda, ready to dictate` and `onboardingCompleted` in
+   `<data>/settings.json` is `true`.
+7. `ctl RUN_ID quit` and `relaunch RUN_ID` prove what a second launch
+   shows, such as the wizard returning after it was closed early. The
+   macOS helper cannot do this.
+
+Gotchas:
+
+- The wizard starts a download by itself when the recommended model is not
+  on disk. With English that is Parakeet Ultra, 740 MB. In a run the proxy
+  refuses it: `requests.log` gains `CONNECT huggingface.co:443`, and the
+  step shows "Download failed" beside a `Download` button. Link the
+  recommended model with `--model` to see the step without the failure.
+- A language row and a hotkey preset are list rows, so they need `click`
+  with a position read from a screenshot.

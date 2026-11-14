@@ -617,6 +617,10 @@ cleanup() {
 }
 
 main() {
+  # the Linux app has its own helper, with the same commands
+  if [[ "$(uname -s)" == "Linux" ]]; then
+    exec "${SCRIPT_DIR}/verify-onda-linux" "$@"
+  fi
   local command="${1-}"
   local run_id="${2-}"
   if [[ -z "${command}" || "${command}" == "help" || -z "${run_id}" ]]; then
