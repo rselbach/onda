@@ -104,6 +104,18 @@ Driving it:
   pastes that transcript into the focused target.
 - `menu RUN_ID press "Quit Onda"` ends the process. `status` then fails
   with `Onda is not running`, and `relaunch` starts it again.
+- `Retry Loading Model` and `Re-download Model` show after a failed load.
+  See `mdl-failure` in [models-downloads.md](models-downloads.md).
+- `Retry Failed Dictation` and `Discard Failed Recording` show after a
+  decode fails, which no user action causes with a loaded model. Make the
+  first decode of a run fail for lack of memory instead: `menu press
+  "Start Dictation"`, `say`, read `VmSize` from `/proc/<pid>/status`, run
+  `prlimit --pid <pid> --as=$(( (VmSize_kB + 220000) * 1024 )):`, then
+  `menu press "Stop Dictation"`. The log reads `transcription failed` with
+  `out of memory`, and both rows appear. Lift the cap with
+  `prlimit --pid <pid> --as=unlimited:` before pressing either row. Retry
+  pastes the kept recording's transcript into the focused target. Discard
+  removes both rows.
 
 Gotchas:
 
@@ -114,3 +126,7 @@ Gotchas:
   access-key marker.
 - A run proves what Onda publishes on the bus. How a desktop's tray host
   draws the icon and the menu needs that desktop.
+- The memory cap works for the first decode after a launch, with jfk.wav
+  and a 220 MB margin. A smaller margin, or a later decode, can fail an
+  allocation that the speech library does not survive, and Onda aborts.
+  `relaunch` and try again.

@@ -253,7 +253,8 @@ removes your custom prompt. Onda does not accept a blank prompt.
   accessibility bus (AT-SPI), in both session types, and fits the dictation
   to what precedes it. Mid-sentence it adds a space and lowers a word such as
   "And". After a sentence it adds the space and keeps the capital. This works
-  in GTK 3 and GTK 4 text fields. A password field is never read, and a field
+  in GTK, Qt, Firefox, Chromium, and terminal fields once the application is
+  on the accessibility bus. A password field is never read, and a field
   that does not answer within 250 ms, or that is not on the accessibility
   bus, gets the transcript as the model wrote it (see
   [Text before the caret](#text-before-the-caret)).
@@ -431,6 +432,38 @@ Desktop testing must include physical portal shortcuts and permission dialogs
 on the supported GNOME/KDE versions. Headless X11 tests do not establish that
 Wayland grants, focus, or paste work on every compositor.
 
+These compositors were exercised with the real binary in private headless
+sessions, with keys and clicks sent through each compositor's own virtual
+input. No physical keyboard, screen, or microphone was involved:
+
+| Session | What ran |
+| --- | --- |
+| sway 1.11, wlroots 0.19 | The overlay as a layer surface: recording, transcribing, notices, download, and load. It never takes the keyboard, a press on the waveform reaches the window below, and only the button takes a press. Paste with `wtype`. |
+| GNOME Shell 50.1, Wayland | The shortcut recorder, the GlobalShortcuts portal grant and refusal, a dictation held on the granted shortcut, the overlay through XWayland above a Wayland window, paste after the RemoteDesktop consent, and Files selecting a recording. |
+| KWin 6.6.6 with Plasma 6.6.6, Wayland | The GlobalShortcuts portal grant and refusal, a dictation held on the granted shortcut, and both sound cues. Plasma binds none of Onda's three shortcut presets by default. |
+| Dolphin 25.12, X11 | Dolphin selecting a recording from History. |
+
+What those sessions showed that a user will notice:
+
+- **GNOME's shortcut dialog can open behind Onda's window.** Started with its
+  window, Onda asks for the shortcut before the window is on screen, and the
+  **Add Keyboard Shortcuts** dialog then opened under it in five of five
+  launches. The Hotkey row reads "Preparing the global shortcut…" until the
+  dialog is answered. Started with `--background`, the dialog opens on top.
+  GNOME's shortcut helper was already running in that session. A helper the
+  bus has to start first may be slow enough to land on top.
+- **A refused shortcut is reported as a conflict.** When the user cancels the
+  desktop's dialog, or the portal fails, the notification still says the
+  hotkey "may be in use by another application". The Hotkey row gives the
+  real reason.
+- **Files is not raised a second time.** "Show Recording in Folder" passes no
+  activation token. GNOME Files comes to the front when it opens a window,
+  and stays behind Onda when the folder is already open in one.
+- **The first paste on GNOME and KDE waits for consent.** The desktop shows
+  its remote-control dialog, and the overlay stays on "Transcribing…" until
+  it is answered. Refused, the transcript stays on the clipboard and the
+  overlay says so.
+
 ## Focused application on Wayland
 
 Onda identifies no target application in a Wayland session. AT-SPI was
@@ -453,9 +486,9 @@ default. Each row is what AT-SPI reported while that window had the focus:
 
 The GTK and terminal rows come from a private headless GNOME Shell session,
 where opening and closing windows moved the focus. The Electron row is a
-read-only query of a desktop session. Qt applications, Firefox, and KDE Plasma
-were not available on the test machine and are not measured. A report took 21
-to 59 ms with four applications on the bus.
+read-only query of a desktop session. Qt, Firefox, and Chromium fields are
+measured under [Text before the caret](#text-before-the-caret). A report took
+21 to 59 ms with four applications on the bus.
 
 `scripts/report-linux-focus.py` prints the same report for the session it runs
 in, without changing it. It needs `python3-gobject` and the AT-SPI
@@ -485,7 +518,9 @@ application, which it finds by process id. On Wayland it has no target, so it
 asks every application for its active window. It reads the role, the text,
 and the selection of the focused accessible. The dictation follows the start
 of the selection, or the caret when nothing is selected. AT-SPI counts in
-characters and Onda's core in UTF-16 units, so Onda converts.
+characters and Onda's core in UTF-16 units, so Onda converts. Qt counts in
+UTF-16 units already. Its character count gives that away once the text
+holds an emoji, and Onda then takes its offsets as they are.
 
 Each row is a real dictation on GNOME Shell 50.1 with `org.a11y.Status
 IsEnabled` false, the default. "Joined" means the transcript arrived fitted
@@ -518,15 +553,38 @@ Limits found by measuring:
 - **Applications that do not answer.** One call may take 100 ms and the whole
   read 250 ms. On Wayland a stopped application ahead of the focused one
   costs 100 ms, and three of them use up the read.
-- **Terminals.** Not established. In the test session GNOME Terminal and
-  Ptyxis each had the focus on a button, not on the terminal, and nothing was
-  joined.
-- **Other toolkits.** Not measured, because the test machine has no Qt
-  application, no KDE Plasma, and a Firefox that does not start in a private
-  session. An Electron application was listed without window states (see
-  [Focused application on Wayland](#focused-application-on-wayland)), which
-  Onda reads as no field. Onda does not switch on the desktop's accessibility
-  (`org.a11y.Status IsEnabled`) to make an application report more.
+
+Other toolkits were measured on X11 in a private session, each with a real
+dictation after `Troy Barnes studies at Greendale`, after a full stop and a
+space, and in an empty field:
+
+| Field | Application | On the accessibility bus | Result |
+| --- | --- | --- | --- |
+| `QTextEdit`, `QLineEdit` | Qt 6.10 | with `QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1`, or once `IsEnabled` is true | joined |
+| `QLineEdit` in password mode | Qt 6.10 | as above | not read: role `password text` |
+| `<textarea>`, `<input>`, `contenteditable` | Firefox 160 | started with `GNOME_ACCESSIBILITY=1`, or with `IsEnabled` true | joined, with the two limits below |
+| `<input type=password>` | Firefox 160 | as above | not read: role `password text` |
+| `<textarea>`, `<input>`, `contenteditable` | Electron 45, Chromium 156 | only with `IsEnabled` true at its start and `--force-renderer-accessibility` | joined |
+| Shell line | GNOME Terminal 3.58, Ptyxis 50.1 | by default | joined, with **Terminal paste shortcut** on |
+
+- **Applications off the bus.** With `IsEnabled` false, the default, Qt,
+  Firefox, and Chromium are not on the accessibility bus. Onda asks the
+  registry once, finds no application, and delivers the transcript
+  unchanged. Onda does not switch `IsEnabled` on. Switched on while they
+  run, Qt joins the bus within a second, Firefox joins but reports no caret
+  until it moves, and Chromium does not join.
+- **A space typed into a web page.** A browser keeps the last space of a
+  `contenteditable` as a no-break space. The core does not take it for a
+  space when it looks for the end of a sentence, so a dictation after
+  `Greendale. ` starts with a lowered "and".
+- **A field deep in a long page.** Onda walks the window's accessibles in
+  document order, two calls each. Below 1,500 paragraphs in Firefox it made
+  646 pairs of calls in 250 ms, did not reach the field, and delivered the
+  transcript unchanged.
+- **Terminals.** The shell prompt counts as text before the caret. At an
+  empty prompt such as `greendale$ `, a dictation therefore starts with a
+  lowered "and". Without **Terminal paste shortcut**, Ctrl+V does not paste
+  in a terminal and nothing arrives.
 
 ## Blank GNOME shortcut dialog
 

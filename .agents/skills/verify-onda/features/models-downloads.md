@@ -70,6 +70,16 @@ Driving it:
   Nothing is written, and the status returns to ready on the old model.
 - `mdl-load`: after launch `wait-ready` takes a few seconds, and the first
   load writes `.onda-verified` beside the model once its SHA-256 matched.
+- `mdl-failure`: launch with a second model, replace its link under
+  `<data>/Models/<id>/` with a copy of the same size that differs in a few
+  bytes, and `ui RUN_ID press "Select"` on Speech. A shorter file does not
+  count as downloaded and offers `Download & Use` instead. The load fails
+  its checksum, the tray reads `Onda, model unavailable` with
+  `dialog-warning-symbolic`, and `menu list` gains `Retry Loading Model`
+  and `Re-download Model`. `Retry Loading Model` fails again until the link
+  is restored, then `wait-ready` passes. `Re-download Model` deletes the
+  file, logs `download started`, and adds `CONNECT huggingface.co:443` to
+  `requests.log`. Corrupt only the copy in the run's data directory.
 
 Gotchas:
 
