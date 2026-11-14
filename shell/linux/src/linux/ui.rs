@@ -52,6 +52,7 @@ impl Window {
     pub fn new(application: &adw::Application) -> anyhow::Result<Rc<Self>> {
         let (events, incoming) = async_channel::unbounded();
         let tray = super::tray::start(events.clone());
+        let overlay_events = events.clone();
         let core = Core::new(events)?;
         let window = adw::ApplicationWindow::builder()
             .application(application)
@@ -186,8 +187,8 @@ impl Window {
             setup.add(&row);
         }
         home.append(&setup);
-        let overlay = Overlay::new();
-        if matches!(overlay, Overlay::Unavailable) {
+        let overlay = Overlay::new(move || super::send(&overlay_events, Message::CancelDictation));
+        if !overlay.available() {
             home.append(&label("A floating recording indicator is unavailable on this desktop. Recording status remains visible here."));
         }
         let this = Rc::new(Self {
@@ -319,6 +320,7 @@ impl Window {
     fn event(self: &Rc<Self>, message: Message) {
         match message {
             Message::Tray(command) => self.tray(command),
+            Message::CancelDictation => self.core.app.cancel_dictation(),
             Message::Hotkey(event) => self.core.app.on_hotkey_event(event),
             Message::Download(update) => self.core.app.download_event(update),
             Message::DevicesChanged => self.core.app.input_devices_changed(),

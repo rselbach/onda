@@ -42,6 +42,7 @@ wayland-client = "0.31"
 wl-clipboard-rs = "0.9"
 ksni = { version = "0.3", features = ["blocking"] }
 gio = { version = "0.22", features = ["v2_80"] }
+pangocairo = "0.22"
 
 [dev-dependencies]
 tempfile = "3"

@@ -185,8 +185,11 @@ removes your custom prompt. Onda does not accept a blank prompt.
   preserves text-only selections. Unsupported or unreadable selections leave
   the transcript on the clipboard. Restoration waits 500 ms and checks the
   current text; this is not an acknowledgement from the target application.
-- **Indicator:** a passive layer-shell window, or a click-through X11 window
-  (including XWayland on GNOME). Without either, use the main window's status.
+- **Indicator:** a floating panel with the waveform, a clock, the transcribing,
+  notice, and silent-microphone states, and a cancel button. It is a
+  layer-shell window, or an X11 window (including XWayland on GNOME). It never
+  takes keyboard focus, and only the cancel button takes clicks. Without
+  either window, use the main window's status.
 - **Tray:** optional StatusNotifierItem. Its menu starts and stops dictation,
   cancels a recording, pastes the last or a recent transcript, retries or
   discards a failed dictation, retries or re-downloads a failed model, switches
@@ -270,15 +273,27 @@ sudo dnf install xorg-x11-server-Xvfb dbus-daemon gnome-keyring libsecret
 scripts/test-linux-post-processing.sh
 ```
 
+The overlay test shows the recording overlay's X11 window in Xvfb, above a
+focused window. It checks that each state is on screen as drawn, that only the
+cancel button takes a press, and that the focus never moves. Set
+`ONDA_TEST_SCREENSHOT_DIR` to capture each state. The layer-shell window needs
+a compositor that offers the protocol, so this test does not cover it.
+
+```sh
+sudo dnf install xorg-x11-server-Xvfb
+scripts/test-linux-overlay.sh
+```
+
 The real dictation smoke test uses an isolated D-Bus session, Xvfb, a PipeWire
 virtual microphone, and a GTK text field. Its private PipeWire and WirePlumber
 processes use temporary sockets and disable physical-device discovery. The
 desktop audio session stays running. Supply the v2 GGUF file above and
 whisper.cpp's `samples/jfk.wav` (the expected transcript contains “country”).
-It checks cancellation, command controls, global push-to-talk, CPU inference,
-paste, clipboard restoration, and single-instance activation. A stand-in tray
-host reads the tray's menu over D-Bus and clicks its items. It never uses
-your normal Onda data or microphone. It also checks microphone release after
+It checks cancellation, the overlay's cancel button, command controls, global
+push-to-talk, CPU inference, paste, clipboard restoration, and single-instance
+activation. A stand-in tray host reads the tray's menu over D-Bus and clicks
+its items. It never uses your normal Onda data or microphone. It also checks
+microphone release after
 standby and a fresh recording after capture has stopped. A stand-in MPRIS
 player and a `pw-play` stream on a second virtual sink check media pause and
 resume, the play/pause fallback, the output mute, and its recovery after Onda

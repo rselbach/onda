@@ -122,6 +122,25 @@ speakers_audible() {
   [[ "$(LC_ALL=C pactl get-sink-mute onda-speakers)" == 'Mute: no' ]]
 }
 
+overlay_window() {
+  local windows
+  windows="$(xdotool search --onlyvisible --name '^onda-recording$' \
+    2> /dev/null || true)"
+  printf '%s\n' "${windows%%$'\n'*}"
+}
+
+overlay_shown() {
+  [[ -n "$(overlay_window)" ]]
+}
+
+overlay_hidden() {
+  [[ -z "$(overlay_window)" ]]
+}
+
+target_received() {
+  rg -q "$1" "${work}/transcript"
+}
+
 check_microphone_released() {
   pw-dump > "${work}/audio-state.json"
   python3 - "${work}/audio-state.json" <<'PY'
@@ -309,6 +328,16 @@ ${menu_tail}"
   target_window="$(xdotool search --sync --name 'Greendale dictation target' | head -1)"
   xdotool windowfocus --sync "${target_window}"
   printf 'Greendale clipboard' | xclip -selection clipboard -in
+  "${binary}" --start
+  wait_until 'the recording overlay' overlay_shown
+  # the cancel button, in the overlay's own coordinates
+  xdotool mousemove --window "$(overlay_window)" 378 52 click 1
+  wait_until 'the cancel button to end the recording' overlay_hidden
+  wait_ready
+  [[ "$(xdotool getwindowfocus)" == "${target_window}" ]]
+  xdotool type 'Troy Barnes'
+  wait_until 'typing to reach the target' target_received 'Troy Barnes'
+  xdotool key ctrl+a BackSpace
   python3 "${root}/shell/linux/tests/mpris-player.py" \
     greendale "${work}/greendale.log" &
   player_pid=$!
@@ -416,7 +445,7 @@ ${menu_tail}"
   tray click 'Quit Onda'
   wait "${app_pid}"
   app_pid=""
-  echo "PASS: commands, cancellation, global shortcut, CPU transcription, GTK paste, clipboard restoration, tray menu, media pause, output mute, mute recovery."
+  echo "PASS: commands, cancellation, overlay cancel button, global shortcut, CPU transcription, GTK paste, clipboard restoration, tray menu, media pause, output mute, mute recovery."
 }
 
 main "$@"

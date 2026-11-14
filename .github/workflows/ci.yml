@@ -54,7 +54,8 @@ jobs:
       - name: Shell lint
         run: |
           shellcheck scripts/build-linux.sh scripts/install-linux.sh \
-            scripts/test-linux-dictation.sh scripts/test-linux-post-processing.sh
+            scripts/test-linux-dictation.sh scripts/test-linux-post-processing.sh \
+            scripts/test-linux-overlay.sh
 
   build-and-test:
     runs-on: xcode-27
