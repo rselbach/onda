@@ -2,6 +2,7 @@
 
 mod about;
 mod general;
+mod getting_started;
 mod history;
 mod hotkey;
 mod navigation;
@@ -11,6 +12,7 @@ mod post_processing;
 mod recorder;
 mod replacements;
 mod speech;
+mod try_it;
 
 #[cfg(test)]
 mod integration_tests;
@@ -28,12 +30,13 @@ use super::{
     tray::Command,
 };
 
-const IDLE_HINT: &str = "Use your global shortcut to dictate into another application.";
+use getting_started::IDLE_HINT;
 
 pub struct Window {
     pub core: Core,
     window: adw::ApplicationWindow,
     stack: gtk::Stack,
+    getting_started: getting_started::Page,
     models: gtk::Box,
     history: history::Page,
     hotkey: hotkey::Page,
@@ -46,10 +49,6 @@ pub struct Window {
     speech_alert: Cell<Option<u64>>,
     general: gtk::Box,
     post_processing: post_processing::Page,
-    status: gtk::Label,
-    detail: gtk::Label,
-    meter: gtk::LevelBar,
-    shortcut: gtk::Label,
     toast: adw::ToastOverlay,
     overlay: Overlay,
     overlay_visible: Cell<bool>,
@@ -93,33 +92,11 @@ impl Window {
         toast.set_child(Some(&toolbar));
         window.set_content(Some(&toast));
 
-        let home = page();
-        let image = gtk::Image::from_icon_name("audio-input-microphone-symbolic");
-        image.set_pixel_size(64);
-        image.set_margin_top(32);
-        home.append(&image);
-        let status = gtk::Label::new(Some("Welcome to Onda"));
-        status.add_css_class("title-1");
-        home.append(&status);
-        let detail = label(
-            "Download a speech model to get started. Your recordings are transcribed on this computer.",
-        );
-        home.append(&detail);
-        let meter = gtk::LevelBar::new();
-        home.append(&meter);
-        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-        actions.set_halign(gtk::Align::Center);
-        let record = gtk::Button::with_label("Start / Stop");
-        record.add_css_class("suggested-action");
-        let cancel = gtk::Button::with_label("Cancel");
-        actions.append(&record);
-        actions.append(&cancel);
-        home.append(&actions);
-        let shortcut = label("Preparing the global shortcut…");
-        home.append(&shortcut);
-        home.append(&label("Close this window to keep Onda running. Reopen it from your application launcher. Use Quit to stop Onda."));
+        let overlay =
+            Overlay::new(move |press| super::send(&overlay_events, Message::Overlay(press)));
+        let getting_started = getting_started::Page::new(overlay.available());
         stack.add_titled(
-            &scrolled(&home),
+            &scrolled(&getting_started.widget),
             Some("dictation"),
             MainWindowSection::GettingStarted.title(),
         );
@@ -165,46 +142,11 @@ impl Window {
             Some("about"),
             MainWindowSection::About.title(),
         );
-        let setup = adw::PreferencesGroup::builder()
-            .title("Set up dictation")
-            .build();
-        for (name, title, description) in [
-            (
-                "speech",
-                "Choose a speech model",
-                "Download a model to transcribe on this computer.",
-            ),
-            (
-                "hotkey",
-                "Set your shortcut",
-                "Choose how you start and stop dictation.",
-            ),
-            (
-                "general",
-                "Choose your microphone and output",
-                "Set where Onda listens and sends your words.",
-            ),
-        ] {
-            let row = adw::ActionRow::builder()
-                .title(title)
-                .subtitle(description)
-                .activatable(true)
-                .build();
-            row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
-            let stack = stack.clone();
-            row.connect_activated(move |_| stack.set_visible_child_name(name));
-            setup.add(&row);
-        }
-        home.append(&setup);
-        let overlay =
-            Overlay::new(move |press| super::send(&overlay_events, Message::Overlay(press)));
-        if !overlay.available() {
-            home.append(&label("A floating indicator is unavailable on this desktop. Recording and download status remain visible here."));
-        }
         let this = Rc::new(Self {
             core,
             window,
             stack,
+            getting_started,
             models,
             history,
             hotkey,
@@ -217,32 +159,17 @@ impl Window {
             speech_alert: Cell::new(None),
             general,
             post_processing,
-            status,
-            detail,
-            meter,
-            shortcut,
             toast,
             overlay,
             overlay_visible: Cell::new(false),
             inhibitor: Cell::new(None),
             tray,
         });
+        this.getting_started.connect(&this);
         this.post_processing.connect(&this);
         this.hotkey.connect(&this);
         this.history.connect(&this);
         this.replacements.connect(&this);
-        let weak = Rc::downgrade(&this);
-        record.connect_clicked(move |_| {
-            if let Some(this) = weak.upgrade() {
-                this.core.app.toggle_dictation_from_menu();
-            }
-        });
-        let weak = Rc::downgrade(&this);
-        cancel.connect_clicked(move |_| {
-            if let Some(this) = weak.upgrade() {
-                this.core.app.cancel_dictation();
-            }
-        });
         let weak = Rc::downgrade(&this);
         this.window.connect_close_request(move |_| {
             if let Some(this) = weak.upgrade() {
@@ -297,11 +224,11 @@ impl Window {
     }
 
     pub fn status(&self) -> String {
-        self.status.text().to_string()
+        self.getting_started.status()
     }
 
     fn set_shortcut_status(&self, status: &str) {
-        self.shortcut.set_text(status);
+        self.getting_started.set_shortcut(status);
         self.hotkey.set_status(status);
     }
 
@@ -379,7 +306,7 @@ impl Window {
             }
             Message::Core(event) => match event {
                 Event::TrayChanged(view) => {
-                    self.status.set_text(&view.accessibility_label);
+                    self.getting_started.set_status(&view.accessibility_label);
                     if let Some(tray) = &self.tray {
                         tray.update(|tray| tray.view = view);
                     }
@@ -387,13 +314,15 @@ impl Window {
                 Event::DownloadOverlayChanged(view) => {
                     self.overlay.download(&view);
                     match view {
-                        DownloadOverlayView::Shown { status, .. } => self.detail.set_text(&status),
+                        DownloadOverlayView::Shown { status, .. } => {
+                            self.getting_started.set_detail(&status);
+                        }
                         // the core also hides the download when a recording
                         // or a notice takes the line, and reports that
                         // overlay first
                         DownloadOverlayView::Hidden => {
                             if !self.overlay_visible.get() {
-                                self.detail.set_text(IDLE_HINT);
+                                self.getting_started.set_detail(IDLE_HINT);
                             }
                         }
                     }
@@ -402,9 +331,9 @@ impl Window {
                     self.overlay.update(&view);
                     self.overlay_visible.set(view.visible);
                     let (text, level) = super::overlay::content(&view);
-                    self.detail
-                        .set_text(if view.visible { &text } else { IDLE_HINT });
-                    self.meter.set_value(level);
+                    self.getting_started
+                        .set_detail(if view.visible { &text } else { IDLE_HINT });
+                    self.getting_started.set_level(level);
                 }
                 Event::SpeechChanged(page) => self.speech(*page),
                 Event::MenuChanged(menu) => {
@@ -457,8 +386,7 @@ impl Window {
                     self.recorder.render(self, &view);
                     self.hotkey.render(&view);
                 }
-                // #17 renders the Getting Started page
-                Event::GettingStartedChanged(_) => {}
+                Event::GettingStartedChanged(page) => self.getting_started.update(self, *page),
                 // a GTK application is a regular one whenever a window is
                 // open; only macOS switches its Dock presence
                 Event::AppPresenceChanged { .. } => {}

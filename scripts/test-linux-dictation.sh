@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Exercise a real GTK window, virtual microphone, inference, X11 paste, the
 # join to the text before the caret, the session's claim on Escape, the tray
-# menu, media pause and mute, and sound cues against a private bus, audio
-# server, and accessibility bus. With the Unified model as a fourth argument,
-# also exercise live preview.
+# menu, media pause and mute, sound cues, and the Getting Started page's
+# try-it field against a private bus, audio server, and accessibility bus.
+# With the Unified model as a fourth argument, also exercise live preview.
 set -euo pipefail
 
 cleanup() {
@@ -26,6 +26,7 @@ cleanup() {
   if (( status != 0 )); then
     cat "${work}/onda.log" >&2 || true
     cat "${work}/tray" >&2 || true
+    cat "${work}/try-it" >&2 || true
     cat "${work}/pulse.log" >&2 || true
     cat "${work}/pipewire.log" >&2 || true
     cat "${work}/wireplumber.log" >&2 || true
@@ -266,6 +267,68 @@ check_live_preview() {
     echo "A preview ran on two CPUs" >&2
     return 1
   fi
+}
+
+onda_window() {
+  local windows
+  windows="$(xdotool search --onlyvisible --name '^Onda$' 2> /dev/null || true)"
+  printf '%s\n' "${windows%%$'\n'*}"
+}
+
+# Whether the try-it field, which has the focus, holds text that matches $1.
+# The field is read through the clipboard, and the caret goes back to the end.
+try_it_holds() {
+  xdotool key ctrl+a ctrl+c ctrl+End
+  xclip -selection clipboard -out > "${work}/try-it" 2> /dev/null || true
+  rg -q -- "$1" "${work}/try-it"
+}
+
+# Waits for the dictation to be delivered and for Onda to put the clipboard
+# back, which the next read of the field replaces.
+try_it_delivered() {
+  wait_until 'the recording to end' overlay_hidden
+  wait_ready
+  sleep 1
+}
+
+# Dictates with the caret in the Getting Started page's try-it field: with the
+# shortcut, then with the page's Start / Stop button. Onda is on the
+# accessibility bus here, as on a desktop, so it reads its own field. The
+# space that joins a dictation to the text before it is optional: on a busy
+# host Onda's answer about its own field can miss the reader's limit.
+check_try_it() {
+  local sample="$1" window
+  # in the window's own coordinates
+  local field=(628 367) start_stop=(822 508)
+  write_settings false
+  launcher=(env --unset=GTK_A11Y)
+  start_onda
+  launcher=()
+  wait_until 'the Onda window' onda_window_visible
+  window="$(onda_window)"
+  xdotool windowfocus --sync "${window}"
+  xdotool mousemove --window "${window}" "${field[@]}" click 1
+  xdotool type 'Greendale is open.'
+  wait_until 'typing to reach the try-it field' \
+    try_it_holds '^Greendale is open\.$'
+  xdotool keydown ctrl+alt+space
+  wait_until 'the shortcut to start a recording' overlay_shown
+  sleep 0.5
+  paplay --device=onda-test "${sample}"
+  xdotool keyup ctrl+alt+space
+  try_it_delivered
+  try_it_holds '^Greendale is open\. ?And so.*country\.$'
+  xdotool mousemove --window "${window}" "${start_stop[@]}" click 1
+  wait_until 'Start / Stop to start a recording' overlay_shown
+  sleep 0.5
+  paplay --device=onda-test "${sample}"
+  xdotool mousemove --window "${window}" "${start_stop[@]}" click 1
+  try_it_delivered
+  # the click left the caret in the field, after the first dictation
+  try_it_holds '^Greendale is open\. ?And so.*country\. ?And so.*country\.$'
+  "${binary}" --quit
+  wait "${app_pid}"
+  app_pid=""
 }
 
 check_microphone_released() {
@@ -698,11 +761,12 @@ ${menu_tail}"
   "${binary}" --quit
   wait "${app_pid}"
   app_pid=""
+  check_try_it "${sample}"
   if [[ -n "${unified}" ]]; then
     check_live_preview "${unified}" "${sample}" "${target_window}"
     checked=", live preview"
   fi
-  echo "PASS: commands, cancellation, overlay cancel button, Escape, global shortcut, CPU transcription, GTK paste, text before the caret, password field, clipboard restoration, target application, target left, tray menu, media pause, output mute, mute recovery, sound cues${checked}."
+  echo "PASS: commands, cancellation, overlay cancel button, Escape, global shortcut, CPU transcription, GTK paste, text before the caret, password field, clipboard restoration, target application, target left, tray menu, media pause, output mute, mute recovery, sound cues, try-it field${checked}."
 }
 
 main "$@"

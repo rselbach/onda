@@ -74,9 +74,11 @@ What differs:
 
 - `win-presence` does not apply. A GTK application has no Dock presence to
   switch.
-- `win-getting-started` shows the status line, `Start / Stop` and `Cancel`,
-  the shortcut, and a "Set up dictation" group with three rows that jump to
-  Speech, Hotkey, and General. It has no permission rows.
+- `win-getting-started` shows the Setup checklist with the Speech Model row
+  alone, because Linux has no permission rows, then `Run Setup Again` and
+  the Try It prompt and field. Below them a Dictation group holds the status
+  line, the microphone level, `Start / Stop` and `Cancel`, and the
+  "Desktop shortcut" row.
 - `win-general` has Microphone, Output ("After transcription" and the
   Linux-only "Terminal paste shortcut"), Media, Feedback, Startup, and
   Updates. It has no Permissions section.

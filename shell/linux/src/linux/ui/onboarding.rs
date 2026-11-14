@@ -19,7 +19,7 @@ use onda_domain::{
     hotkey::HotkeyPreset, languages::LanguageSetting, models::ModelId, onboarding::OnboardingStep,
 };
 
-use super::Window;
+use super::{Window, try_it::TryIt};
 
 const CONTENT_WIDTH: i32 = 560;
 
@@ -221,7 +221,7 @@ impl Step {
         toolbar.add_bottom_bar(&footer);
         let focus = match &body {
             // dictated text lands in the focused field
-            Body::Ready(ready) => ready.try_it.clone().upcast(),
+            Body::Ready(ready) => ready.try_it.text.clone().upcast(),
             _ => primary.clone().upcast(),
         };
         Self {
@@ -363,9 +363,7 @@ impl Body {
                 body.prefix.set_label(&prompt_prefix);
                 fill_keycaps(&body.keycaps, &keycaps);
                 body.suffix.set_label(&prompt_suffix);
-                body.placeholder.set_label(&try_it_placeholder);
-                body.try_it
-                    .update_property(&[accessible::Property::Label(&try_it_placeholder)]);
+                body.try_it.set_placeholder(&try_it_placeholder);
                 body.note.set_visible(retention_note.is_some());
                 body.note.set_label(&retention_note.unwrap_or_default());
             }
@@ -755,8 +753,7 @@ struct Ready {
     prefix: gtk::Label,
     keycaps: gtk::Box,
     suffix: gtk::Label,
-    try_it: gtk::TextView,
-    placeholder: gtk::Label,
+    try_it: TryIt,
     note: gtk::Label,
 }
 
@@ -776,34 +773,7 @@ impl Ready {
         prompt.append(&prefix);
         prompt.append(&keycaps);
         prompt.append(&suffix);
-        // a plain local field: what lands in it goes nowhere
-        let try_it = gtk::TextView::builder()
-            .wrap_mode(gtk::WrapMode::WordChar)
-            .top_margin(10)
-            .bottom_margin(10)
-            .left_margin(12)
-            .right_margin(12)
-            .build();
-        let placeholder = gtk::Label::builder()
-            .halign(gtk::Align::Start)
-            .valign(gtk::Align::Start)
-            .margin_top(10)
-            .margin_start(12)
-            .can_target(false)
-            .css_classes(["dim-label"])
-            .build();
-        let shown = placeholder.clone();
-        try_it
-            .buffer()
-            .connect_changed(move |buffer| shown.set_visible(buffer.char_count() == 0));
-        let field = gtk::Overlay::builder()
-            .child(&gtk::ScrolledWindow::builder().child(&try_it).build())
-            .build();
-        field.add_overlay(&placeholder);
-        let frame = gtk::Frame::builder()
-            .child(&field)
-            .height_request(96)
-            .build();
+        let try_it = TryIt::new();
         let note = gtk::Label::builder()
             .wrap(true)
             .justify(gtk::Justification::Center)
@@ -813,7 +783,7 @@ impl Ready {
         content.append(&done);
         content.append(&heading);
         content.append(&prompt);
-        content.append(&frame);
+        content.append(&try_it.widget);
         content.append(&note);
         let body = Self {
             heading,
@@ -821,7 +791,6 @@ impl Ready {
             keycaps,
             suffix,
             try_it,
-            placeholder,
             note,
         };
         (body, scrolled(&content).upcast())
@@ -897,49 +866,24 @@ mod tests {
     use onda_domain::{
         hotkey::Shortcut,
         languages::LanguageSetting,
-        models::{Catalog, ModelId},
+        models::Catalog,
         onboarding::{AUTOMATIC_ONBOARDING_DELAY, OnboardingStep},
     };
 
     use super::super::{
         Window,
         integration_tests::{
-            Start, button, capture_window, launch, text_visible, wait_for, widgets,
+            MODEL, Start, button, capture_window, launch, seed_model, text_visible, wait_for,
+            widgets,
         },
     };
     use crate::linux::Message;
 
-    const MODEL: ModelId = ModelId::ParakeetTdtV2;
     const PENDING: &str = "Onda, finish setup to dictate";
     const READY: &str = "Onda, ready to dictate";
 
     fn data_dir() -> PathBuf {
         PathBuf::from(std::env::var_os("ONDA_DATA_DIR").expect("use a scratch data directory"))
-    }
-
-    /// Puts the model the wizard recommends for English in the data
-    /// directory, so the wizard finds it downloaded and asks the network
-    /// for nothing. `ONDA_TEST_SPEECH_MODEL` names a real copy of the file,
-    /// which also loads. Without it the file has the right size and no
-    /// content: it counts as downloaded and then fails its check at load.
-    fn seed_model() -> bool {
-        let file = &crate::linux::speech::manifest(MODEL).unwrap().files[0];
-        let folder = DataPaths::new(data_dir()).models_dir().join(MODEL.as_str());
-        std::fs::create_dir_all(&folder).unwrap();
-        let path = folder.join(file.path);
-        match std::env::var_os("ONDA_TEST_SPEECH_MODEL") {
-            Some(real) => {
-                std::os::unix::fs::symlink(real, path).unwrap();
-                true
-            }
-            None => {
-                std::fs::File::create_new(path)
-                    .unwrap()
-                    .set_len(file.size)
-                    .unwrap();
-                false
-            }
-        }
     }
 
     fn wizard(owner: &Window) -> adw::Window {
@@ -1082,13 +1026,13 @@ mod tests {
         wait_for(|| owner.core.settings.hotkey(default) == Shortcut::ALT_SUPER_SPACE);
         wait_for(|| picked(&presets[1]) && !picked(&presets[0]));
         // the desktop holds the new shortcut before the next pick replaces it
-        wait_for(|| owner.shortcut.text() == "Alt+Super+Space");
+        wait_for(|| owner.getting_started.shortcut() == "Alt+Super+Space");
         assert_eq!(rows(&page), presets, "a pick keeps the rows and the focus");
         capture_window(&window, "onboarding-hotkey");
         pick(&presets[0]);
         wait_for(|| owner.core.settings.hotkey(default) == *default);
         wait_for(|| picked(&presets[0]));
-        wait_for(|| owner.shortcut.text() == "Control+Alt+Space");
+        wait_for(|| owner.getting_started.shortcut() == "Control+Alt+Space");
 
         // what the header's Back button, Escape, and Alt+Left do
         assert!(navigation(&window).pop());

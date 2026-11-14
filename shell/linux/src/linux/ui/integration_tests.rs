@@ -1,8 +1,10 @@
 use super::{super::Message, Window};
 use adw::prelude::*;
 use gtk::gio;
+use onda_adapters::DataPaths;
 use onda_app::Event;
 use onda_domain::{
+    models::ModelId,
     non_dictation_ui::{DownloadOverlayView, OverlayProgress},
     overlay::{OverlayContent, OverlayIcon, OverlayView},
 };
@@ -17,6 +19,9 @@ use std::{
 /// The key of the update notice that [`Start`] makes due.
 pub(super) const NOTICE_KEY: &str = "parakeet-ja->parakeet-ultra";
 
+/// The model the wizard recommends for English.
+pub(super) const MODEL: ModelId = ModelId::ParakeetTdtV2;
+
 /// The settings a real-GUI test starts from. None of them makes the app
 /// download a model by itself.
 pub(super) enum Start {
@@ -29,12 +34,42 @@ pub(super) enum Start {
     /// As `NoticeDue`, but the user declined the replacement model: no
     /// notice and no download.
     Declined,
+    /// Setup is finished and [`MODEL`] is selected and in the data
+    /// directory, as [`seed_model`] leaves it.
+    Installed,
+}
+
+fn data_dir() -> PathBuf {
+    PathBuf::from(std::env::var_os("ONDA_DATA_DIR").expect("use a scratch data directory"))
+}
+
+/// Puts [`MODEL`] in the data directory, so the app finds it downloaded and
+/// asks the network for nothing. `ONDA_TEST_SPEECH_MODEL` names a real copy
+/// of the file, which also loads. Without it the file has the right size and
+/// no content: it counts as downloaded and then fails its check at load.
+pub(super) fn seed_model() -> bool {
+    let file = &crate::linux::speech::manifest(MODEL).unwrap().files[0];
+    let folder = DataPaths::new(data_dir()).models_dir().join(MODEL.as_str());
+    std::fs::create_dir_all(&folder).unwrap();
+    let path = folder.join(file.path);
+    match std::env::var_os("ONDA_TEST_SPEECH_MODEL") {
+        Some(real) => {
+            std::os::unix::fs::symlink(real, path).unwrap();
+            true
+        }
+        None => {
+            std::fs::File::create_new(path)
+                .unwrap()
+                .set_len(file.size)
+                .unwrap();
+            false
+        }
+    }
 }
 
 /// Starts the app on the data directory of the test session.
 pub(super) fn launch(start: Start) -> Rc<Window> {
-    let directory =
-        PathBuf::from(std::env::var_os("ONDA_DATA_DIR").expect("use a scratch data directory"));
+    let directory = data_dir();
     let finished = serde_json::json!({
         "onboardingCompleted": true,
         "didShowFirstRunSetup": true,
@@ -47,6 +82,13 @@ pub(super) fn launch(start: Start) -> Rc<Window> {
             let mut settings = finished;
             settings["declinedModelMigrationNoticeKey"] = NOTICE_KEY.into();
             settings["lastModelMigrationNoticeKey"] = NOTICE_KEY.into();
+            settings
+        }
+        Start::Installed => {
+            seed_model();
+            let mut settings = finished;
+            settings["selectedModel"] = MODEL.as_str().into();
+            settings["selectedLanguage"] = "en".into();
             settings
         }
     };
@@ -202,6 +244,21 @@ pub(super) fn x11_window(name: &str) -> Option<u32> {
                 .reply()
                 .is_ok_and(|attributes| attributes.map_state == MapState::VIEWABLE)
     })
+}
+
+/// Gives the main window the keyboard, which no window manager does here.
+pub(super) fn focus_onda() {
+    use x11rb::{protocol::xproto::*, wrapper::ConnectionExt as _};
+    wait_for(|| x11_window("Onda").is_some());
+    let (connection, _) = x11rb::connect(None).unwrap();
+    connection
+        .set_input_focus(
+            InputFocus::POINTER_ROOT,
+            x11_window("Onda").unwrap(),
+            x11rb::CURRENT_TIME,
+        )
+        .unwrap();
+    connection.sync().unwrap();
 }
 
 // whether the floating overlay's X11 window is on screen
@@ -534,16 +591,22 @@ pub(super) fn exercise_pages(owner: &Rc<Window>) {
     };
     assert!(!overlay_on_screen());
     downloading();
-    assert_eq!(owner.detail.text(), "Downloading Greendale model… 42%");
+    assert_eq!(
+        owner.getting_started.detail(),
+        "Downloading Greendale model… 42%"
+    );
     wait_for(overlay_on_screen);
     download(DownloadOverlayView::Hidden);
-    assert_eq!(owner.detail.text(), super::IDLE_HINT);
+    assert_eq!(owner.getting_started.detail(), super::IDLE_HINT);
     wait_for(|| !overlay_on_screen());
     downloading();
     recording(true);
     download(DownloadOverlayView::Hidden);
     assert!(
-        owner.detail.text().starts_with("Transcribing..."),
+        owner
+            .getting_started
+            .detail()
+            .starts_with("Transcribing..."),
         "a hidden download must not replace the recording status"
     );
     assert!(
@@ -551,7 +614,7 @@ pub(super) fn exercise_pages(owner: &Rc<Window>) {
         "a hidden download must not take the recording overlay off screen"
     );
     recording(false);
-    assert_eq!(owner.detail.text(), super::IDLE_HINT);
+    assert_eq!(owner.getting_started.detail(), super::IDLE_HINT);
     wait_for(|| !overlay_on_screen());
     assert!(
         widgets::<adw::PreferencesGroup>(&owner.about)

@@ -158,9 +158,7 @@ mod tests {
     use x11rb::{
         connection::Connection,
         protocol::{
-            xproto::{
-                ConnectionExt, GrabMode, InputFocus, KEY_PRESS_EVENT, KEY_RELEASE_EVENT, ModMask,
-            },
+            xproto::{ConnectionExt, GrabMode, KEY_PRESS_EVENT, KEY_RELEASE_EVENT, ModMask},
             xtest::ConnectionExt as _,
         },
         rust_connection::RustConnection,
@@ -171,7 +169,7 @@ mod tests {
 
     use super::super::IDLE_HINT;
     use super::super::integration_tests::{
-        Start, button, launch, settle, text_visible, wait_for, widgets, x11_window,
+        Start, button, focus_onda, launch, settle, text_visible, wait_for, widgets,
     };
 
     // hardware keycodes, which name a key's place whatever the layout
@@ -233,19 +231,6 @@ mod tests {
             let (connection, screen) = x11rb::connect(None).unwrap();
             let root = connection.setup().roots[screen].root;
             Self { connection, root }
-        }
-
-        // no window manager runs here to give the window the keyboard
-        fn focus_onda(&self) {
-            wait_for(|| x11_window("Onda").is_some());
-            self.connection
-                .set_input_focus(
-                    InputFocus::POINTER_ROOT,
-                    x11_window("Onda").unwrap(),
-                    x11rb::CURRENT_TIME,
-                )
-                .unwrap();
-            self.connection.sync().unwrap();
         }
 
         fn send(&self, kind: u8, keys: &[u8]) {
@@ -321,12 +306,12 @@ mod tests {
                 && status.ends_with("Bind onda --toggle in your desktop keyboard settings."),
             "{status}"
         );
-        assert_eq!(owner.shortcut.text(), status);
+        assert_eq!(owner.getting_started.shortcut(), status);
 
         rival.release(SPACE);
         owner.core.app.set_hotkey(Shortcut::CONTROL_ALT_SPACE);
         wait_for(|| owner.hotkey.status.subtitle().as_deref() == Some("Control+Alt+Space"));
-        assert_eq!(owner.shortcut.text(), "Control+Alt+Space");
+        assert_eq!(owner.getting_started.shortcut(), "Control+Alt+Space");
         assert!(!rival.grab(SPACE), "Onda must hold the shortcut now");
         owner.core.runtime.block_on(owner.core.app.shutdown_async());
         owner.window.close();
@@ -353,7 +338,7 @@ mod tests {
         let idle = || record.label().as_deref() == Some("Record Shortcut");
         assert!(!cancel.is_visible());
         let keyboard = Keyboard::connect();
-        keyboard.focus_onda();
+        focus_onda();
 
         record.grab_focus();
         record.emit_clicked();
@@ -390,7 +375,7 @@ mod tests {
         owner.window.close();
         wait_for(idle);
         owner.present();
-        keyboard.focus_onda();
+        focus_onda();
 
         record.emit_clicked();
         wait_for(recording);
@@ -409,7 +394,7 @@ mod tests {
         let repeating = Instant::now() + Duration::from_millis(1500);
         wait_for(|| Instant::now() >= repeating);
         assert_eq!(
-            owner.detail.text(),
+            owner.getting_started.detail(),
             IDLE_HINT,
             "keys held past the recording must not start a dictation"
         );

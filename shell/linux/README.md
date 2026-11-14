@@ -289,6 +289,13 @@ History, and About. Settings use native libadwaita groups and follow the desktop
 light or dark appearance. Apple Intelligence and macOS-specific permissions and
 update controls are unavailable.
 
+**Getting Started** lists what is left to set up, with a button for each open
+step, and **Run Setup Again** reopens the first-run wizard. Click the **Try
+It** field and dictate to see the result without leaving Onda. Below it, the
+page shows the dictation status and microphone level, **Start / Stop** and
+**Cancel**, and the shortcut the desktop granted. A click on either button
+leaves the caret in the field.
+
 **Replacements** edits phrases after transcription and post-processing. Changes
 save as you type and when you leave the page. **History** includes transcript
 search, date groups, retention, optional recordings, and a confirmation before
@@ -311,7 +318,9 @@ The real-GUI tests drive the GTK window and are marked `#[ignore]`.
 `scripts/test-linux-gui.sh` finds every ignored test of the shell and runs each
 one in its own process and data directory, under Xvfb with a private D-Bus
 session and keyring. CI runs the script on every push. The tests check the
-first-run wizard, provider switching, key storage and deletion, custom model
+first-run wizard, the Getting Started checklist with a model missing and
+installed, a paste into its try-it field, provider switching, key storage
+and deletion, custom model
 selection, missing-key feedback, prompt editing, replacement editing,
 shortcuts, history search, confirmation dialogs, the model update notice, and
 critical alerts. They never use your credentials or normal Onda data. The
@@ -330,7 +339,8 @@ request, prints the requests each test made, and fails when one names
 The first-run wizard starts the download of the recommended model when the
 user leaves its Language step. The test that walks the wizard therefore puts
 that model's file in its data directory first, with the right size and no
-content, so the wizard finds the model downloaded. To have the test also load
+content, so the wizard finds the model downloaded. The Getting Started test
+with a model installed starts from the same file. To have both tests also load
 the model, name a real copy of the file:
 
 ```sh
@@ -376,7 +386,10 @@ a lowercase "and", that one after a full sentence keeps its capital, that a
 dictation into a password field arrives unchanged, and that the log holds
 neither the fields' text nor the transcript. It checks that history records the text field's application, and
 that a dictation whose window lost the focus before delivery is copied instead
-of pasted. A stand-in tray host reads the tray's menu over D-Bus and clicks
+of pasted. It clicks the try-it field of the Getting Started page and checks
+that a dictation started with the shortcut, and one started with the page's
+Start / Stop button, both arrive in the field. A stand-in tray host reads the
+tray's menu over D-Bus and clicks
 its items. It never uses your normal Onda data or microphone. It also checks
 microphone release after
 standby and a fresh recording after capture has stopped. A stand-in MPRIS
