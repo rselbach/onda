@@ -123,8 +123,8 @@ impl ksni::Tray for Tray {
         }
         items.push(item(menu.dictation.title, true, Command::ToggleDictation));
         if menu.dictation.action == DictationMenuAction::Stop {
-            // Linux claims no global Escape and its overlay takes no clicks,
-            // so the tray is where a recording is discarded
+            // Escape is claimed on X11 only, so the tray always offers the
+            // cancel
             items.push(item("Cancel Dictation", true, Command::CancelDictation));
         }
         items.push(item(

@@ -1,4 +1,7 @@
 //! Portal shortcuts on Wayland, X11 grabs elsewhere, and command fallback.
+//! On X11 a session also claims Escape, which cancels it.
+
+mod escape;
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -53,6 +56,9 @@ pub const NO_STATUS: i32 = -1;
 
 pub struct Hotkeys {
     sender: watch::Sender<Option<Shortcut>>,
+    events: async_channel::Sender<Message>,
+    // held from a session's start to its end, on X11 only
+    escape: Mutex<Option<escape::Claim>>,
 }
 
 impl Hotkeys {
@@ -63,7 +69,9 @@ impl Hotkeys {
     ) -> Self {
         let (sender, mut changes) = watch::channel(None);
         let runtime = runtime.clone();
+        let hotkey_events = events.clone();
         std::thread::spawn(move || {
+            let events = hotkey_events;
             loop {
                 let current = changes.borrow_and_update().clone();
                 if let Some(shortcut) = current {
@@ -96,7 +104,11 @@ impl Hotkeys {
                 }
             }
         });
-        Self { sender }
+        Self {
+            sender,
+            events,
+            escape: Mutex::default(),
+        }
     }
 }
 
@@ -113,10 +125,27 @@ impl HotkeySource for Hotkeys {
         self.sender.send_replace(None);
     }
     fn reenable_stream(&self) {}
-    fn register_cancel(&self, _: &[ModifierSet]) -> Result<(), String> {
+    fn register_cancel(&self, modifiers: &[ModifierSet]) -> Result<(), String> {
+        // a portal shortcut is bound for the whole desktop session, so
+        // claiming Escape there would take it from every application for good
+        if super::process::wayland() {
+            return Ok(());
+        }
+        let mut escape = self.escape.lock().unwrap_or_else(|e| e.into_inner());
+        if escape.is_some() {
+            return Ok(());
+        }
+        let events = self.events.clone();
+        let claim = escape::Claim::new(modifiers, move || {
+            send(&events, Message::Hotkey(HotkeyEvent::Cancel));
+        })
+        .map_err(|error| error.to_string())?;
+        *escape = Some(claim);
         Ok(())
     }
-    fn unregister_cancel(&self) {}
+    fn unregister_cancel(&self) {
+        self.escape.lock().unwrap_or_else(|e| e.into_inner()).take();
+    }
     fn globe_key_action(&self) -> GlobeKeyAction {
         GlobeKeyAction::Unknown
     }

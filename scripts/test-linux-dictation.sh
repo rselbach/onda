@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Exercise a real GTK window, virtual microphone, inference, X11 paste, the
-# tray menu, media pause and mute, and sound cues against a private bus and
-# audio server.
+# session's claim on Escape, the tray menu, media pause and mute, and sound
+# cues against a private bus and audio server.
 set -euo pipefail
 
 cleanup() {
@@ -12,6 +12,7 @@ cleanup() {
   if [[ -n "${music_pid:-}" ]]; then kill "${music_pid}" 2>/dev/null || true; fi
   if [[ -n "${player_pid:-}" ]]; then kill "${player_pid}" 2>/dev/null || true; fi
   if [[ -n "${toggle_pid:-}" ]]; then kill "${toggle_pid}" 2>/dev/null || true; fi
+  if [[ -n "${speech_pid:-}" ]]; then kill "${speech_pid}" 2>/dev/null || true; fi
   if [[ -n "${tray_pid:-}" ]]; then kill "${tray_pid}" 2>/dev/null || true; fi
   if [[ -n "${recorder_pid:-}" ]]; then kill "${recorder_pid}" 2>/dev/null || true; fi
   if [[ -n "${pulse_pid:-}" ]]; then kill "${pulse_pid}" 2>/dev/null || true; fi
@@ -101,6 +102,42 @@ activate() {
 
 transcript_copied() {
   xclip -selection clipboard -out 2> /dev/null | rg -qi 'ask not|country'
+}
+
+escape_claims() {
+  rg -c 'claimed Escape for the session' "${work}/onda.log" || echo 0
+}
+
+escape_claimed_since() {
+  (( $(escape_claims) > $1 ))
+}
+
+# Starts a recording and waits until Onda holds Escape.
+start_claiming_escape() {
+  local claims
+  claims="$(escape_claims)"
+  "${binary}" --start
+  wait_until 'Onda to claim Escape' escape_claimed_since "${claims}"
+}
+
+# Escape ends the recording and never reaches the focused application.
+escape_cancels() {
+  : > "${work}/escapes"
+  xdotool key Escape
+  wait_until 'Escape to end the recording' overlay_hidden
+  wait_ready
+  if [[ -s "${work}/escapes" ]]; then
+    echo "Escape reached the target $1" >&2
+    return 1
+  fi
+}
+
+# Outside a recording, Escape belongs to the focused application.
+escape_reaches_target() {
+  : > "${work}/escapes"
+  xdotool windowfocus --sync "${target_window}"
+  xdotool key Escape
+  wait_until "Escape to reach the target $1" test -s "${work}/escapes"
 }
 
 onda_window_visible() {
@@ -347,7 +384,8 @@ Language: English
 ${menu_tail}"
   tray click 'Cancel Dictation'
   wait_ready
-  "${work}/target" "${work}/transcript" > "${work}/target.log" 2>&1 &
+  "${work}/target" "${work}/transcript" "${work}/escapes" \
+    > "${work}/target.log" 2>&1 &
   target_pid=$!
   local target_window
   target_window="$(xdotool search --sync --name 'Greendale dictation target' | head -1)"
@@ -363,6 +401,26 @@ ${menu_tail}"
   xdotool type 'Troy Barnes'
   wait_until 'typing to reach the target' target_received 'Troy Barnes'
   xdotool key ctrl+a BackSpace
+  wait_until 'the cleared target' target_is_empty
+  escape_reaches_target 'before a recording'
+  start_claiming_escape
+  paplay --device=onda-test "${sample}" &
+  speech_pid=$!
+  sleep 2
+  escape_cancels 'during a recording'
+  escape_reaches_target 'after a cancel'
+  kill "${speech_pid}"
+  wait "${speech_pid}" || true
+  speech_pid=""
+  local lock
+  for lock in Num_Lock Caps_Lock; do
+    xdotool key "${lock}"
+    start_claiming_escape
+    escape_cancels "with ${lock} on"
+    xdotool key "${lock}"
+  done
+  sleep 2
+  target_is_empty
   python3 "${root}/shell/linux/tests/mpris-player.py" \
     greendale "${work}/greendale.log" &
   player_pid=$!
@@ -389,6 +447,7 @@ ${menu_tail}"
     "${ONDA_DATA_DIR}"/History/*/metadata.json
   rg -q '"appBundleID": "com.rselbach.onda.TestTarget"' \
     "${ONDA_DATA_DIR}"/History/*/metadata.json
+  escape_reaches_target 'after a delivered recording'
   wait_until 'the player to resume' player_is greendale Playing
   [[ "$(calls "${work}/greendale.log")" == 'Pause Play ' ]]
   sleep 9
@@ -473,11 +532,12 @@ ${menu_tail}"
   wait "${toggle_pid}" || true
   toggle_pid=""
   wait_ready
-  "${binary}" --start
+  start_claiming_escape
   wait_until 'the mute' speakers_muted
   [[ "$(cat "${ONDA_DATA_DIR}/muted-output")" == 'onda-speakers' ]]
   kill -KILL "${app_pid}"
   wait "${app_pid}" || true
+  escape_reaches_target 'after Onda was killed in a recording'
   speakers_muted
   write_settings false
   start_onda --background
@@ -527,7 +587,7 @@ ${menu_tail}"
   "${binary}" --quit
   wait "${app_pid}"
   app_pid=""
-  echo "PASS: commands, cancellation, overlay cancel button, global shortcut, CPU transcription, GTK paste, clipboard restoration, target application, target left, tray menu, media pause, output mute, mute recovery, sound cues."
+  echo "PASS: commands, cancellation, overlay cancel button, Escape, global shortcut, CPU transcription, GTK paste, clipboard restoration, target application, target left, tray menu, media pause, output mute, mute recovery, sound cues."
 }
 
 main "$@"

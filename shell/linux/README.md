@@ -210,8 +210,15 @@ removes your custom prompt. Onda does not accept a blank prompt.
   and installed in `share/onda/sounds`. They play through ALSA, so they need
   no sound theme and no package beyond the ALSA library. A cue file that is
   missing is logged at launch and stays silent.
-- **Cancellation:** the window, tray, or `onda --cancel`. Onda does not claim
-  Escape globally on Linux.
+- **Cancellation:** the window, the overlay's cancel button, the tray, or
+  `onda --cancel`. On X11, Escape also cancels: Onda claims the key when a
+  dictation starts and gives it back when the dictation ends, so Escape works
+  as usual in every application the rest of the time. Escape with the
+  shortcut's own modifiers cancels too, and Num Lock, Caps Lock, and Scroll
+  Lock make no difference. A combination that another application has already
+  claimed stays with it. On Wayland, Onda does not claim Escape. The desktop
+  offers no claim that lasts only for a dictation, and a permanent one would
+  take Escape from every application.
 - **Target application on X11:** Onda identifies the application that has the
   keyboard focus when a dictation starts. It reads the window from
   `_NET_ACTIVE_WINDOW`, or from the input focus when no window manager
@@ -325,9 +332,9 @@ virtual microphone, and a GTK text field. Its private PipeWire and WirePlumber
 processes use temporary sockets and disable physical-device discovery. The
 desktop audio session stays running. Supply the v2 GGUF file above and
 whisper.cpp's `samples/jfk.wav` (the expected transcript contains “country”).
-It checks cancellation, the overlay's cancel button, command controls, global
-push-to-talk, CPU inference, paste, clipboard restoration, and single-instance
-activation. It checks that history records the text field's application, and
+It checks cancellation, the overlay's cancel button, Escape, command controls,
+global push-to-talk, CPU inference, paste, clipboard restoration, and
+single-instance activation. It checks that history records the text field's application, and
 that a dictation whose window lost the focus before delivery is copied instead
 of pasted. A stand-in tray host reads the tray's menu over D-Bus and clicks
 its items. It never uses your normal Onda data or microphone. It also checks
@@ -335,7 +342,10 @@ microphone release after
 standby and a fresh recording after capture has stopped. A stand-in MPRIS
 player and a `pw-play` stream on a second virtual sink check media pause and
 resume, the play/pause fallback, the output mute, and its recovery after Onda
-is killed. With sounds on, it records that sink and checks that the start and
+is killed. For Escape, it checks that the key cancels a recording with speech
+in it and delivers nothing, that it still cancels with Num Lock or Caps Lock
+on, and that it reaches the text field again after a cancel, after a delivered
+dictation, and after Onda is killed while recording. With sounds on, it records that sink and checks that the start and
 stop cues play in full and that the start cue alone does not mute the output.
 
 ```sh
