@@ -8,17 +8,12 @@
 # <command> never <why Linux never needs it>
 
 begin_hotkey_capture             #13 shortcut recorder
-choose_other_language            #3 tray menu
-deliver_transcript               #3 tray menu
-discard_failed_dictation         #3 tray menu
 dismiss_download_overlay         #19 download overlay
 end_hotkey_capture               #13 shortcut recorder
 fix_permission                   never Linux has no privacy permission to fix
-fix_permissions                  #3 tray menu
 flush_events                     never a barrier for the core's own tests
 hotkey_capture_failed            #13 shortcut recorder
 hotkey_registration_failed       #14 shortcut registration failures
-menu_will_open                   #3 tray menu
 onboarding_back                  #15 onboarding wizard
 onboarding_choose_model          #15 onboarding wizard
 onboarding_closed                #15 onboarding wizard
@@ -30,18 +25,12 @@ onboarding_select_language       #15 onboarding wizard
 onboarding_toggle_all_languages  #15 onboarding wizard
 onboarding_toggle_other_models   #15 onboarding wizard
 onboarding_use_clipboard         never the link sits on the Permissions step, which Linux does not have
-open_app                         #3 tray menu
 open_keyboard_settings           never it sits next to the Fn warning, and Linux has no Fn shortcuts
 open_login_items                 never Linux autostart needs no approval, so the caption never offers it
-open_settings                    #3 tray menu
 recorder_event                   #13 shortcut recorder
-redownload_model                 #3 tray menu
 reset_hotkey                     #8 reset button on the Hotkey page
-retry_failed_dictation           #3 tray menu
 run_setup_again                  #17 Getting Started page
-select_language_from_menu        #3 tray menu
 setup_action                     #17 Getting Started page
-show_all_history                 #3 tray menu
 shutdown                         never the shell owns the runtime and calls shutdown_async
 start                            never the shell owns the runtime and calls start_on
 toggle_hotkey_capture            #13 shortcut recorder

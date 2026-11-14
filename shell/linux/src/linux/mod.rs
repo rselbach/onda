@@ -28,11 +28,10 @@ enum Message {
     Download(onda_app::seams::DownloadUpdate),
     DevicesChanged,
     UpdaterChanged,
-    Update(onda_domain::updates::UpdateAction),
     ShortcutStatus(String),
     Notice(String, String),
     Inhibit(Option<String>),
-    Action(&'static str),
+    Tray(tray::Command),
 }
 
 fn send(sender: &async_channel::Sender<Message>, message: Message) {

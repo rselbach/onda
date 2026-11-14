@@ -19,7 +19,7 @@ use onda_app::{Event, views::MainWindowSection};
 use onda_domain::non_dictation_ui::DownloadOverlayView;
 use std::{cell::Cell, rc::Rc};
 
-use super::{Message, core::Core, overlay::Overlay};
+use super::{Message, core::Core, overlay::Overlay, tray::Command};
 
 const IDLE_HINT: &str = "Use your global shortcut to dictate into another application.";
 
@@ -263,25 +263,42 @@ impl Window {
         self.status.text().to_string()
     }
 
+    /// The one place a tray choice becomes a core call.
+    fn tray(&self, command: Command) {
+        let app = &self.core.app;
+        match command {
+            Command::Show => self.present(),
+            Command::MenuWillOpen => app.menu_will_open(),
+            Command::FixPermissions => app.fix_permissions(),
+            Command::ToggleDictation => app.toggle_dictation_from_menu(),
+            Command::CancelDictation => app.cancel_dictation(),
+            Command::DeliverLastTranscript => app.deliver_last_transcript(),
+            Command::DeliverTranscript(text) => app.deliver_transcript(text),
+            Command::ShowAllHistory => app.show_all_history(),
+            Command::RetryFailedDictation => app.retry_failed_dictation(),
+            Command::DiscardFailedDictation => app.discard_failed_dictation(),
+            Command::RetryModelLoad => app.retry_model_load(),
+            Command::RedownloadModel => app.redownload_model(),
+            Command::SelectLanguage(language) => app.select_language_from_menu(language),
+            Command::ChooseOtherLanguage => app.choose_other_language(),
+            Command::OpenApp => app.open_app(),
+            Command::OpenSettings => app.open_settings(),
+            Command::Update(action) => app.update_action(action),
+            Command::Quit => {
+                if let Some(application) = self.window.application() {
+                    application.quit();
+                }
+            }
+        }
+    }
+
     fn event(self: &Rc<Self>, message: Message) {
         match message {
-            Message::Action(action) => match action {
-                "show" => self.present(),
-                "toggle" => self.core.app.toggle_dictation_from_menu(),
-                "cancel" => self.core.app.cancel_dictation(),
-                "paste" => self.core.app.deliver_last_transcript(),
-                "quit" => {
-                    if let Some(app) = self.window.application() {
-                        app.quit();
-                    }
-                }
-                _ => {}
-            },
+            Message::Tray(command) => self.tray(command),
             Message::Hotkey(event) => self.core.app.on_hotkey_event(event),
             Message::Download(update) => self.core.app.download_event(update),
             Message::DevicesChanged => self.core.app.input_devices_changed(),
             Message::UpdaterChanged => self.core.app.updater_changed(),
-            Message::Update(action) => self.core.app.update_action(action),
             Message::ShortcutStatus(status) => {
                 self.shortcut.set_text(&status);
                 self.hotkey.set_status(&status);
@@ -317,7 +334,7 @@ impl Window {
                 Event::TrayChanged(view) => {
                     self.status.set_text(&view.accessibility_label);
                     if let Some(tray) = &self.tray {
-                        tray.update(|tray| tray.label = view.accessibility_label);
+                        tray.update(|tray| tray.view = view);
                     }
                 }
                 Event::DownloadOverlayChanged(DownloadOverlayView::Shown { status, .. }) => {
@@ -341,7 +358,7 @@ impl Window {
                 Event::SpeechChanged(page) => self.speech(*page),
                 Event::MenuChanged(menu) => {
                     if let Some(tray) = &self.tray {
-                        tray.update(|tray| tray.update = menu.update.clone());
+                        tray.update(|tray| tray.menu = Some(*menu));
                     }
                 }
                 Event::GeneralChanged(page) => self.settings(*page),

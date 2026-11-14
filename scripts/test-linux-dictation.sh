@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Exercise a real GTK window, virtual microphone, inference, X11 paste, and
-# media pause and mute against a private bus and audio server.
+# Exercise a real GTK window, virtual microphone, inference, X11 paste, the
+# tray menu, and media pause and mute against a private bus and audio server.
 set -euo pipefail
 
 cleanup() {
@@ -10,12 +10,14 @@ cleanup() {
   if [[ -n "${music_pid:-}" ]]; then kill "${music_pid}" 2>/dev/null || true; fi
   if [[ -n "${player_pid:-}" ]]; then kill "${player_pid}" 2>/dev/null || true; fi
   if [[ -n "${toggle_pid:-}" ]]; then kill "${toggle_pid}" 2>/dev/null || true; fi
+  if [[ -n "${tray_pid:-}" ]]; then kill "${tray_pid}" 2>/dev/null || true; fi
   if [[ -n "${pulse_pid:-}" ]]; then kill "${pulse_pid}" 2>/dev/null || true; fi
   if [[ -n "${wireplumber_pid:-}" ]]; then kill "${wireplumber_pid}" 2>/dev/null || true; fi
   if [[ -n "${pipewire_pid:-}" ]]; then kill "${pipewire_pid}" 2>/dev/null || true; fi
   if [[ -n "${display_pid:-}" ]]; then kill "${display_pid}" 2>/dev/null || true; fi
   if (( status != 0 )); then
     cat "${work}/onda.log" >&2 || true
+    cat "${work}/tray" >&2 || true
     cat "${work}/pulse.log" >&2 || true
     cat "${work}/pipewire.log" >&2 || true
     cat "${work}/wireplumber.log" >&2 || true
@@ -51,15 +53,44 @@ wait_until() {
 
 write_settings() {
   cat > "${ONDA_DATA_DIR}/settings.json" <<JSON
-{"onboardingCompleted":true,"didShowFirstRunSetup":true,"selectedModel":"parakeet-tdt-v2","soundFeedbackEnabled":false,"pauseMediaDuringRecording":$1}
+{"onboardingCompleted":true,"didShowFirstRunSetup":true,"selectedModel":"parakeet-tdt-v2","selectedLanguage":"en","recentLanguages":"en,pt","soundFeedbackEnabled":false,"pauseMediaDuringRecording":$1}
 JSON
 }
 
 start_onda() {
   PIPEWIRE_PROPS='{ stream.capture.sink = true }' \
-    "${binary}" >> "${work}/onda.log" 2>&1 &
+    "${binary}" "$@" >> "${work}/onda.log" 2>&1 &
   app_pid=$!
   wait_ready
+}
+
+tray() {
+  python3 "${tray_host}" "$@"
+}
+
+tray_shows() {
+  tray show > "${work}/tray"
+  rg -qx -- "$1" "${work}/tray"
+}
+
+tray_is() {
+  tray show > "${work}/tray"
+  [[ "$(cat "${work}/tray")" == "$1" ]]
+}
+
+tray_watcher_ready() {
+  gdbus call --session --dest org.freedesktop.DBus \
+    --object-path /org/freedesktop/DBus \
+    --method org.freedesktop.DBus.NameHasOwner org.kde.StatusNotifierWatcher \
+    | rg -q true
+}
+
+target_is_empty() {
+  [[ ! -s "${work}/transcript" ]]
+}
+
+onda_window_visible() {
+  [[ -n "$(xdotool search --onlyvisible --name '^Onda$' 2> /dev/null)" ]]
 }
 
 player() {
@@ -224,11 +255,53 @@ CONF
     echo "A control command incorrectly started Onda" >&2
     return 1
   fi
+  tray_host="${root}/shell/linux/tests/tray-host.py"
+  tray watch &
+  tray_pid=$!
+  wait_until 'the tray watcher' tray_watcher_ready
   start_onda
+  local menu_tail
+  menu_tail='---
+Open Onda
+Settings…
+---
+Check for Updates…
+---
+Quit Onda'
+  wait_until 'the idle tray menu' tray_is "icon audio-input-microphone-symbolic
+tooltip Onda, ready to dictate
+[Onda, ready to dictate]
+Start Dictation
+[Paste Last Transcript]
+---
+Language: English
+  ✓ English
+  · Portuguese
+  ---
+  Other Language…
+${menu_tail}"
+  tray click 'Language: English' 'Portuguese'
+  wait_until 'Portuguese' tray_shows '  ✓ Portuguese'
+  tray_shows 'Language: Portuguese'
+  rg -q '"selectedLanguage": "pt"' "${ONDA_DATA_DIR}/settings.json"
+  tray click 'Language: Portuguese' 'English'
+  wait_until 'English' tray_shows 'Language: English'
+  tray click 'Start Dictation'
   "${binary}" --start
-  "${binary}" --start
-  sleep 0.4
-  "${binary}" --cancel
+  wait_until 'the recording tray menu' tray_is "icon media-record-symbolic
+tooltip Onda, recording
+[Onda, recording]
+Stop Dictation
+Cancel Dictation
+[Paste Last Transcript]
+---
+Language: English
+  [✓ English]
+  [· Portuguese]
+  ---
+  Other Language…
+${menu_tail}"
+  tray click 'Cancel Dictation'
   wait_ready
   "${work}/target" "${work}/transcript" > "${work}/target.log" 2>&1 &
   target_pid=$!
@@ -264,6 +337,15 @@ CONF
   check_microphone_released
   player greendale org.mpris.MediaPlayer2.Player.Pause > /dev/null
   : > "${work}/greendale.log"
+  tray_shows 'Paste Last Transcript'
+  local recent
+  recent="$(awk '/^Recent Transcripts$/ { getline; sub(/^  /, ""); print }' \
+    "${work}/tray")"
+  [[ -n "${recent}" ]]
+  xdotool key ctrl+a BackSpace
+  wait_until 'the cleared target' target_is_empty
+  tray click 'Recent Transcripts' "${recent}"
+  wait_until 'the recent transcript' rg -qi 'ask not|country' "${work}/transcript"
   xdotool key ctrl+a BackSpace
   xdotool keydown alt+space
   wait_until 'the mute' speakers_muted
@@ -313,7 +395,7 @@ CONF
   wait "${app_pid}" || true
   speakers_muted
   write_settings false
-  start_onda
+  start_onda --background
   speakers_audible
   [[ ! -e "${ONDA_DATA_DIR}/muted-output" ]]
   player greendale org.mpris.MediaPlayer2.Player.Play > /dev/null
@@ -325,10 +407,16 @@ CONF
   speakers_audible
   "${binary}" --cancel
   wait_ready
-  "${binary}" --quit
+  if onda_window_visible; then
+    echo "Onda showed its window on a background start" >&2
+    return 1
+  fi
+  tray click 'Settings…'
+  wait_until 'the Onda window' onda_window_visible
+  tray click 'Quit Onda'
   wait "${app_pid}"
   app_pid=""
-  echo "PASS: commands, cancellation, global shortcut, CPU transcription, GTK paste, clipboard restoration, media pause, output mute, mute recovery."
+  echo "PASS: commands, cancellation, global shortcut, CPU transcription, GTK paste, clipboard restoration, tray menu, media pause, output mute, mute recovery."
 }
 
 main "$@"

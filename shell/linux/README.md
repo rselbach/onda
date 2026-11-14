@@ -187,9 +187,14 @@ removes your custom prompt. Onda does not accept a blank prompt.
   current text; this is not an acknowledgement from the target application.
 - **Indicator:** a passive layer-shell window, or a click-through X11 window
   (including XWayland on GNOME). Without either, use the main window's status.
-- **Tray:** optional StatusNotifierItem. Closing the main window keeps Onda
-  running; the launcher reopens the existing process. Quit is always available
-  in the window and through the CLI.
+- **Tray:** optional StatusNotifierItem. Its menu starts and stops dictation,
+  cancels a recording, pastes the last or a recent transcript, retries or
+  discards a failed dictation, retries or re-downloads a failed model, switches
+  language, and opens Onda or its settings. The icon and its tooltip follow the
+  state: ready, recording, transcribing, preparing a model, or needing
+  attention. Closing the main window keeps Onda running; the launcher reopens
+  the existing process. Quit is always available in the window and through the
+  CLI.
 - **Media:** with **Pause media while recording** on, Onda pauses the MPRIS
   players that are playing and resumes only those. When none is playing, it
   mutes the default output while another application plays through it, and
@@ -271,7 +276,8 @@ processes use temporary sockets and disable physical-device discovery. The
 desktop audio session stays running. Supply the v2 GGUF file above and
 whisper.cpp's `samples/jfk.wav` (the expected transcript contains “country”).
 It checks cancellation, command controls, global push-to-talk, CPU inference,
-paste, clipboard restoration, and single-instance activation. It never uses
+paste, clipboard restoration, and single-instance activation. A stand-in tray
+host reads the tray's menu over D-Bus and clicks its items. It never uses
 your normal Onda data or microphone. It also checks microphone release after
 standby and a fresh recording after capture has stopped. A stand-in MPRIS
 player and a `pw-play` stream on a second virtual sink check media pause and
