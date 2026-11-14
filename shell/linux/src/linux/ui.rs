@@ -350,7 +350,25 @@ impl Window {
                     .toast
                     .add_toast(adw::Toast::new(&format!("{title}: {message}"))),
                 Event::ActivateApp => self.present(),
-                _ => {}
+                // #30 resets the status line when the download overlay hides
+                Event::DownloadOverlayChanged(
+                    onda_domain::non_dictation_ui::DownloadOverlayView::Hidden,
+                ) => {}
+                // #13 renders the shortcut recorder
+                Event::HotkeyChanged(_) => {}
+                // #15 renders the onboarding wizard
+                Event::OnboardingChanged(_) => {}
+                // #15 closes the onboarding wizard
+                Event::CloseOnboarding => {}
+                // #28 shows the model update notice
+                Event::ShowUpdateNotice(_) => {}
+                // #28 closes the model update notice
+                Event::CloseUpdateNotice => {}
+                // #17 renders the Getting Started page
+                Event::GettingStartedChanged(_) => {}
+                // a GTK application is a regular one whenever a window is
+                // open; only macOS switches its Dock presence
+                Event::AppPresenceChanged { .. } => {}
             },
         }
     }

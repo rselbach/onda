@@ -232,6 +232,11 @@ cargo clippy -p onda-linux --all-targets -- -D warnings
 cargo test -p onda-domain -p onda-app -p onda-adapters -p onda-audio -p onda-linux -- --test-threads=1
 ```
 
+The `onda-linux` tests include `tests/core_parity.rs`. It fails when a public
+command of the core's `App` has neither a call site under `shell/linux/src` nor
+a line in `tests/uncalled-core-commands.txt`, and when a listed command gains a
+call site. Delete a command's line in the same change that starts calling it.
+
 The post-processing GUI test uses Xvfb and a private D-Bus session and keyring.
 It checks provider switching, key storage and deletion, custom model selection,
 missing-key feedback, replacement editing, shortcuts, history search, and
