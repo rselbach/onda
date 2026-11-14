@@ -11,6 +11,7 @@ use onda_domain::onboarding::{
     OnboardingEnv, OnboardingStep, PERMISSION_READY_LABEL, PERMISSIONS_TITLE, PermissionCard,
     WELCOME_SUBTITLE, WELCOME_TITLE, hotkey_step, language_step, model_step, ready_step,
 };
+use onda_domain::platform::Platform;
 use onda_domain::types::{ActivationMode, HistoryRetention, OutputMode};
 
 use super::PermissionFixButton;
@@ -253,6 +254,9 @@ pub struct OnboardingInputs<'a> {
     pub wizard: &'a Onboarding,
     /// What it reads from the app.
     pub env: &'a OnboardingEnv<'a>,
+    /// The system the shell runs on: it says which hotkey presets need
+    /// Accessibility.
+    pub platform: Platform,
     /// Language search query.
     pub language_query: &'a str,
     /// "Show All" languages.
@@ -351,7 +355,7 @@ fn content(inputs: &OnboardingInputs<'_>) -> OnboardingContent {
                     HotkeyPresetChoice {
                         keycaps: shortcut.keycaps(),
                         detail: preset.detail().to_owned(),
-                        needs_accessibility: shortcut.needs_accessibility(),
+                        needs_accessibility: shortcut.needs_accessibility(inputs.platform),
                         selected: shortcut == *inputs.shortcut,
                         warning: fn_key_warning(&shortcut, inputs.globe).map(str::to_owned),
                     }

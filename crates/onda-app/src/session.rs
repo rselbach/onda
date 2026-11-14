@@ -1823,10 +1823,10 @@ impl Actor {
 
     fn checklist(&self) -> SetupChecklist {
         SetupChecklist::resolve(SetupChecklistInput {
+            platform: self.ports.platform,
             microphone: self.permissions.microphone,
             accessibility_granted: self.permissions.accessibility,
             accessibility_required: self.accessibility_needed(),
-            privacy_naming: self.ports.platform.privacy_naming(),
             selected_model_downloaded: self.downloaded.contains(&self.settings.selected_model),
             any_download_running: self.downloads.any_running(),
         })

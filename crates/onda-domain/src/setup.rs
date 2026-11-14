@@ -2,6 +2,7 @@
 //! permission rows (WIN-8), the missing-permission rule (UI-8), and where
 //! setup guidance sends the user (DICT-5).
 
+use crate::platform::Platform;
 use crate::privacy_naming::PrivacyNaming;
 use crate::types::{MicrophonePermission, OutputMode};
 
@@ -112,14 +113,15 @@ impl SetupStep {
 /// What the checklist is computed from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SetupChecklistInput {
+    /// The system: it says which permission rows exist and names the
+    /// Accessibility permission.
+    pub platform: Platform,
     /// Current microphone permission.
     pub microphone: MicrophonePermission,
     /// Accessibility is granted.
     pub accessibility_granted: bool,
     /// Accessibility is required by the current settings.
     pub accessibility_required: bool,
-    /// What the OS calls the Accessibility permission.
-    pub privacy_naming: PrivacyNaming,
     /// The selected model's files are installed.
     pub selected_model_downloaded: bool,
     /// Any model download is running.
@@ -127,10 +129,11 @@ pub struct SetupChecklistInput {
 }
 
 /// The Getting Started setup checklist (WIN-5).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SetupChecklist {
-    /// Microphone, Accessibility, Speech Model, in that order.
-    pub steps: [SetupStep; 3],
+    /// Microphone, Accessibility, Speech Model, in that order. A permission
+    /// the system does not have has no row.
+    pub steps: Vec<SetupStep>,
 }
 
 /// Shown above the checklist once every row is complete.
@@ -139,16 +142,24 @@ pub const READY_LINE: &str = "Onda is ready";
 impl SetupChecklist {
     /// Builds the checklist.
     pub fn resolve(input: SetupChecklistInput) -> Self {
+        let microphone = input
+            .platform
+            .microphone_permission
+            .then(|| microphone_step(input.microphone));
+        let accessibility = input.platform.typing_permission.map(|naming| {
+            accessibility_step(
+                input.accessibility_granted,
+                input.accessibility_required,
+                naming,
+            )
+        });
+        let model = model_step(input.selected_model_downloaded, input.any_download_running);
         Self {
-            steps: [
-                microphone_step(input.microphone),
-                accessibility_step(
-                    input.accessibility_granted,
-                    input.accessibility_required,
-                    input.privacy_naming,
-                ),
-                model_step(input.selected_model_downloaded, input.any_download_running),
-            ],
+            steps: microphone
+                .into_iter()
+                .chain(accessibility)
+                .chain([model])
+                .collect(),
         }
     }
 
@@ -417,10 +428,10 @@ mod tests {
 
     fn input() -> SetupChecklistInput {
         SetupChecklistInput {
+            platform: Platform::macos(PrivacyNaming::Accessibility),
             microphone: Granted,
             accessibility_granted: true,
             accessibility_required: true,
-            privacy_naming: PrivacyNaming::Accessibility,
             selected_model_downloaded: true,
             any_download_running: false,
         }
@@ -643,6 +654,63 @@ mod tests {
             assert_eq!(actions, tc.want_actions, "{}", tc.name);
             assert_eq!(got.is_complete(), tc.want_complete, "{}", tc.name);
             assert_eq!(got.ready_line().is_some(), tc.want_complete, "{}", tc.name);
+        }
+    }
+
+    #[test]
+    fn win_5_checklist_has_a_row_per_permission_the_system_has() {
+        struct Case {
+            name: &'static str,
+            input: SetupChecklistInput,
+            want_ids: Vec<SetupStepId>,
+            want_complete: bool,
+        }
+        let linux = SetupChecklistInput {
+            platform: Platform::linux(),
+            ..input()
+        };
+        let cases = [
+            Case {
+                name: "macOS has both permissions",
+                input: input(),
+                want_ids: vec![
+                    SetupStepId::Microphone,
+                    SetupStepId::Accessibility,
+                    SetupStepId::SpeechModel,
+                ],
+                want_complete: true,
+            },
+            Case {
+                name: "Linux has neither",
+                input: linux,
+                want_ids: vec![SetupStepId::SpeechModel],
+                want_complete: true,
+            },
+            Case {
+                name: "Linux waits only for the model",
+                input: SetupChecklistInput {
+                    selected_model_downloaded: false,
+                    ..linux
+                },
+                want_ids: vec![SetupStepId::SpeechModel],
+                want_complete: false,
+            },
+            Case {
+                name: "a permission Linux does not have cannot hold setup back",
+                input: SetupChecklistInput {
+                    microphone: Denied,
+                    accessibility_granted: false,
+                    ..linux
+                },
+                want_ids: vec![SetupStepId::SpeechModel],
+                want_complete: true,
+            },
+        ];
+        for tc in cases {
+            let got = SetupChecklist::resolve(tc.input);
+            let ids: Vec<_> = got.steps.iter().map(|s| s.id).collect();
+            assert_eq!(ids, tc.want_ids, "{}", tc.name);
+            assert_eq!(got.is_complete(), tc.want_complete, "{}", tc.name);
         }
     }
 
@@ -898,8 +966,8 @@ mod tests {
         ];
         for tc in cases {
             let checklist = SetupChecklist::resolve(SetupChecklistInput {
+                platform: Platform::macos(tc.naming),
                 accessibility_granted: false,
-                privacy_naming: tc.naming,
                 ..input()
             });
             let step = checklist.steps[1];

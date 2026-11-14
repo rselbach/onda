@@ -18,6 +18,8 @@ pub struct Platform {
     /// What the OS calls the permission that lets Onda type into other
     /// apps. `None` when the system has no such permission.
     pub typing_permission: Option<PrivacyNaming>,
+    /// The OS asks the user before an app may record from the microphone.
+    pub microphone_permission: bool,
 }
 
 impl Platform {
@@ -27,15 +29,18 @@ impl Platform {
             os_name: "macOS",
             tray_term: "menu bar icon",
             typing_permission: Some(typing_permission),
+            microphone_permission: true,
         }
     }
 
-    /// The Linux desktop.
+    /// The Linux desktop. It has no privacy permission to grant ahead of
+    /// time: the desktop asks for keyboard consent at the first paste.
     pub fn linux() -> Self {
         Self {
             os_name: "Linux",
             tray_term: "application",
             typing_permission: None,
+            microphone_permission: false,
         }
     }
 

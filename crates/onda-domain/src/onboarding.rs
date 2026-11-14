@@ -8,6 +8,7 @@
 
 use std::time::Duration;
 
+use crate::platform::Platform;
 use crate::privacy_naming::PrivacyNaming;
 use crate::setup::{PermissionFix, try_it_placeholder};
 use crate::tray::percent;
@@ -47,25 +48,15 @@ impl OnboardingStep {
         Self::Ready,
     ];
 
-    fn index(self) -> usize {
-        match self {
-            Self::Welcome => 0,
-            Self::Language => 1,
-            Self::Permissions => 2,
-            Self::Hotkey => 3,
-            Self::SpeechModel => 4,
-            Self::Ready => 5,
-        }
-    }
-
-    fn next(self) -> Option<Self> {
-        Self::ALL.get(self.index() + 1).copied()
-    }
-
-    fn previous(self) -> Option<Self> {
-        self.index()
-            .checked_sub(1)
-            .and_then(|i| Self::ALL.get(i).copied())
+    /// The steps a system shows, in order. Permissions is one of them only
+    /// where the system has a privacy permission to grant.
+    pub fn on_platform(platform: Platform) -> Vec<Self> {
+        let has_permissions =
+            platform.microphone_permission || platform.typing_permission.is_some();
+        Self::ALL
+            .into_iter()
+            .filter(|step| *step != Self::Permissions || has_permissions)
+            .collect()
     }
 }
 
@@ -223,7 +214,9 @@ pub struct CloseOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Onboarding {
     previously_completed: bool,
-    step: OnboardingStep,
+    steps: Vec<OnboardingStep>,
+    // always indexes `steps`: it starts at 0 and moves one step at a time
+    position: usize,
     navigating_forward: bool,
     language: Option<String>,
     skipped_accessibility: bool,
@@ -232,11 +225,13 @@ pub struct Onboarding {
 
 impl Onboarding {
     /// Opens onboarding on Welcome with the stored (or default) language
-    /// already selected (ONB-4). `flags` are read when the window opens.
+    /// already selected (ONB-4). `flags` are read when the window opens, and
+    /// `platform` picks the steps ([`OnboardingStep::on_platform`]).
     pub fn open(
         origin: OnboardingOrigin,
         flags: OnboardingFlags,
         stored_language: Option<String>,
+        platform: Platform,
     ) -> Self {
         let previously_completed = match origin {
             OnboardingOrigin::Automatic => false,
@@ -246,7 +241,8 @@ impl Onboarding {
         };
         Self {
             previously_completed,
-            step: OnboardingStep::Welcome,
+            steps: OnboardingStep::on_platform(platform),
+            position: 0,
             navigating_forward: true,
             language: stored_language.filter(|code| !code.is_empty()),
             skipped_accessibility: false,
@@ -256,7 +252,7 @@ impl Onboarding {
 
     /// Current step.
     pub fn step(&self) -> OnboardingStep {
-        self.step
+        self.steps[self.position]
     }
 
     /// The selected language, if any.
@@ -281,7 +277,7 @@ impl Onboarding {
 
     /// Why Continue is disabled, or `None` when it is enabled.
     pub fn continue_hint(&self, env: &OnboardingEnv<'_>) -> Option<String> {
-        match self.step {
+        match self.step() {
             OnboardingStep::Welcome | OnboardingStep::Ready => None,
             OnboardingStep::Language => self
                 .language
@@ -323,11 +319,11 @@ impl Onboarding {
         if !self.can_continue(env) {
             return None;
         }
-        let Some(next) = self.step.next() else {
+        let Some(next) = self.steps.get(self.position + 1).copied() else {
             return Some(OnboardingEffect::Finish);
         };
-        let leaving = self.step;
-        self.step = next;
+        let leaving = self.step();
+        self.position += 1;
         self.navigating_forward = true;
         match (leaving, next) {
             (OnboardingStep::Language, _)
@@ -343,10 +339,10 @@ impl Onboarding {
 
     /// "Back" (ONB-1). Returns whether the step changed.
     pub fn go_back(&mut self) -> bool {
-        let Some(previous) = self.step.previous() else {
+        let Some(previous) = self.position.checked_sub(1) else {
             return false;
         };
-        self.step = previous;
+        self.position = previous;
         self.navigating_forward = false;
         true
     }
@@ -428,19 +424,20 @@ impl Onboarding {
     /// Progress bar, footer, and primary button (ONB-1).
     pub fn frame(&self, env: &OnboardingEnv<'_>) -> OnboardingFrame {
         let hint = self.continue_hint(env);
-        let progress = match self.step {
+        let step = self.step();
+        let progress = match step {
             OnboardingStep::Welcome => None,
-            step => Some(ProgressSegments {
-                total: OnboardingStep::ALL.len() - 1,
-                filled: step.index(),
+            _ => Some(ProgressSegments {
+                total: self.steps.len() - 1,
+                filled: self.position,
             }),
         };
         OnboardingFrame {
-            step: self.step,
+            step,
             navigating_forward: self.navigating_forward,
             progress,
-            back_visible: self.step != OnboardingStep::Welcome,
-            primary_title: match self.step {
+            back_visible: step != OnboardingStep::Welcome,
+            primary_title: match step {
                 OnboardingStep::Welcome => "Get Started",
                 OnboardingStep::Ready => "Start Dictating",
                 OnboardingStep::Language
@@ -978,11 +975,20 @@ mod tests {
         }
     }
 
+    fn macos() -> Platform {
+        Platform::macos(PrivacyNaming::Accessibility)
+    }
+
     fn at(step: OnboardingStep) -> Onboarding {
+        at_on(macos(), step)
+    }
+
+    fn at_on(platform: Platform, step: OnboardingStep) -> Onboarding {
         let mut onboarding = Onboarding::open(
             OnboardingOrigin::Automatic,
             OnboardingFlags::default(),
             Some("en".to_owned()),
+            platform,
         );
         while onboarding.step() != step {
             onboarding.advance(&env());
@@ -1001,6 +1007,104 @@ mod tests {
             OnboardingStep::Ready,
         ];
         assert_eq!(OnboardingStep::ALL, want);
+    }
+
+    #[test]
+    fn onb_1_steps_follow_the_platforms_permissions() {
+        use OnboardingStep::{Hotkey, Language, Permissions, Ready, SpeechModel, Welcome};
+        struct Case {
+            name: &'static str,
+            platform: Platform,
+            want: Vec<OnboardingStep>,
+        }
+        let cases = [
+            Case {
+                name: "macOS 26",
+                platform: macos(),
+                want: OnboardingStep::ALL.to_vec(),
+            },
+            Case {
+                name: "macOS 27",
+                platform: Platform::macos(PrivacyNaming::DeviceControlAndDataAccess),
+                want: OnboardingStep::ALL.to_vec(),
+            },
+            Case {
+                name: "Linux has no permission to grant",
+                platform: Platform::linux(),
+                want: vec![Welcome, Language, Hotkey, SpeechModel, Ready],
+            },
+            Case {
+                name: "one permission is enough to keep the step",
+                platform: Platform {
+                    microphone_permission: true,
+                    ..Platform::linux()
+                },
+                want: vec![Welcome, Language, Permissions, Hotkey, SpeechModel, Ready],
+            },
+        ];
+        for tc in cases {
+            assert_eq!(
+                OnboardingStep::on_platform(tc.platform),
+                tc.want,
+                "{}",
+                tc.name
+            );
+        }
+    }
+
+    #[test]
+    fn onb_1_a_wizard_without_permissions_walks_one_step_fewer() {
+        let mut onboarding = Onboarding::open(
+            OnboardingOrigin::Automatic,
+            OnboardingFlags::default(),
+            Some("en".to_owned()),
+            Platform::linux(),
+        );
+        let mut forward = vec![(onboarding.step(), None)];
+        let finish = loop {
+            let effect = onboarding.advance(&env());
+            if effect == Some(OnboardingEffect::Finish) {
+                break effect;
+            }
+            let progress = onboarding.frame(&env()).progress;
+            forward.push((onboarding.step(), progress.map(|p| (p.total, p.filled))));
+        };
+        assert_eq!(
+            forward,
+            [
+                (OnboardingStep::Welcome, None),
+                (OnboardingStep::Language, Some((4, 1))),
+                (OnboardingStep::Hotkey, Some((4, 2))),
+                (OnboardingStep::SpeechModel, Some((4, 3))),
+                (OnboardingStep::Ready, Some((4, 4))),
+            ]
+        );
+        assert_eq!(finish, Some(OnboardingEffect::Finish));
+
+        let mut back = Vec::new();
+        while onboarding.go_back() {
+            back.push(onboarding.step());
+        }
+        assert_eq!(
+            back,
+            [
+                OnboardingStep::SpeechModel,
+                OnboardingStep::Hotkey,
+                OnboardingStep::Language,
+                OnboardingStep::Welcome,
+            ]
+        );
+    }
+
+    #[test]
+    fn onb_5_leaving_language_starts_the_download_without_a_permissions_step() {
+        let mut onboarding = at_on(Platform::linux(), OnboardingStep::Language);
+        let effect = onboarding.advance(&OnboardingEnv {
+            recommended_model: MISSING,
+            ..env()
+        });
+        assert_eq!(effect, Some(OnboardingEffect::StartRecommendedDownload));
+        assert_eq!(onboarding.step(), OnboardingStep::Hotkey);
     }
 
     #[test]
@@ -1437,6 +1541,7 @@ mod tests {
             OnboardingOrigin::Automatic,
             OnboardingFlags::default(),
             None,
+            macos(),
         );
         onboarding.advance(&env());
         assert_eq!(
@@ -1497,6 +1602,7 @@ mod tests {
                 OnboardingOrigin::Automatic,
                 OnboardingFlags::default(),
                 tc.stored.map(str::to_owned),
+                macos(),
             );
             assert_eq!(
                 onboarding.select_language(tc.pick, "parakeet-ultra"),
@@ -1779,7 +1885,8 @@ mod tests {
             },
         ];
         for tc in cases {
-            let onboarding = Onboarding::open(tc.origin, tc.flags_at_open, Some("en".to_owned()));
+            let onboarding =
+                Onboarding::open(tc.origin, tc.flags_at_open, Some("en".to_owned()), macos());
             let got = onboarding.close(tc.flags_at_close, tc.downloaded, tc.loaded, tc.in_flight);
             assert_eq!(got, tc.want, "{}", tc.name);
         }

@@ -13,7 +13,7 @@ deliver_transcript               #3 tray menu
 discard_failed_dictation         #3 tray menu
 dismiss_download_overlay         #19 download overlay
 end_hotkey_capture               #13 shortcut recorder
-fix_permission                   #10 permission rows, if Linux keeps any
+fix_permission                   never Linux has no privacy permission to fix
 fix_permissions                  #3 tray menu
 flush_events                     never a barrier for the core's own tests
 hotkey_capture_failed            #13 shortcut recorder
@@ -29,7 +29,7 @@ onboarding_select_hotkey         #15 onboarding wizard
 onboarding_select_language       #15 onboarding wizard
 onboarding_toggle_all_languages  #15 onboarding wizard
 onboarding_toggle_other_models   #15 onboarding wizard
-onboarding_use_clipboard         #15 onboarding wizard
+onboarding_use_clipboard         never the link sits on the Permissions step, which Linux does not have
 open_app                         #3 tray menu
 open_keyboard_settings           never it sits next to the Fn warning, and Linux has no Fn shortcuts
 open_login_items                 never Linux autostart needs no approval, so the caption never offers it

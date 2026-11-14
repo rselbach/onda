@@ -328,6 +328,86 @@ async fn onb_1_to_10_first_run_from_welcome_to_start_dictating() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn onb_1_the_wizard_has_a_permissions_step_only_where_permissions_exist() {
+    use OnboardingStep::{Hotkey, Language, Permissions, Ready, SpeechModel, Welcome};
+    struct Case {
+        name: &'static str,
+        platform: Platform,
+        want: Vec<(OnboardingStep, Option<(u32, u32)>)>,
+    }
+    let cases = [
+        Case {
+            name: "macOS",
+            platform: Platform::macos(PrivacyNaming::Accessibility),
+            want: vec![
+                (Welcome, None),
+                (Language, Some((5, 1))),
+                (Permissions, Some((5, 2))),
+                (Hotkey, Some((5, 3))),
+                (SpeechModel, Some((5, 4))),
+                (Ready, Some((5, 5))),
+            ],
+        },
+        Case {
+            name: "Linux",
+            platform: Platform::linux(),
+            want: vec![
+                (Welcome, None),
+                (Language, Some((4, 1))),
+                (Hotkey, Some((4, 2))),
+                (SpeechModel, Some((4, 3))),
+                (Ready, Some((4, 4))),
+            ],
+        },
+    ];
+    for tc in cases {
+        let h = Harness::on_platform(tc.platform, first_run).await;
+        sleep(800).await;
+        let mut got = Vec::new();
+        for _ in 0..tc.want.len() {
+            let view = onboarding(&h);
+            got.push((view.step, view.progress.map(|p| (p.total, p.filled))));
+            h.app.onboarding_continue();
+            sleep(1).await;
+        }
+        assert_eq!(got, tc.want, "{}", tc.name);
+        assert_eq!(
+            h.count(|e| matches!(e, Event::CloseOnboarding)),
+            1,
+            "{}: the last step finishes",
+            tc.name
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn onb_7_lone_modifier_presets_need_no_permission_linux_does_not_have() {
+    let h = Harness::on_platform(Platform::linux(), first_run).await;
+    // the presets must not depend on what the port answers for a
+    // permission the system does not have
+    h.permissions.accessibility.store(false, Ordering::SeqCst);
+    sleep(800).await;
+    h.app.onboarding_continue();
+    sleep(1).await;
+    h.app.onboarding_continue();
+    sleep(1).await;
+    let view = onboarding(&h);
+    assert_eq!(view.step, OnboardingStep::Hotkey);
+    let OnboardingContent::Hotkey { presets, .. } = view.content else {
+        panic!("the hotkey step");
+    };
+    let enabled: Vec<bool> = presets.iter().map(|p| p.enabled).collect();
+    assert_eq!(enabled, vec![true, true, true]);
+
+    h.app.onboarding_select_hotkey(HotkeyPreset::RightOption);
+    sleep(1).await;
+    let view = h.hotkey_view();
+    assert_eq!(view.display, "Right Option");
+    assert!(!view.needs_accessibility);
+    assert_eq!(onboarding(&h).hint, None);
+}
+
+#[tokio::test(start_paused = true)]
 async fn onb_11_an_abandoned_first_run_stays_pending_and_downloads_nothing() {
     let h = Harness::unstarted(first_run);
     lock(&h.models.downloaded).clear();
@@ -2509,6 +2589,62 @@ async fn win_5_checklist_and_download_base_model() {
         vec!["permissions:open-settings Microphone"],
         "a denied microphone opens the pane"
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn win_5_the_checklist_has_a_row_per_permission_the_platform_has() {
+    use onda_domain::setup::SetupStepId::{Accessibility, Microphone, SpeechModel};
+    struct Case {
+        name: &'static str,
+        platform: Platform,
+        want_rows: Vec<onda_domain::setup::SetupStepId>,
+        want_titles: Vec<&'static str>,
+    }
+    let cases = [
+        Case {
+            name: "macOS 26",
+            platform: Platform::macos(PrivacyNaming::Accessibility),
+            want_rows: vec![Microphone, Accessibility, SpeechModel],
+            want_titles: vec!["Microphone", "Accessibility", "Speech Model"],
+        },
+        Case {
+            name: "macOS 27",
+            platform: Platform::macos(PrivacyNaming::DeviceControlAndDataAccess),
+            want_rows: vec![Microphone, Accessibility, SpeechModel],
+            want_titles: vec![
+                "Microphone",
+                "Device Control and Data Access",
+                "Speech Model",
+            ],
+        },
+        Case {
+            name: "Linux",
+            platform: Platform::linux(),
+            want_rows: vec![SpeechModel],
+            want_titles: vec!["Speech Model"],
+        },
+    ];
+    for tc in cases {
+        let h = Harness::on_platform(tc.platform, |_| {}).await;
+        h.app.page_appeared(MainWindowSection::GettingStarted);
+        sleep(10).await;
+        let page = h
+            .last(|e| match e {
+                Event::GettingStartedChanged(page) => Some(*page),
+                _ => None,
+            })
+            .expect("Getting Started");
+        let rows: Vec<_> = page.steps.iter().map(|s| s.step).collect();
+        assert_eq!(rows, tc.want_rows, "{}", tc.name);
+        let titles: Vec<&str> = page.steps.iter().map(|s| s.title.as_str()).collect();
+        assert_eq!(titles, tc.want_titles, "{}", tc.name);
+        assert_eq!(
+            page.ready_line.as_deref(),
+            Some("Onda is ready"),
+            "{}",
+            tc.name
+        );
+    }
 }
 
 #[tokio::test(start_paused = true)]

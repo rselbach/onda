@@ -38,7 +38,8 @@ pub struct ChecklistButton {
 pub struct GettingStartedPage {
     /// Green "Onda is ready" line on top, when every row is complete.
     pub ready_line: Option<String>,
-    /// Microphone, Accessibility, Speech Model.
+    /// Microphone, Accessibility, Speech Model. A permission the system
+    /// does not have has no row.
     pub steps: Vec<ChecklistRow>,
     /// "Run Setup Again".
     pub run_setup_again_title: String,

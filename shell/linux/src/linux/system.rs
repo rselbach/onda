@@ -27,11 +27,7 @@ impl Permissions for Desktop {
         true
     }
     fn prompt_accessibility(&self) {}
-    fn open_settings(&self, _: PrivacyPane) {
-        if let Err(error) = process::launch("gnome-control-center", &["privacy"]) {
-            tracing::debug!(%error);
-        }
-    }
+    fn open_settings(&self, _: PrivacyPane) {}
 }
 
 impl Notifier for Desktop {

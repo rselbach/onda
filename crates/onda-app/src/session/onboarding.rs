@@ -96,6 +96,7 @@ impl Actor {
             origin,
             flags,
             Some(self.settings.language.code().to_owned()),
+            self.ports.platform,
         );
         self.ui.onboarding = Some(OnboardingState {
             wizard,
@@ -146,7 +147,10 @@ impl Actor {
             microphone: self.permissions.microphone,
             accessibility: self.permissions.accessibility,
             hotkey_display: self.settings.hotkey.display(),
-            hotkey_needs_accessibility: self.settings.hotkey.needs_accessibility(),
+            hotkey_needs_accessibility: self
+                .settings
+                .hotkey
+                .needs_accessibility(self.ports.platform),
             privacy_naming: self.ports.platform.privacy_naming(),
             selected: self
                 .catalog
@@ -281,7 +285,7 @@ impl Actor {
     // Typing Access are disabled
     pub(super) fn onboarding_select_hotkey(&mut self, preset: HotkeyPreset) {
         let shortcut = preset.shortcut();
-        if shortcut.needs_accessibility() && !self.permissions.accessibility {
+        if shortcut.needs_accessibility(self.ports.platform) && !self.permissions.accessibility {
             return;
         }
         self.set_hotkey(&shortcut);
@@ -329,6 +333,7 @@ impl Actor {
         Some(onboarding_view(OnboardingInputs {
             wizard: &state.wizard,
             env: &env,
+            platform: self.ports.platform,
             language_query: &state.query,
             show_all_languages: state.show_all_languages,
             show_other_models: state.show_other_models,

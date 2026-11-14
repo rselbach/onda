@@ -404,6 +404,11 @@ impl Actor {
             .recorder
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        HotkeyView::resolve(&self.settings.hotkey, &recorder, self.hotkeys.globe)
+        HotkeyView::resolve(
+            &self.settings.hotkey,
+            &recorder,
+            self.hotkeys.globe,
+            self.ports.platform,
+        )
     }
 }

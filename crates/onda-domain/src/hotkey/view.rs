@@ -5,6 +5,7 @@
 use super::globe::{GlobeKeyAction, OPEN_KEYBOARD_SETTINGS_TITLE, fn_key_warning};
 use super::recorder::{RECORDER_CANCEL_TITLE, ShortcutRecorder};
 use super::shortcut::Shortcut;
+use crate::platform::Platform;
 
 /// Everything a hotkey page or onboarding step shows about the shortcut.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,17 +37,18 @@ pub struct HotkeyView {
 }
 
 impl HotkeyView {
-    /// The view for `shortcut`, the recorder's state, and the Globe key
-    /// setting.
+    /// The view for `shortcut` on `platform`, the recorder's state, and the
+    /// Globe key setting.
     pub fn resolve(
         shortcut: &Shortcut,
         recorder: &ShortcutRecorder,
         globe: GlobeKeyAction,
+        platform: Platform,
     ) -> Self {
         Self {
             display: shortcut.display(),
             keycaps: shortcut.keycaps(),
-            needs_accessibility: shortcut.needs_accessibility(),
+            needs_accessibility: shortcut.needs_accessibility(platform),
             recording: recorder.is_recording(),
             listening: recorder.is_recording(),
             record_button_title: recorder.button_title(),
@@ -64,6 +66,7 @@ mod tests {
     use super::*;
     use crate::hotkey::recorder::{RECORDING_HELP_TEXT, RecorderEvent};
     use crate::hotkey::shortcut::{KeyCode, ModifierKey, ModifierSet};
+    use crate::privacy_naming::PrivacyNaming;
 
     #[test]
     fn resolves_shortcut_recorder_and_fn_warning() {
@@ -177,7 +180,12 @@ mod tests {
             },
         ];
         for tc in cases {
-            let view = HotkeyView::resolve(&tc.shortcut, &(tc.recorder)(), tc.globe);
+            let view = HotkeyView::resolve(
+                &tc.shortcut,
+                &(tc.recorder)(),
+                tc.globe,
+                Platform::macos(PrivacyNaming::Accessibility),
+            );
             assert_eq!(view.display, tc.shortcut.display(), "{}", tc.name);
             assert_eq!(view.record_button_title, tc.want_title, "{}", tc.name);
             assert_eq!(view.listening, tc.want_listening, "{}", tc.name);
@@ -197,5 +205,16 @@ mod tests {
                 tc.name
             );
         }
+    }
+
+    #[test]
+    fn a_lone_modifier_needs_no_accessibility_without_the_permission() {
+        let view = HotkeyView::resolve(
+            &Shortcut::lone(ModifierKey::AltRight),
+            &ShortcutRecorder::new(),
+            GlobeKeyAction::DoNothing,
+            Platform::linux(),
+        );
+        assert!(!view.needs_accessibility);
     }
 }

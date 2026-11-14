@@ -6,6 +6,8 @@ use std::fmt;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::platform::Platform;
+
 /// A key identified by its W3C `KeyboardEvent.code` name (HOT-1), such as
 /// `Space`, `KeyA`, `F5`, `AltRight`, or `Fn`.
 ///
@@ -378,11 +380,11 @@ impl Shortcut {
         self.lone_modifier().is_some()
     }
 
-    /// Whether the shortcut needs the Accessibility permission on macOS
-    /// (HOT-7): true exactly for lone modifiers, which are observed through
-    /// an event tap.
-    pub fn needs_accessibility(&self) -> bool {
-        self.is_lone_modifier()
+    /// Whether the shortcut needs the Accessibility permission (HOT-7):
+    /// true exactly for lone modifiers, which macOS observes through an
+    /// event tap. A system without the permission needs it for nothing.
+    pub fn needs_accessibility(&self, platform: Platform) -> bool {
+        platform.typing_permission.is_some() && self.is_lone_modifier()
     }
 
     /// The display string (HOT-6), e.g. `⌃⌥ Space` or `Right Option`.
@@ -531,6 +533,7 @@ impl HeldModifiers {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::privacy_naming::PrivacyNaming;
 
     fn key(code: &str) -> KeyCode {
         KeyCode::parse(code).expect("test key code")
@@ -697,14 +700,31 @@ mod tests {
 
     #[test]
     fn only_lone_modifiers_need_accessibility_hot_7() {
+        let macos = Platform::macos(PrivacyNaming::Accessibility);
+        let macos_27 = Platform::macos(PrivacyNaming::DeviceControlAndDataAccess);
+        let linux = Platform::linux();
+        let right_option = Shortcut::lone(ModifierKey::AltRight);
         let cases = [
-            ("option space", Shortcut::default(), false),
-            ("right option", Shortcut::lone(ModifierKey::AltRight), true),
-            ("fn", Shortcut::lone(ModifierKey::Fn), true),
-            ("control option d", combo("KeyD", &[Control, Alt]), false),
+            ("option space", macos, Shortcut::default(), false),
+            ("right option", macos, right_option.clone(), true),
+            (
+                "right option on macOS 27",
+                macos_27,
+                right_option.clone(),
+                true,
+            ),
+            ("fn", macos, Shortcut::lone(ModifierKey::Fn), true),
+            (
+                "control option d",
+                macos,
+                combo("KeyD", &[Control, Alt]),
+                false,
+            ),
+            ("right option on Linux", linux, right_option, false),
+            ("option space on Linux", linux, Shortcut::default(), false),
         ];
-        for (name, shortcut, want) in cases {
-            assert_eq!(shortcut.needs_accessibility(), want, "{name}");
+        for (name, platform, shortcut, want) in cases {
+            assert_eq!(shortcut.needs_accessibility(platform), want, "{name}");
         }
     }
 
