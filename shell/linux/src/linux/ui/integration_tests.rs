@@ -174,6 +174,26 @@ fn options(row: &adw::ComboRow) -> Vec<String> {
         .collect()
 }
 
+// whether the floating overlay's X11 window is on screen
+fn overlay_on_screen() -> bool {
+    use x11rb::{connection::Connection, protocol::xproto::*};
+    let (connection, screen) = x11rb::connect(None).unwrap();
+    let root = connection.setup().roots[screen].root;
+    let windows = connection.query_tree(root).unwrap().reply().unwrap();
+    windows.children.into_iter().any(|window| {
+        connection
+            .get_property(false, window, AtomEnum::WM_NAME, AtomEnum::STRING, 0, 64)
+            .unwrap()
+            .reply()
+            .is_ok_and(|name| name.value == b"onda-recording")
+            && connection
+                .get_window_attributes(window)
+                .unwrap()
+                .reply()
+                .is_ok_and(|attributes| attributes.map_state == MapState::VIEWABLE)
+    })
+}
+
 fn settle() {
     let until = Instant::now() + Duration::from_millis(350);
     wait_for(|| Instant::now() >= until);
@@ -511,10 +531,13 @@ pub(super) fn exercise_pages(owner: &Rc<Window>) {
             progress: OverlayProgress::Determinate(0.42),
         })
     };
+    assert!(!overlay_on_screen());
     downloading();
     assert_eq!(owner.detail.text(), "Downloading Greendale model… 42%");
+    wait_for(overlay_on_screen);
     download(DownloadOverlayView::Hidden);
     assert_eq!(owner.detail.text(), super::IDLE_HINT);
+    wait_for(|| !overlay_on_screen());
     downloading();
     recording(true);
     download(DownloadOverlayView::Hidden);
@@ -522,8 +545,13 @@ pub(super) fn exercise_pages(owner: &Rc<Window>) {
         owner.detail.text().starts_with("Transcribing..."),
         "a hidden download must not replace the recording status"
     );
+    assert!(
+        overlay_on_screen(),
+        "a hidden download must not take the recording overlay off screen"
+    );
     recording(false);
     assert_eq!(owner.detail.text(), super::IDLE_HINT);
+    wait_for(|| !overlay_on_screen());
     assert!(
         widgets::<adw::PreferencesGroup>(&owner.about)
             .iter()

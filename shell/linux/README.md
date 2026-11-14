@@ -186,10 +186,12 @@ removes your custom prompt. Onda does not accept a blank prompt.
   the transcript on the clipboard. Restoration waits 500 ms and checks the
   current text; this is not an acknowledgement from the target application.
 - **Indicator:** a floating panel with the waveform, a clock, the transcribing,
-  notice, and silent-microphone states, and a cancel button. It is a
-  layer-shell window, or an X11 window (including XWayland on GNOME). It never
-  takes keyboard focus, and only the cancel button takes clicks. Without
-  either window, use the main window's status.
+  notice, and silent-microphone states, and a cancel button. Outside a
+  dictation, the same panel shows a model download or load: its status line, a
+  progress bar, and a button that hides the panel until that download or load
+  ends. It is a layer-shell window, or an X11 window (including XWayland on
+  GNOME). It never takes keyboard focus, and only its button takes clicks.
+  Without either window, use the main window's status.
 - **Tray:** optional StatusNotifierItem. Its menu starts and stops dictation,
   cancels a recording, pastes the last or a recent transcript, retries or
   discards a failed dictation, retries or re-downloads a failed model, switches
@@ -287,7 +289,7 @@ switching, key storage and deletion, custom model selection, missing-key
 feedback, prompt editing, replacement editing, shortcuts, history search,
 confirmation dialogs, the model update notice, and critical alerts. They never
 use your credentials or normal Onda data. The script also runs the overlay
-test described below.
+tests described below.
 
 The script needs no list of tests. Mark a new real-GUI test `#[ignore]`, and
 start the app with `launch` in `src/linux/ui/integration_tests.rs`. `launch`
@@ -305,11 +307,13 @@ sudo dnf install xorg-x11-server-Xvfb dbus-daemon dbus-tools gnome-keyring \
 scripts/test-linux-gui.sh
 ```
 
-The overlay test shows the recording overlay's X11 window in Xvfb, above a
-focused window. It checks that each state is on screen as drawn, that only the
-cancel button takes a press, and that the focus never moves. Set
-`ONDA_TEST_SCREENSHOT_DIR` to capture each state. The layer-shell window needs
-a compositor that offers the protocol, so this test does not cover it.
+The overlay tests show the overlay's X11 window in Xvfb, above a focused
+window. They check that each recording state and the download overlay are on
+screen as drawn, that only the button takes a press, that the press cancels a
+recording and hides a download, that a recording takes the panel from a
+download, and that the focus never moves. Set `ONDA_TEST_SCREENSHOT_DIR` to
+capture each state. The layer-shell window needs a compositor that offers the
+protocol, so these tests do not cover it.
 
 ```sh
 sudo dnf install xorg-x11-server-Xvfb

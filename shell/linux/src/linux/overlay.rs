@@ -1,4 +1,5 @@
-//! The recording overlay: the core's `OverlayView` on a floating panel.
+//! The floating overlay: the core's recording overlay and its download
+//! overlay, on one panel.
 
 mod draw;
 mod panel;
@@ -10,20 +11,103 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gtk::{cairo, gdk, glib, prelude::*};
-use onda_domain::overlay::{OverlayContent, OverlayIcon, OverlayView};
+use onda_domain::{
+    non_dictation_ui::{DownloadOverlayView, OverlayProgress},
+    overlay::{OverlayContent, OverlayIcon, OverlayView},
+};
 
 use panel::Panel;
 
-// the processing highlight crosses the dots once in this long (OVL-10)
+// the processing highlight crosses the dots once in this long (OVL-10), and
+// so does the bar of a download overlay without a fraction
 const SWEEP: Duration = Duration::from_millis(1050);
 const SWEEP_FRAME: Duration = Duration::from_millis(33);
 
 pub struct Overlay {
     panel: Rc<Panel>,
-    view: Rc<RefCell<Option<OverlayView>>>,
+    views: Rc<RefCell<Views>>,
     icon: Rc<RefCell<Option<cairo::ImageSurface>>>,
     animated: bool,
     sweep: RefCell<Option<glib::SourceId>>,
+}
+
+/// What a press on the panel's button asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Press {
+    /// Cancel the dictation: the recording overlay's button.
+    Cancel,
+    /// Hide the download overlay: its own button.
+    Hide,
+}
+
+/// What the core last asked each overlay to show. The two arrive in separate
+/// events, in either order, and share the panel.
+struct Views {
+    recording: Option<OverlayView>,
+    download: DownloadOverlayView,
+}
+
+/// The overlay on the panel.
+enum Front<'a> {
+    Recording(&'a OverlayView),
+    Download {
+        status: &'a str,
+        progress: OverlayProgress,
+    },
+}
+
+impl Views {
+    /// The recording overlay while it is visible, and otherwise the download
+    /// overlay. The core hides the download for a dictation or a notice
+    /// (OVL-18) in a later event than the one that shows the recording.
+    fn front(&self) -> Option<Front<'_>> {
+        if let Some(view) = self.recording.as_ref().filter(|view| view.visible) {
+            return Some(Front::Recording(view));
+        }
+        match &self.download {
+            DownloadOverlayView::Shown { status, progress } => Some(Front::Download {
+                status,
+                progress: *progress,
+            }),
+            DownloadOverlayView::Hidden => None,
+        }
+    }
+}
+
+impl Front<'_> {
+    fn button(&self) -> Option<cairo::RectangleInt> {
+        match self {
+            Front::Recording(view) => draw::cancel_area(view),
+            Front::Download { .. } => Some(draw::button_area()),
+        }
+    }
+
+    fn press(&self) -> Press {
+        match self {
+            Front::Recording(_) => Press::Cancel,
+            Front::Download { .. } => Press::Hide,
+        }
+    }
+
+    // whether the drawing changes with time
+    fn moves(&self) -> bool {
+        match self {
+            Front::Recording(view) => matches!(view.content, OverlayContent::Processing { .. }),
+            Front::Download { progress, .. } => *progress == OverlayProgress::Indeterminate,
+        }
+    }
+
+    fn draw(
+        &self,
+        cr: &cairo::Context,
+        icon: Option<&cairo::ImageSurface>,
+        sweep: Option<f64>,
+    ) -> Result<(), cairo::Error> {
+        match self {
+            Front::Recording(view) => draw::recording(cr, view, icon, sweep),
+            Front::Download { status, progress } => draw::download(cr, status, *progress, sweep),
+        }
+    }
 }
 
 /// The main window's one-line summary of the overlay, and the latest level.
@@ -50,31 +134,40 @@ pub fn content(view: &OverlayView) -> (String, f64) {
 }
 
 impl Overlay {
-    /// A hidden overlay whose cancel button calls `cancel`.
-    pub fn new(cancel: impl Fn() + 'static) -> Self {
-        let view = Rc::new(RefCell::new(None::<OverlayView>));
+    /// A hidden overlay that reports each press on its button to `pressed`.
+    pub fn new(pressed: impl Fn(Press) + 'static) -> Self {
+        let views = Rc::new(RefCell::new(Views {
+            recording: None,
+            download: DownloadOverlayView::Hidden,
+        }));
         let icon = Rc::new(RefCell::new(None::<cairo::ImageSurface>));
         let animated =
             gtk::Settings::default().is_none_or(|settings| settings.is_gtk_enable_animations());
         let started = Instant::now();
-        let shown = view.clone();
+        let (drawn, shown) = (views.clone(), views.clone());
         let shown_icon = icon.clone();
         let panel = Panel::new(
             "onda-recording",
             draw::SIZE,
             move |cr| {
-                let Some(view) = &*shown.borrow() else {
+                let views = drawn.borrow();
+                let Some(front) = views.front() else {
                     return Ok(());
                 };
                 let sweep = animated
                     .then(|| (started.elapsed().as_secs_f64() / SWEEP.as_secs_f64()).fract());
-                draw::recording(cr, view, shown_icon.borrow().as_ref(), sweep)
+                front.draw(cr, shown_icon.borrow().as_ref(), sweep)
             },
-            cancel,
+            move || {
+                let press = shown.borrow().front().map(|front| front.press());
+                if let Some(press) = press {
+                    pressed(press);
+                }
+            },
         );
         Self {
             panel: Rc::new(panel),
-            view,
+            views,
             icon,
             animated,
             sweep: RefCell::new(None),
@@ -85,27 +178,42 @@ impl Overlay {
         self.panel.available()
     }
 
+    /// Takes the core's recording overlay.
     pub fn update(&self, view: &OverlayView) {
-        let sweeping = view.visible
-            && self.animated
-            && matches!(view.content, OverlayContent::Processing { .. });
-        if !sweeping && let Some(sweep) = self.sweep.take() {
-            sweep.remove();
-        }
-        if !view.visible {
-            self.panel.hide();
-            return;
-        }
         let renamed = self
-            .view
+            .views
             .borrow()
+            .recording
             .as_ref()
             .is_none_or(|shown| shown.icon != view.icon);
         if renamed {
             self.icon.replace(icon(&view.icon));
         }
-        self.view.replace(Some(view.clone()));
-        self.panel.show(draw::cancel_area(view));
+        self.views.borrow_mut().recording = Some(view.clone());
+        self.refresh();
+    }
+
+    /// Takes the core's download overlay.
+    pub fn download(&self, view: &DownloadOverlayView) {
+        self.views.borrow_mut().download = view.clone();
+        self.refresh();
+    }
+
+    fn refresh(&self) {
+        let front = self
+            .views
+            .borrow()
+            .front()
+            .map(|front| (front.button(), front.moves()));
+        let sweeping = self.animated && front.is_some_and(|(_, moves)| moves);
+        if !sweeping && let Some(sweep) = self.sweep.take() {
+            sweep.remove();
+        }
+        let Some((button, _)) = front else {
+            self.panel.hide();
+            return;
+        };
+        self.panel.show(button);
         if sweeping && self.sweep.borrow().is_none() {
             let panel = self.panel.clone();
             let sweep = glib::timeout_add_local(SWEEP_FRAME, move || {
@@ -150,6 +258,81 @@ impl Drop for Overlay {
     fn drop(&mut self) {
         if let Some(sweep) = self.sweep.take() {
             sweep.remove();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use onda_domain::overlay::Overlay as CoreOverlay;
+
+    #[test]
+    fn recording_is_in_front_of_the_download() {
+        let recording = |visible| {
+            let mut core = CoreOverlay::new();
+            core.show_recording(None, Some("Abed's Podcast Mic".to_owned()));
+            let mut view = core.view(None);
+            view.visible = visible;
+            Some(view)
+        };
+        let downloading = || DownloadOverlayView::Shown {
+            status: "Downloading Greendale model… 42%".to_owned(),
+            progress: OverlayProgress::Determinate(0.42),
+        };
+        struct Case {
+            name: &'static str,
+            recording: Option<OverlayView>,
+            download: DownloadOverlayView,
+            want: Option<Press>,
+        }
+        let cases = [
+            Case {
+                name: "nothing to show",
+                recording: None,
+                download: DownloadOverlayView::Hidden,
+                want: None,
+            },
+            Case {
+                name: "a download alone",
+                recording: None,
+                download: downloading(),
+                want: Some(Press::Hide),
+            },
+            Case {
+                name: "a recording before the core hides the download",
+                recording: recording(true),
+                download: downloading(),
+                want: Some(Press::Cancel),
+            },
+            Case {
+                name: "a recording after the core hid the download",
+                recording: recording(true),
+                download: DownloadOverlayView::Hidden,
+                want: Some(Press::Cancel),
+            },
+            Case {
+                name: "the download returns when the recording overlay hides",
+                recording: recording(false),
+                download: downloading(),
+                want: Some(Press::Hide),
+            },
+            Case {
+                name: "a hidden recording alone",
+                recording: recording(false),
+                download: DownloadOverlayView::Hidden,
+                want: None,
+            },
+        ];
+        for tc in cases {
+            let views = Views {
+                recording: tc.recording,
+                download: tc.download,
+            };
+            let front = views.front();
+            assert_eq!(front.as_ref().map(Front::press), tc.want, "{}", tc.name);
+            let button = front.and_then(|front| front.button());
+            assert_eq!(button.is_some(), tc.want.is_some(), "{}", tc.name);
         }
     }
 }

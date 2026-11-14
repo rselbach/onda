@@ -8,7 +8,6 @@
 # <command> never <why Linux never needs it>
 
 begin_hotkey_capture             #13 shortcut recorder
-dismiss_download_overlay         #19 download overlay
 end_hotkey_capture               #13 shortcut recorder
 fix_permission                   never Linux has no privacy permission to fix
 flush_events                     never a barrier for the core's own tests

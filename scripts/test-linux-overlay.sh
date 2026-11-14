@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Exercise the recording overlay's X11 window in a private Xvfb display.
+# Exercise the overlay's X11 window in a private Xvfb display.
 set -euo pipefail
 
 cleanup() {
@@ -29,13 +29,18 @@ main() {
   done
   DISPLAY=":$(cat "${work}/display")"
   export DISPLAY
-  local test_name=x11_overlay_shows_each_state_and_cancels_without_taking_focus
-  if [[ -n "${ONDA_GUI_TEST_BINARY:-}" ]]; then
-    "${ONDA_GUI_TEST_BINARY}" "${test_name}" --ignored --test-threads=1
-  else
-    cargo test --locked --manifest-path "${root}/Cargo.toml" -p onda-linux \
-      "${test_name}" -- --ignored --test-threads=1
-  fi
+  # GTK starts once in a process, so each test gets its own
+  local test_name
+  for test_name in \
+    x11_overlay_shows_each_state_and_cancels_without_taking_focus \
+    x11_overlay_shows_a_download_hides_it_and_gives_way_to_a_recording; do
+    if [[ -n "${ONDA_GUI_TEST_BINARY:-}" ]]; then
+      "${ONDA_GUI_TEST_BINARY}" "${test_name}" --ignored --test-threads=1
+    else
+      cargo test --locked --manifest-path "${root}/Cargo.toml" -p onda-linux \
+        "${test_name}" -- --ignored --test-threads=1
+    fi
+  done
 }
 
 main "$@"

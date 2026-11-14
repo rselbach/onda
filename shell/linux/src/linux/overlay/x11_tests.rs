@@ -1,12 +1,15 @@
 //! The overlay on a real X server, driven by the core's overlay state.
-//! `scripts/test-linux-overlay.sh` runs it in Xvfb.
+//! `scripts/test-linux-overlay.sh` runs each test in Xvfb.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gtk::{cairo, gdk, glib, prelude::*};
-use onda_domain::overlay::{ClockDisplay, Notice, Overlay as CoreOverlay, OverlayView};
+use onda_domain::{
+    non_dictation_ui::{DownloadOverlayView, OverlayProgress},
+    overlay::{ClockDisplay, Notice, Overlay as CoreOverlay, OverlayView},
+};
 use x11rb::{
     connection::Connection,
     protocol::{Event, xproto::*, xtest::ConnectionExt as _},
@@ -14,7 +17,7 @@ use x11rb::{
     wrapper::ConnectionExt as _,
 };
 
-use super::{Overlay, draw};
+use super::{Overlay, Press, draw};
 
 const JAPANESE: &str = "Troy Barnes が Greendale で話す";
 const DESKTOP: (u8, u8, u8) = (0x20, 0x40, 0x60);
@@ -210,20 +213,30 @@ impl Screen {
     }
 }
 
-fn drawn(view: &OverlayView) -> Vec<u8> {
+fn drawn(paint: impl Fn(&cairo::Context) -> Result<(), cairo::Error>) -> Vec<u8> {
     let mut surface =
         cairo::ImageSurface::create(cairo::Format::ARgb32, draw::SIZE.0, draw::SIZE.1).unwrap();
-    draw::recording(&cairo::Context::new(&surface).unwrap(), view, None, None).unwrap();
+    paint(&cairo::Context::new(&surface).unwrap()).unwrap();
     surface.data().unwrap().to_vec()
+}
+
+fn recording(view: &OverlayView) -> Vec<u8> {
+    drawn(|cr| draw::recording(cr, view, None, None))
+}
+
+fn download(view: &DownloadOverlayView) -> Vec<u8> {
+    let DownloadOverlayView::Shown { status, progress } = view else {
+        panic!("a hidden download overlay has no drawing");
+    };
+    drawn(|cr| draw::download(cr, status, *progress, None))
 }
 
 // the screen shows the drawing where it is opaque and the desktop where the
 // rounded corners leave it empty
 #[track_caller]
-fn assert_on_screen(screen: &[u8], view: &OverlayView, name: &str) {
+fn assert_on_screen(screen: &[u8], drawn: &[u8], name: &str) {
     let (red, green, blue) = DESKTOP;
     let (mut opaque, mut empty) = (0, 0);
-    let drawn = drawn(view);
     for (seen, want) in screen
         .as_chunks::<4>()
         .0
@@ -255,7 +268,11 @@ fn x11_overlay_shows_each_state_and_cancels_without_taking_focus() {
     let cancelled = Rc::new(Cell::new(0));
     let overlay = Overlay::new({
         let cancelled = cancelled.clone();
-        move || cancelled.set(cancelled.get() + 1)
+        move |press| {
+            if press == Press::Cancel {
+                cancelled.set(cancelled.get() + 1)
+            }
+        }
     });
     assert!(overlay.available());
     // opened after the overlay, as most applications are
@@ -279,7 +296,11 @@ fn x11_overlay_shows_each_state_and_cancels_without_taking_focus() {
     let waveform = core.view(Some(&clock("0:07", false)));
     show(&waveform);
     assert!(screen.mapped());
-    assert_on_screen(&screen.picture("waveform"), &waveform, "waveform");
+    assert_on_screen(
+        &screen.picture("waveform"),
+        &recording(&waveform),
+        "waveform",
+    );
     assert!(screen.focused(), "showing the overlay left the focus alone");
 
     screen.received();
@@ -293,21 +314,25 @@ fn x11_overlay_shows_each_state_and_cancels_without_taking_focus() {
 
     let warning = core.view(Some(&clock("Stops in 0:10", true)));
     show(&warning);
-    assert_on_screen(&screen.picture("clock-warning"), &warning, "clock warning");
+    assert_on_screen(
+        &screen.picture("clock-warning"),
+        &recording(&warning),
+        "clock warning",
+    );
 
     core.set_preview(format!(
         "{JAPANESE}。Abed is filming the study group in the library."
     ));
     let preview = core.view(Some(&clock("0:12", false)));
     show(&preview);
-    assert_on_screen(&screen.picture("preview"), &preview, "preview");
+    assert_on_screen(&screen.picture("preview"), &recording(&preview), "preview");
 
     core.set_silent(true);
     let silent = core.view(Some(&clock("0:14", false)));
     show(&silent);
     assert_on_screen(
         &screen.picture("silent-microphone"),
-        &silent,
+        &recording(&silent),
         "silent microphone",
     );
 
@@ -347,7 +372,7 @@ fn x11_overlay_shows_each_state_and_cancels_without_taking_focus() {
     );
     let notice = core.view(None);
     show(&notice);
-    assert_on_screen(&screen.picture("notice"), &notice, "notice");
+    assert_on_screen(&screen.picture("notice"), &recording(&notice), "notice");
     screen.received();
     screen.press(cancel_x, cancel_y);
     assert_eq!(cancelled.get(), 2, "a notice has no button");
@@ -356,6 +381,123 @@ fn x11_overlay_shows_each_state_and_cancels_without_taking_focus() {
     core.end_session();
     core.tick(Duration::from_secs(4));
     show(&core.view(None));
+    assert!(
+        !screen.mapped(),
+        "a hidden view takes the overlay off screen"
+    );
+    assert!(screen.focused());
+}
+
+#[test]
+#[ignore = "needs an X11 display of its own; run scripts/test-linux-overlay.sh"]
+fn x11_overlay_shows_a_download_hides_it_and_gives_way_to_a_recording() {
+    gtk::init().unwrap();
+    let presses = Rc::new(RefCell::new(Vec::new()));
+    let overlay = Overlay::new({
+        let presses = presses.clone();
+        move |press| presses.borrow_mut().push(press)
+    });
+    assert!(overlay.available());
+    let screen = Screen::new();
+    let (button_x, button_y) = (draw::SIZE.0 - 22, draw::SIZE.1 / 2);
+    let downloading = |percent: u8| DownloadOverlayView::Shown {
+        status: format!("Downloading {JAPANESE}… {percent}%"),
+        progress: OverlayProgress::Determinate(f64::from(percent) / 100.0),
+    };
+    let show = |view: &DownloadOverlayView| {
+        overlay.download(view);
+        settle();
+    };
+
+    let started = downloading(42);
+    show(&started);
+    assert!(screen.mapped());
+    let at_42 = screen.picture("download");
+    assert_on_screen(&at_42, &download(&started), "download");
+    assert!(screen.focused(), "showing the overlay left the focus alone");
+
+    let further = downloading(90);
+    show(&further);
+    let at_90 = screen.picture("download-further");
+    assert_on_screen(&at_90, &download(&further), "download further");
+    assert!(at_42 != at_90, "the bar follows the progress");
+
+    screen.received();
+    screen.press(120, button_y);
+    assert_eq!(*presses.borrow(), []);
+    assert_eq!(
+        screen.received().presses,
+        1,
+        "a press on the status line passes through"
+    );
+
+    show(&DownloadOverlayView::Shown {
+        status: "Loading CPU speech model…".to_owned(),
+        progress: OverlayProgress::Indeterminate,
+    });
+    let early = screen.picture("loading");
+    settle();
+    assert!(
+        early != screen.picture("loading-later"),
+        "a progress without a fraction keeps moving"
+    );
+
+    screen.press(button_x, button_y);
+    assert_eq!(*presses.borrow(), [Press::Hide], "a press on the button");
+    assert_eq!(
+        screen.received().presses,
+        0,
+        "the press stayed on the button"
+    );
+    assert!(screen.focused(), "the press left the focus alone");
+    screen.type_a();
+    settle();
+    assert_eq!(screen.received().keys, 1, "typing still reaches the target");
+    show(&DownloadOverlayView::Hidden);
+    assert!(!screen.mapped(), "the core answers the press by hiding it");
+
+    show(&further);
+    let mut core = CoreOverlay::new();
+    core.show_recording(None, Some("Abed's Podcast Mic".to_owned()));
+    core.push_level(0.05);
+    let dictating = core.view(Some(&ClockDisplay {
+        text: "0:03".to_owned(),
+        warning: false,
+    }));
+    overlay.update(&dictating);
+    settle();
+    assert_on_screen(
+        &screen.picture("recording-over-download"),
+        &recording(&dictating),
+        "a recording during a download",
+    );
+    screen.press(button_x, button_y);
+    assert_eq!(
+        *presses.borrow(),
+        [Press::Hide, Press::Cancel],
+        "the button now cancels the dictation"
+    );
+    // the core hides the download in a later event than the recording
+    show(&DownloadOverlayView::Hidden);
+    assert!(screen.mapped());
+    assert_on_screen(
+        &screen.picture("recording"),
+        &recording(&dictating),
+        "the recording stays when the download hides",
+    );
+
+    core.end_session();
+    core.tick(Duration::from_secs(4));
+    overlay.update(&core.view(None));
+    settle();
+    assert!(!screen.mapped(), "nothing is left to show");
+    show(&further);
+    assert_on_screen(
+        &screen.picture("download-after-recording"),
+        &download(&further),
+        "the download returns after the dictation",
+    );
+    show(&DownloadOverlayView::Hidden);
     assert!(
         !screen.mapped(),
         "a hidden view takes the overlay off screen"

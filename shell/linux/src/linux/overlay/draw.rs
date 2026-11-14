@@ -1,15 +1,16 @@
-//! Cairo and Pango drawing for the floating panels: the recording overlay's
-//! states, and the parts any panel is built from.
+//! Cairo and Pango drawing for the floating panel: the recording overlay's
+//! states, the download overlay, and the parts both are built from.
 
 use std::f64::consts::{FRAC_PI_2, PI};
 
 use gtk::{cairo, pango};
 use onda_domain::{
     level::{BAR_SPACING, BAR_WIDTH, bar_heights},
+    non_dictation_ui::OverlayProgress,
     overlay::{OverlayContent, OverlayView},
 };
 
-/// Size of the recording overlay in pixels, as on macOS.
+/// Size of the panel in pixels, the recording overlay's size on macOS.
 pub const SIZE: (i32, i32) = (400, 104);
 
 /// Corner radius of a panel's background.
@@ -25,6 +26,7 @@ pub const PRIMARY: Color = Color(1.0, 1.0, 1.0, 0.95);
 pub const SECONDARY: Color = Color(1.0, 1.0, 1.0, 0.62);
 const PANEL: Color = Color(0.13, 0.13, 0.14, 1.0);
 const BORDER: Color = Color(1.0, 1.0, 1.0, 0.12);
+const TRACK: Color = Color(1.0, 1.0, 1.0, 0.18);
 const ACCENT: Color = Color(0.384, 0.627, 0.918, 1.0);
 const RED: Color = Color(1.0, 0.482, 0.388, 1.0);
 const ORANGE: Color = Color(1.0, 0.639, 0.282, 1.0);
@@ -258,12 +260,99 @@ fn message(
     Ok(())
 }
 
+/// Where the panel's one button sits: cancel on the recording overlay, hide
+/// on the download overlay.
+pub fn button_area() -> cairo::RectangleInt {
+    cairo::RectangleInt::new(SIZE.0 - 36, (SIZE.1 - 28) / 2, 28, 28)
+}
+
 /// Where the recording overlay takes presses: its cancel button, shown with
 /// the trailing controls.
 pub fn cancel_area(view: &OverlayView) -> Option<cairo::RectangleInt> {
-    view.trailing
-        .as_ref()
-        .map(|_| cairo::RectangleInt::new(SIZE.0 - 36, (SIZE.1 - 28) / 2, 28, 28))
+    view.trailing.as_ref().map(|_| button_area())
+}
+
+fn arrow_down_circle(cr: &cairo::Context, x: f64, y: f64) -> Result<(), cairo::Error> {
+    cr.new_path();
+    cr.arc(x, y, 10.0, 0.0, 2.0 * PI);
+    cr.move_to(x, y - 5.0);
+    cr.line_to(x, y + 5.0);
+    cr.move_to(x - 4.0, y + 1.0);
+    cr.line_to(x, y + 5.0);
+    cr.line_to(x + 4.0, y + 1.0);
+    SECONDARY.set(cr);
+    cr.set_line_width(1.6);
+    cr.set_line_cap(cairo::LineCap::Round);
+    cr.set_line_join(cairo::LineJoin::Round);
+    cr.stroke()
+}
+
+// the filled part of a progress bar, from `start` to `end` along `track`
+fn progress_bar(
+    cr: &cairo::Context,
+    track: Area,
+    start: f64,
+    end: f64,
+) -> Result<(), cairo::Error> {
+    let radius = track.height / 2.0;
+    cr.new_path();
+    rounded(cr, track, radius);
+    TRACK.set(cr);
+    cr.fill_preserve()?;
+    cr.save()?;
+    cr.clip();
+    // a capsule shorter than it is tall has no shape, so a short one keeps
+    // its length and starts left of the track, where the clip hides it
+    let length = (end - start).max(track.height);
+    let filled = Area {
+        x: track.x + end - length,
+        width: length,
+        ..track
+    };
+    rounded(cr, filled, radius);
+    ACCENT.set(cr);
+    cr.fill()?;
+    cr.restore()
+}
+
+/// Draws the download overlay as the macOS shell lays it out (OVL-16): the
+/// status line over a progress bar, and the hide button. `sweep`, from 0 to
+/// 1, moves the bar of a progress that has no fraction.
+pub fn download(
+    cr: &cairo::Context,
+    status: &str,
+    progress: OverlayProgress,
+    sweep: Option<f64>,
+) -> Result<(), cairo::Error> {
+    let (width, height) = (f64::from(SIZE.0), f64::from(SIZE.1));
+    background(cr, width, height)?;
+    let hide = button_area();
+    close(cr, hide)?;
+    arrow_down_circle(cr, 29.0, height / 2.0)?;
+    let left = 52.0;
+    let column = f64::from(hide.x()) - 12.0 - left;
+    let status = text(cr, status, 12.0, pango::Weight::Normal, column, 1);
+    let status_height = f64::from(status.pixel_size().1);
+    // on whole pixels, so the thin bar under the text has sharp edges
+    let top = ((height - (status_height + 6.0 + 4.0)) / 2.0).floor();
+    show(cr, &status, left, top, PRIMARY);
+    let track = Area {
+        x: left,
+        y: top + status_height + 6.0,
+        width: column,
+        height: 4.0,
+    };
+    match progress {
+        OverlayProgress::Determinate(fraction) => {
+            progress_bar(cr, track, 0.0, column * fraction.clamp(0.0, 1.0))
+        }
+        OverlayProgress::Indeterminate => {
+            let band = column * 0.3;
+            // without animation the band rests in the middle
+            let start = sweep.unwrap_or(0.5) * (column + band) - band;
+            progress_bar(cr, track, start, start + band)
+        }
+    }
 }
 
 /// Draws the recording overlay as the macOS shell lays it out (OVL-5 to
@@ -384,6 +473,13 @@ mod tests {
 
     type Pixel = (u8, u8, u8);
 
+    fn picture(paint: impl Fn(&cairo::Context) -> Result<(), cairo::Error>) -> Vec<u8> {
+        let mut surface =
+            cairo::ImageSurface::create(cairo::Format::ARgb32, SIZE.0, SIZE.1).unwrap();
+        paint(&cairo::Context::new(&surface).unwrap()).unwrap();
+        surface.data().unwrap().to_vec()
+    }
+
     fn render(view: &OverlayView, sweep: Option<f64>) -> Vec<u8> {
         render_with(view, None, sweep)
     }
@@ -393,10 +489,11 @@ mod tests {
         icon: Option<&cairo::ImageSurface>,
         sweep: Option<f64>,
     ) -> Vec<u8> {
-        let mut surface =
-            cairo::ImageSurface::create(cairo::Format::ARgb32, SIZE.0, SIZE.1).unwrap();
-        recording(&cairo::Context::new(&surface).unwrap(), view, icon, sweep).unwrap();
-        surface.data().unwrap().to_vec()
+        picture(|cr| recording(cr, view, icon, sweep))
+    }
+
+    fn render_download(status: &str, progress: OverlayProgress, sweep: Option<f64>) -> Vec<u8> {
+        picture(|cr| download(cr, status, progress, sweep))
     }
 
     fn count(pixels: &[u8], columns: std::ops::Range<i32>, matches: fn(Pixel) -> bool) -> usize {
@@ -623,5 +720,84 @@ mod tests {
         assert!(whole != cut, "the end of the third line is drawn");
         let title_only = render(&notice(""), None);
         assert!(count(&whole, 0..SIZE.0, light) > count(&title_only, 0..SIZE.0, light));
+    }
+
+    #[test]
+    fn download_bar_fills_with_the_fraction() {
+        let filled = |fraction| {
+            let progress = OverlayProgress::Determinate(fraction);
+            count(&render_download("", progress, None), 0..SIZE.0, accent)
+        };
+        let whole = filled(1.0);
+        assert!(whole > 1000, "a full bar spans the column: {whole}");
+        assert_eq!(filled(0.0), 0, "an empty bar is only its track");
+        let cases = [("a quarter", 0.25), ("a half", 0.5), ("most", 0.9)];
+        for (name, fraction) in cases {
+            let want = whole as f64 * fraction;
+            let got = filled(fraction) as f64;
+            assert!((got - want).abs() < whole as f64 * 0.02, "{name}: {got}");
+        }
+        assert_eq!(filled(7.0), whole, "a fraction over one is a full bar");
+        assert_eq!(filled(-1.0), 0, "a fraction under zero is an empty bar");
+    }
+
+    #[test]
+    fn download_without_a_fraction_moves_a_band() {
+        let band = |sweep| render_download("", OverlayProgress::Indeterminate, sweep);
+        let (early, late) = (band(Some(0.25)), band(Some(0.75)));
+        let middle = SIZE.0 / 2;
+        assert!(count(&early, 0..middle, accent) > count(&early, middle..SIZE.0, accent));
+        assert!(count(&late, 0..middle, accent) < count(&late, middle..SIZE.0, accent));
+        let still = band(None);
+        assert!(
+            count(&still, 0..SIZE.0, accent) > 0,
+            "it shows without animation"
+        );
+        assert!(still == band(Some(0.5)));
+        let whole = render_download("", OverlayProgress::Determinate(1.0), None);
+        assert!(count(&still, 0..SIZE.0, accent) < count(&whole, 0..SIZE.0, accent) / 2);
+    }
+
+    #[test]
+    fn download_has_a_hide_button_where_the_recording_has_cancel() {
+        let picture = render_download("", OverlayProgress::Indeterminate, None);
+        let button = button_area();
+        let columns = button.x()..button.x() + button.width();
+        assert!(count(&picture, columns, light) > 0);
+        let recording = recording_overlay().view(Some(&clock(false)));
+        assert_eq!(cancel_area(&recording), Some(button));
+    }
+
+    #[test]
+    fn download_status_is_one_line_in_any_script() {
+        if !fonts() {
+            return;
+        }
+        let status = |text: &str| render_download(text, OverlayProgress::Determinate(0.42), None);
+        let blank = status("");
+        let whole = status(&format!("Downloading {JAPANESE}… 42%"));
+        let ascii = status("Downloading Troy Barnes   Greendale    … 42%");
+        assert!(count(&whole, 0..SIZE.0, light) > count(&ascii, 0..SIZE.0, light) + 40);
+        let long = status(&"Troy Barnes is downloading the Greendale model. ".repeat(6));
+        assert!(count(&long, 0..SIZE.0, light) > count(&blank, 0..SIZE.0, light));
+        let button = button_area().x();
+        assert_eq!(
+            count(&long, button - 12..SIZE.0, light),
+            count(&blank, button - 12..SIZE.0, light),
+            "a long status ends before the button"
+        );
+        let cr = cairo::Context::new(
+            cairo::ImageSurface::create(cairo::Format::ARgb32, SIZE.0, SIZE.1).unwrap(),
+        )
+        .unwrap();
+        let broken = text(
+            &cr,
+            "Troy\nAbed\nAnnie",
+            12.0,
+            pango::Weight::Normal,
+            288.0,
+            1,
+        );
+        assert_eq!(broken.line_count(), 1);
     }
 }

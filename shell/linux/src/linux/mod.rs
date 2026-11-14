@@ -34,7 +34,7 @@ enum Message {
     Notice(String, String),
     Inhibit(Option<String>),
     Tray(tray::Command),
-    CancelDictation,
+    Overlay(overlay::Press),
 }
 
 fn send(sender: &async_channel::Sender<Message>, message: Message) {

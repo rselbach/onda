@@ -19,7 +19,12 @@ use onda_app::{Event, views::MainWindowSection};
 use onda_domain::non_dictation_ui::DownloadOverlayView;
 use std::{cell::Cell, rc::Rc};
 
-use super::{Message, core::Core, overlay::Overlay, tray::Command};
+use super::{
+    Message,
+    core::Core,
+    overlay::{Overlay, Press},
+    tray::Command,
+};
 
 const IDLE_HINT: &str = "Use your global shortcut to dictate into another application.";
 
@@ -187,9 +192,10 @@ impl Window {
             setup.add(&row);
         }
         home.append(&setup);
-        let overlay = Overlay::new(move || super::send(&overlay_events, Message::CancelDictation));
+        let overlay =
+            Overlay::new(move |press| super::send(&overlay_events, Message::Overlay(press)));
         if !overlay.available() {
-            home.append(&label("A floating recording indicator is unavailable on this desktop. Recording status remains visible here."));
+            home.append(&label("A floating indicator is unavailable on this desktop. Recording and download status remain visible here."));
         }
         let this = Rc::new(Self {
             core,
@@ -320,7 +326,8 @@ impl Window {
     fn event(self: &Rc<Self>, message: Message) {
         match message {
             Message::Tray(command) => self.tray(command),
-            Message::CancelDictation => self.core.app.cancel_dictation(),
+            Message::Overlay(Press::Cancel) => self.core.app.cancel_dictation(),
+            Message::Overlay(Press::Hide) => self.core.app.dismiss_download_overlay(),
             Message::Hotkey(event) => self.core.app.on_hotkey_event(event),
             Message::Download(update) => self.core.app.download_event(update),
             Message::DevicesChanged => self.core.app.input_devices_changed(),
@@ -363,14 +370,18 @@ impl Window {
                         tray.update(|tray| tray.view = view);
                     }
                 }
-                Event::DownloadOverlayChanged(DownloadOverlayView::Shown { status, .. }) => {
-                    self.detail.set_text(&status)
-                }
-                // the core also hides the download when a recording or a
-                // notice takes the line, and reports that overlay first
-                Event::DownloadOverlayChanged(DownloadOverlayView::Hidden) => {
-                    if !self.overlay_visible.get() {
-                        self.detail.set_text(IDLE_HINT);
+                Event::DownloadOverlayChanged(view) => {
+                    self.overlay.download(&view);
+                    match view {
+                        DownloadOverlayView::Shown { status, .. } => self.detail.set_text(&status),
+                        // the core also hides the download when a recording
+                        // or a notice takes the line, and reports that
+                        // overlay first
+                        DownloadOverlayView::Hidden => {
+                            if !self.overlay_visible.get() {
+                                self.detail.set_text(IDLE_HINT);
+                            }
+                        }
                     }
                 }
                 Event::OverlayChanged(view) => {
