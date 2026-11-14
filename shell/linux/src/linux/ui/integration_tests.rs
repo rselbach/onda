@@ -26,7 +26,7 @@ use x11rb::{
 };
 
 /// The key of the update notice that [`Start`] makes due.
-pub(super) const NOTICE_KEY: &str = "parakeet-ja->parakeet-ultra";
+pub(super) const NOTICE_KEY: &str = "system-speech->parakeet-ultra";
 
 /// The model the wizard recommends for English.
 pub(super) const MODEL: ModelId = ModelId::ParakeetTdtV2;
@@ -82,7 +82,7 @@ pub(super) fn launch(start: Start) -> Rc<Window> {
     let finished = serde_json::json!({
         "onboardingCompleted": true,
         "didShowFirstRunSetup": true,
-        "selectedModel": "parakeet-ja",
+        "selectedModel": "system-speech",
     });
     let settings = match start {
         Start::FirstRun => serde_json::json!({}),

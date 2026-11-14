@@ -210,7 +210,7 @@ mod tests {
         dialog.close();
         wait_for(|| stored("declinedModelMigrationNoticeKey").as_deref() == Some(NOTICE_KEY));
         wait_for(|| owner.window.visible_dialog().is_none());
-        assert_eq!(stored("selectedModel").as_deref(), Some("parakeet-ja"));
+        assert_eq!(stored("selectedModel").as_deref(), Some("system-speech"));
         quit(&owner);
     }
 
@@ -231,7 +231,7 @@ mod tests {
             stored("declinedModelMigrationNoticeKey").filter(|key| !key.is_empty()),
             None
         );
-        assert_eq!(stored("selectedModel").as_deref(), Some("parakeet-ja"));
+        assert_eq!(stored("selectedModel").as_deref(), Some("system-speech"));
         quit(&owner);
     }
 
@@ -318,7 +318,7 @@ mod tests {
         let view = update_notice(
             &Catalog::gguf(),
             &Migration {
-                from: "parakeet-ja".into(),
+                from: "system-speech".into(),
                 to: ModelId::ParakeetUltra,
             },
         );

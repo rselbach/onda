@@ -193,3 +193,45 @@ impl Window {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use adw::prelude::*;
+
+    use super::super::integration_tests::{Start, button, capture, launch, wait_for, widgets};
+
+    #[test]
+    #[ignore = "requires an isolated GTK display, D-Bus session, and ONDA_DATA_DIR"]
+    fn real_gui_choosing_japanese_offers_parakeet_japanese() {
+        let owner = launch(Start::Declined);
+        let row = |title: &str| {
+            widgets::<adw::ActionRow>(&owner.models)
+                .into_iter()
+                .find(|row| row.title() == title)
+        };
+        wait_for(|| row("Language").is_some());
+        let language: adw::ComboRow = row("Language").unwrap().downcast().unwrap();
+        let names: gtk::StringList = language.model().unwrap().downcast().unwrap();
+        let japanese = (0..names.n_items())
+            .find(|index| names.string(*index).as_deref() == Some("Japanese"))
+            .unwrap();
+        language.set_selected(japanese);
+        let recommended = || {
+            row("Parakeet Japanese").is_some_and(|row| {
+                widgets::<gtk::Label>(&row)
+                    .iter()
+                    .any(|label| label.text() == "Recommended")
+            })
+        };
+        wait_for(recommended);
+        let japanese = row("Parakeet Japanese").unwrap();
+        assert_eq!(
+            japanese.subtitle().as_deref(),
+            Some("~733MB · NVIDIA Parakeet 0.6B tuned for Japanese")
+        );
+        button(&japanese, "Download & Use");
+        capture(&owner, "speech-japanese");
+        owner.core.runtime.block_on(owner.core.app.shutdown_async());
+        owner.window.close();
+    }
+}

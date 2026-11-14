@@ -47,8 +47,8 @@ model is loading or failed.
 
 ## On Linux
 
-Linux runs GGUF models on the CPU: `parakeet-tdt-v2`, `parakeet-ultra`, and
-`parakeet-unified`. `mdl-system-speech` and the CoreML compile of
+Linux runs GGUF models on the CPU: `parakeet-tdt-v2`, `parakeet-ultra`,
+`parakeet-ja`, and `parakeet-unified`. `mdl-system-speech` and the CoreML compile of
 `mdl-load` do not exist. Only Parakeet Unified shows a live preview, and
 it needs four CPUs.
 

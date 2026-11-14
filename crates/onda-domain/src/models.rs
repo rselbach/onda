@@ -274,21 +274,25 @@ impl Catalog {
 
     /// The entry for `id`, or `None` when this catalog has no such backend.
     pub fn model(&self, id: ModelId) -> Option<ModelInfo<'_>> {
-        if self.gguf && matches!(id, ModelId::ParakeetJapanese | ModelId::SystemSpeech) {
+        if self.gguf && id == ModelId::SystemSpeech {
             return None;
         }
         if let Some(info) = STATIC_MODELS.iter().find(|m| m.id == id) {
             let mut info = info.clone();
             if self.gguf {
+                const HANDY: &str =
+                    "Parakeet by NVIDIA / Moondream; GGUF conversion by handy-computer";
                 // transcribe.cpp streams only the chunked-attention encoder
                 info.live_preview = id == ModelId::ParakeetUnified;
-                info.size_hint = match id {
-                    ModelId::ParakeetTdtV2 => "~730MB",
-                    ModelId::ParakeetUltra => "~740MB",
-                    _ => "~731MB",
+                (info.size_hint, info.attribution) = match id {
+                    ModelId::ParakeetTdtV2 => ("~730MB", HANDY),
+                    ModelId::ParakeetUltra => ("~740MB", HANDY),
+                    ModelId::ParakeetJapanese => (
+                        "~733MB",
+                        "Parakeet 0.6B Japanese by NVIDIA; GGUF conversion by ASRISEx",
+                    ),
+                    _ => ("~731MB", HANDY),
                 };
-                info.attribution =
-                    "Parakeet by NVIDIA / Moondream; GGUF conversion by handy-computer";
                 if id == ModelId::ParakeetUnified {
                     info.description = "NVIDIA Parakeet Unified — English transcription";
                 }
@@ -444,9 +448,9 @@ pub(crate) mod tests {
     #[test]
     fn gguf_catalog_excludes_unavailable_backends() {
         let catalog = Catalog::gguf();
-        assert!(!catalog.contains(ModelId::ParakeetJapanese));
         assert!(!catalog.contains(ModelId::SystemSpeech));
-        assert_eq!(catalog.models().len(), 3);
+        let ids: Vec<ModelId> = catalog.models().iter().map(|model| model.id).collect();
+        assert_eq!(ids, ModelId::ALL[..4]);
         let previews: Vec<ModelId> = catalog
             .models()
             .iter()
@@ -454,13 +458,37 @@ pub(crate) mod tests {
             .map(|model| model.id)
             .collect();
         assert_eq!(previews, [ModelId::ParakeetUnified]);
-        assert!(
-            crate::routing::routes(
-                &catalog,
-                crate::languages::LanguageSetting::parse("ja").unwrap()
-            )
-            .is_empty()
+    }
+
+    #[test]
+    fn gguf_catalog_routes_japanese_to_parakeet_japanese() {
+        let catalog = Catalog::gguf();
+        let routes = crate::routing::routes(
+            &catalog,
+            crate::languages::LanguageSetting::parse("ja").unwrap(),
         );
+        let models: Vec<ModelId> = routes.iter().map(|route| route.model).collect();
+        assert_eq!(models, [ModelId::ParakeetJapanese]);
+        assert!(routes[0].is_recommended);
+    }
+
+    // MOD-1 on Linux: each GGUF conversion's producer is credited
+    #[test]
+    fn gguf_catalog_credits_each_conversion() {
+        let handy = "Parakeet by NVIDIA / Moondream; GGUF conversion by handy-computer";
+        let cases = [
+            (ModelId::ParakeetTdtV2, handy),
+            (ModelId::ParakeetUltra, handy),
+            (
+                ModelId::ParakeetJapanese,
+                "Parakeet 0.6B Japanese by NVIDIA; GGUF conversion by ASRISEx",
+            ),
+            (ModelId::ParakeetUnified, handy),
+        ];
+        let catalog = Catalog::gguf();
+        for (id, want) in cases {
+            assert_eq!(catalog.model(id).unwrap().attribution, want, "{id}");
+        }
     }
 
     /// A macOS-like system engine with Jabber's language list (SYS-1).

@@ -102,7 +102,8 @@ Options:
 - `--show-window` starts plain `onda`, as the application launcher does, and
   the window opens at once.
 - `--model ID` (repeatable) links a dev model (`parakeet-tdt-v2`,
-  `parakeet-ultra`, `parakeet-unified`) and selects the first one.
+  `parakeet-ultra`, `parakeet-ja`, `parakeet-unified`) and selects the first
+  one.
 - `--setting KEY=JSON` (repeatable) writes a key of `settings.json` before
   the start. Keys are the ones the app writes, such as `selectedLanguage`,
   `hotkeyActivationMode`, `outputMode`, `soundFeedbackEnabled`,

@@ -20,6 +20,10 @@ pub fn manifest(model: ModelId) -> Option<&'static ModelManifest> {
             base_url: "https://huggingface.co/handy-computer/parakeet-ultra-gguf/resolve/a1539be1b849ea7463b88343e5277b373d0c4ea9",
             files: &ULTRA,
         }),
+        ModelId::ParakeetJapanese => Some(&ModelManifest {
+            base_url: "https://huggingface.co/ASRISEx/parakeet-tdt_ctc-0.6b-ja-gguf/resolve/9ac30ce2f51e603770b7b6b6cbfee77774286482",
+            files: &JAPANESE,
+        }),
         ModelId::ParakeetUnified => Some(&ModelManifest {
             base_url: "https://huggingface.co/handy-computer/parakeet-unified-en-0.6b-gguf/resolve/7e948f21b7bdbac698d3318db9d350f1096f3b6c",
             files: &UNIFIED,
@@ -37,6 +41,11 @@ const ULTRA: [ManifestFile; 1] = [ManifestFile {
     path: "parakeet-ultra-Q8_0.gguf",
     size: 740_363_168,
     sha256: Some("007a59761e9258779f189df396b50d12b83bb5b79e66df4b955c230d2f2a0a59"),
+}];
+const JAPANESE: [ManifestFile; 1] = [ManifestFile {
+    path: "parakeet-tdt_ctc-0.6b-ja-Q8_0.gguf",
+    size: 732_523_296,
+    sha256: Some("fb9b510f24beba192c13987207b124b907e8320629894e753faa2ba883075cf7"),
 }];
 const UNIFIED: [ManifestFile; 1] = [ManifestFile {
     path: "parakeet-unified-en-0.6b-Q8_0.gguf",
@@ -294,7 +303,12 @@ mod tests {
             assert_eq!(manifest.files.len(), 1);
             let file = &manifest.files[0];
             assert!(file.path.ends_with(".gguf"));
-            assert!(file.size > 0);
+            assert_eq!(
+                model.size_hint,
+                format!("~{}MB", (file.size as f64 / 1e6).round()),
+                "{}",
+                model.id
+            );
             let digest = file.sha256.unwrap();
             assert_eq!(digest.len(), 64);
             assert!(digest.bytes().all(|byte| byte.is_ascii_hexdigit()));
@@ -306,6 +320,12 @@ mod tests {
         let cases = [
             ("v2 does not stream", ModelId::ParakeetTdtV2, 8, false),
             ("ultra does not stream", ModelId::ParakeetUltra, 8, false),
+            (
+                "japanese does not stream",
+                ModelId::ParakeetJapanese,
+                8,
+                false,
+            ),
             ("unified on 8 CPUs", ModelId::ParakeetUnified, 8, true),
             ("unified on 4 CPUs", ModelId::ParakeetUnified, 4, true),
             ("unified on 3 CPUs", ModelId::ParakeetUnified, 3, false),

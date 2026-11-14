@@ -36,6 +36,7 @@ readonly NOT_COVERED="portal global shortcuts, the layer-shell overlay, and\
 declare -rA MODEL_FILES=(
   [parakeet-tdt-v2]="parakeet-tdt-0.6b-v2-Q8_0.gguf"
   [parakeet-ultra]="parakeet-ultra-Q8_0.gguf"
+  [parakeet-ja]="parakeet-tdt_ctc-0.6b-ja-Q8_0.gguf"
   [parakeet-unified]="parakeet-unified-en-0.6b-Q8_0.gguf"
 )
 

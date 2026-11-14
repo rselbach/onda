@@ -142,9 +142,9 @@ shortcuts or keyboard permission prompts. The launcher must find `onda` in PATH.
 The XDG desktop session bus must be available.
 
 Choose **Speech**, then **Download & Use**. Linux offers pinned,
-SHA-256-verified GGUF versions of Parakeet TDT v2, Ultra, and Unified through
-transcribe.cpp. Inference uses the CPU. GPU inference is not enabled in this
-shell, and the CoreML Japanese model is unavailable.
+SHA-256-verified GGUF versions of Parakeet TDT v2, Ultra, Japanese, and Unified
+through transcribe.cpp. Inference uses the CPU. GPU inference is not enabled in
+this shell.
 
 Parakeet Unified shows your words in the recording overlay while you speak.
 The preview needs at least 4 CPU cores: it costs a little over 2 CPU-seconds
@@ -414,7 +414,7 @@ scripts/test-linux-dictation.sh \
 The speech engine has tests of its own against the real models. They check
 that the catalog offers live preview for exactly the models that stream, and
 that the final transcript of `jfk.wav` is the same with and without a preview.
-Put the three GGUF files and `jfk.wav` in one folder:
+Put the four GGUF files and `jfk.wav` in one folder:
 
 ```sh
 ONDA_TEST_MODEL_DIR=/path/to/that/folder \
