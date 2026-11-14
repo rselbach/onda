@@ -1,8 +1,17 @@
 use super::{Window, clear, label, page};
 use adw::prelude::*;
-use onda_app::views::{DayHeading, HistoryContent, HistoryPage};
-use onda_domain::types::HistoryRetention;
-use std::{cell::Cell, rc::Rc, time::UNIX_EPOCH};
+use gtk::{gio, glib};
+use onda_app::{
+    App,
+    views::{DayHeading, HistoryContent, HistoryMenuItem, HistoryPage},
+};
+use onda_domain::{history::ContextMenuItem, types::HistoryRetention};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+    time::UNIX_EPOCH,
+};
+use uuid::Uuid;
 
 pub(super) struct Page {
     pub widget: gtk::Box,
@@ -15,7 +24,14 @@ pub(super) struct Page {
     updating: Cell<bool>,
     confirming: Cell<bool>,
     showing_error: Cell<bool>,
+    menu_open: Cell<bool>,
+    // rebuilding the rows would close the open row menu, so a view that
+    // arrives meanwhile waits here until the menu closes
+    deferred: RefCell<Option<HistoryPage>>,
 }
+
+// the core's title names the macOS file manager
+const SHOW_RECORDING: &str = "Show Recording in Folder";
 
 const RETENTION: [HistoryRetention; 3] = [
     HistoryRetention::Week,
@@ -65,6 +81,8 @@ impl Page {
             updating: Cell::new(false),
             confirming: Cell::new(false),
             showing_error: Cell::new(false),
+            menu_open: Cell::new(false),
+            deferred: RefCell::new(None),
         }
     }
 
@@ -111,6 +129,11 @@ impl Page {
     }
 
     pub fn update(&self, owner: &Rc<Window>, view: HistoryPage) {
+        if self.menu_open.get() {
+            self.deferred.replace(Some(view));
+            return;
+        }
+        self.deferred.take();
         self.updating.set(true);
         self.save.set_active(view.save_transcripts.on);
         self.audio.set_active(view.keep_audio.on);
@@ -132,7 +155,7 @@ impl Page {
                         .title(day_title(section.heading))
                         .build();
                     for entry in section.rows {
-                        let Ok(id) = uuid::Uuid::parse_str(&entry.id) else {
+                        let Ok(id) = Uuid::parse_str(&entry.id) else {
                             continue;
                         };
                         let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
@@ -176,28 +199,7 @@ impl Page {
                             }
                         });
                         top.append(&copy);
-                        if entry.has_audio {
-                            let play = gtk::Button::from_icon_name("media-playback-start-symbolic");
-                            play.set_tooltip_text(Some("Play recording"));
-                            play.add_css_class("flat");
-                            let weak = Rc::downgrade(owner);
-                            play.connect_clicked(move |_| {
-                                if let Some(owner) = weak.upgrade() {
-                                    owner.core.app.play_history_recording(id);
-                                }
-                            });
-                            top.append(&play);
-                        }
-                        let delete = gtk::Button::from_icon_name("user-trash-symbolic");
-                        delete.set_tooltip_text(Some("Delete transcript"));
-                        delete.add_css_class("flat");
-                        let weak = Rc::downgrade(owner);
-                        delete.connect_clicked(move |_| {
-                            if let Some(owner) = weak.upgrade() {
-                                owner.core.app.delete_history_entry(id);
-                            }
-                        });
-                        top.append(&delete);
+                        top.append(&row_menu(owner, id, entry.menu));
                         content.append(&top);
                         let text =
                             label(entry.transcript.as_deref().unwrap_or(&view.no_text_label));
@@ -294,6 +296,75 @@ impl Page {
             dialog.present(Some(&owner.window));
         }
     }
+}
+
+type Command = fn(&App, Uuid);
+
+// the action name and core command of a row menu item, `None` for a divider
+fn command(item: ContextMenuItem) -> Option<(&'static str, Command)> {
+    Some(match item {
+        ContextMenuItem::Copy => ("copy", |app, id| app.copy_history_entry(id)),
+        ContextMenuItem::CopyOriginal => ("copy-original", |app, id| app.copy_history_original(id)),
+        ContextMenuItem::PlayRecording => {
+            ("play-recording", |app, id| app.play_history_recording(id))
+        }
+        ContextMenuItem::ShowRecording => {
+            ("show-recording", |app, id| app.show_history_recording(id))
+        }
+        ContextMenuItem::Delete => ("delete", |app, id| app.delete_history_entry(id)),
+        ContextMenuItem::Divider => return None,
+    })
+}
+
+fn row_menu(owner: &Rc<Window>, id: Uuid, items: Vec<HistoryMenuItem>) -> gtk::MenuButton {
+    let actions = gio::SimpleActionGroup::new();
+    let menu = gio::Menu::new();
+    let mut section = gio::Menu::new();
+    for entry in items {
+        let Some((name, run)) = command(entry.item) else {
+            menu.append_section(None, &section);
+            section = gio::Menu::new();
+            continue;
+        };
+        let title = match entry.item {
+            ContextMenuItem::ShowRecording => SHOW_RECORDING,
+            _ => &entry.title,
+        };
+        section.append(Some(title), Some(&format!("row.{name}")));
+        let action = gio::SimpleAction::new(name, None);
+        let weak = Rc::downgrade(owner);
+        action.connect_activate(move |_, _| {
+            if let Some(owner) = weak.upgrade() {
+                run(&owner.core.app, id);
+            }
+        });
+        actions.add_action(&action);
+    }
+    menu.append_section(None, &section);
+    let button = gtk::MenuButton::builder()
+        .icon_name("view-more-symbolic")
+        .tooltip_text("More actions")
+        .menu_model(&menu)
+        .build();
+    button.add_css_class("flat");
+    button.insert_action_group("row", Some(&actions));
+    let weak = Rc::downgrade(owner);
+    button.connect_active_notify(move |button| {
+        let Some(owner) = weak.upgrade() else {
+            return;
+        };
+        owner.history.menu_open.set(button.is_active());
+        if button.is_active() {
+            return;
+        }
+        // this handler runs inside the button that the update removes
+        glib::idle_add_local_once(move || {
+            if let Some(view) = owner.history.deferred.take() {
+                owner.history.update(&owner, view);
+            }
+        });
+    });
+    button
 }
 
 fn day_title(day: DayHeading) -> String {

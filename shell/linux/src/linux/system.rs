@@ -1,7 +1,7 @@
 //! Linux desktop services supplied to the application core.
 
 use super::{Message, process, send};
-use gtk::gio::prelude::FileExt;
+use gtk::{gio, glib, prelude::*};
 use onda_app::{ports::*, seams::SecretSource};
 use onda_domain::{
     cleanup::CleanupProvider,
@@ -70,11 +70,33 @@ impl Power for Desktop {
 
 impl Files for Desktop {
     fn reveal(&self, path: &Path) -> Result<(), String> {
+        let Err(error) = show_item(path) else {
+            return Ok(());
+        };
+        tracing::debug!(%error, "no file manager selected the file; opening its folder");
         self.open(path.parent().unwrap_or(path))
     }
     fn open(&self, path: &Path) -> Result<(), String> {
-        process::open_uri(&gtk::gio::File::for_path(path).uri()).map_err(|e| e.to_string())
+        process::open_uri(&gio::File::for_path(path).uri()).map_err(|e| e.to_string())
     }
+}
+
+// asks the file manager to open the folder of `path` with the file selected;
+// the bus starts the file manager when it is not running
+fn show_item(path: &Path) -> Result<(), glib::Error> {
+    let uri = gio::File::for_path(path).uri();
+    gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE)?.call_sync(
+        Some("org.freedesktop.FileManager1"),
+        "/org/freedesktop/FileManager1",
+        "org.freedesktop.FileManager1",
+        "ShowItems",
+        Some(&(vec![uri.as_str()], "").to_variant()),
+        None,
+        gio::DBusCallFlags::NONE,
+        -1,
+        gio::Cancellable::NONE,
+    )?;
+    Ok(())
 }
 
 fn autostart() -> Option<PathBuf> {

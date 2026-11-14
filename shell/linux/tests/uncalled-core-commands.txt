@@ -9,7 +9,6 @@
 
 begin_hotkey_capture             #13 shortcut recorder
 choose_other_language            #3 tray menu
-copy_history_original            #29 history row actions
 deliver_transcript               #3 tray menu
 discard_failed_dictation         #3 tray menu
 dismiss_download_overlay         #19 download overlay
@@ -44,7 +43,6 @@ select_language_from_menu        #3 tray menu
 set_pause_media                  #12 pause media while recording
 setup_action                     #17 Getting Started page
 show_all_history                 #3 tray menu
-show_history_recording           #29 history row actions
 shutdown                         never the shell owns the runtime and calls shutdown_async
 start                            never the shell owns the runtime and calls start_on
 toggle_hotkey_capture            #13 shortcut recorder
