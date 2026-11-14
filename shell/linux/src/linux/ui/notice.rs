@@ -90,7 +90,7 @@ mod tests {
     use std::{cell::RefCell, collections::BTreeMap, path::PathBuf, rc::Rc};
 
     use adw::prelude::*;
-    use gtk::{gio, pango};
+    use gtk::pango;
     use onda_app::{Event, views::update_notice};
     use onda_domain::{
         migration::{Migration, NoticeChoice},
@@ -99,12 +99,10 @@ mod tests {
 
     use super::super::{
         Window,
-        integration_tests::{button, capture, wait_for, widgets},
+        integration_tests::{NOTICE_KEY, Start, button, capture, launch, wait_for, widgets},
     };
     use super::{Notice, markup};
     use crate::linux::Message;
-
-    const KEY: &str = "parakeet-ja->parakeet-ultra";
 
     #[test]
     fn markup_bolds_the_model_name_and_escapes_the_rest() {
@@ -137,19 +135,6 @@ mod tests {
         for (name, (body, want)) in cases {
             assert_eq!(markup(body), want, "{name}");
         }
-    }
-
-    fn launch() -> Rc<Window> {
-        assert!(
-            std::env::var_os("ONDA_DATA_DIR").is_some(),
-            "use a scratch data directory"
-        );
-        adw::init().unwrap();
-        let application = adw::Application::builder()
-            .application_id(crate::linux::application_id())
-            .build();
-        application.register(None::<&gio::Cancellable>).unwrap();
-        Window::new(&application).unwrap()
     }
 
     fn quit(owner: &Window) {
@@ -208,7 +193,7 @@ mod tests {
     #[test]
     #[ignore = "requires an isolated GTK display, D-Bus session, and ONDA_DATA_DIR"]
     fn real_gui_closing_the_update_notice_declines_the_download() {
-        let owner = launch();
+        let owner = launch(Start::NoticeDue);
         assert!(!owner.window.is_visible());
         let dialog = open_dialog(&owner.window);
         assert!(
@@ -223,7 +208,7 @@ mod tests {
         assert_eq!(bold_text(&dialog), ["Parakeet Ultra"]);
         capture(&owner, "update-notice");
         dialog.close();
-        wait_for(|| stored("declinedModelMigrationNoticeKey").as_deref() == Some(KEY));
+        wait_for(|| stored("declinedModelMigrationNoticeKey").as_deref() == Some(NOTICE_KEY));
         wait_for(|| owner.window.visible_dialog().is_none());
         assert_eq!(stored("selectedModel").as_deref(), Some("parakeet-ja"));
         quit(&owner);
@@ -232,7 +217,7 @@ mod tests {
     #[test]
     #[ignore = "requires an isolated GTK display, D-Bus session, and ONDA_DATA_DIR"]
     fn real_gui_choose_another_opens_the_speech_page() {
-        let owner = launch();
+        let owner = launch(Start::NoticeDue);
         let dialog = open_dialog(&owner.window);
         assert_eq!(
             owner.stack.visible_child_name().as_deref(),
@@ -241,7 +226,7 @@ mod tests {
         button(&dialog, "Choose Another").emit_clicked();
         wait_for(|| owner.stack.visible_child_name().as_deref() == Some("speech"));
         wait_for(|| owner.window.visible_dialog().is_none());
-        wait_for(|| stored("lastModelMigrationNoticeKey").as_deref() == Some(KEY));
+        wait_for(|| stored("lastModelMigrationNoticeKey").as_deref() == Some(NOTICE_KEY));
         assert_eq!(
             stored("declinedModelMigrationNoticeKey").filter(|key| !key.is_empty()),
             None
@@ -253,7 +238,7 @@ mod tests {
     #[test]
     #[ignore = "requires an isolated GTK display, D-Bus session, and ONDA_DATA_DIR"]
     fn real_gui_shows_a_critical_alert_as_a_modal_dialog() {
-        let owner = launch();
+        let owner = launch(Start::Declined);
         owner.present();
         owner.window.close();
         assert!(!owner.window.is_visible());

@@ -2,6 +2,7 @@ use std::time::{Duration, Instant};
 
 use onda_domain::cleanup::SYSTEM_PROMPT;
 
+use super::super::integration_tests::{Start, launch};
 use super::*;
 
 fn wait_for(description: &str, ready: impl Fn() -> bool) {
@@ -63,20 +64,12 @@ fn stored_prompt() -> Option<serde_json::Value> {
 #[test]
 #[ignore = "requires an isolated GTK display, D-Bus session, keyring, and ONDA_DATA_DIR"]
 fn real_gui_preserves_provider_keys_and_model_selection() {
-    assert!(
-        std::env::var_os("ONDA_DATA_DIR").is_some(),
-        "use a scratch data directory"
-    );
-    adw::init().unwrap();
     super::super::integration_tests::seed_history();
-    let application = adw::Application::builder()
-        .application_id(crate::linux::application_id())
-        .build();
-    application
-        .register(None::<&gtk::gio::Cancellable>)
-        .unwrap();
-    let owner = Window::new(&application).unwrap();
-    owner.present();
+    let owner = launch(Start::Declined);
+    // the core opens Speech when it finds no model to load
+    wait_for("launch", || {
+        owner.stack.visible_child_name().as_deref() == Some("speech")
+    });
     wait_for("initial page", || {
         !owner.post_processing.details.is_visible()
     });

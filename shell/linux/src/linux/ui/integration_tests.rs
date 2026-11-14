@@ -8,10 +8,51 @@ use onda_domain::{
 };
 use std::{
     cell::RefCell,
-    path::Path,
+    io::Write,
+    path::{Path, PathBuf},
     rc::Rc,
     time::{Duration, Instant, SystemTime},
 };
+
+/// The key of the update notice that [`Start`] makes due.
+pub(super) const NOTICE_KEY: &str = "parakeet-ja->parakeet-ultra";
+
+/// The settings a real-GUI test starts from. Setup is finished and the
+/// selected model has left the catalog, so the app downloads nothing until
+/// the user answers the update notice.
+pub(super) enum Start {
+    /// The update notice is due.
+    NoticeDue,
+    /// The user declined the replacement model: no notice and no download.
+    Declined,
+}
+
+/// Starts the app on the data directory of the test session.
+pub(super) fn launch(start: Start) -> Rc<Window> {
+    let directory =
+        PathBuf::from(std::env::var_os("ONDA_DATA_DIR").expect("use a scratch data directory"));
+    let mut settings = serde_json::json!({
+        "onboardingCompleted": true,
+        "didShowFirstRunSetup": true,
+        "selectedModel": "parakeet-ja",
+    });
+    if let Start::Declined = start {
+        settings["declinedModelMigrationNoticeKey"] = NOTICE_KEY.into();
+        settings["lastModelMigrationNoticeKey"] = NOTICE_KEY.into();
+    }
+    // fails in a directory that holds settings, so a run cannot replace the
+    // settings of a real installation
+    std::fs::File::create_new(directory.join("settings.json"))
+        .expect("a data directory without settings")
+        .write_all(settings.to_string().as_bytes())
+        .unwrap();
+    adw::init().unwrap();
+    let application = adw::Application::builder()
+        .application_id(crate::linux::application_id())
+        .build();
+    application.register(None::<&gio::Cancellable>).unwrap();
+    Window::new(&application).unwrap()
+}
 
 pub(super) fn seed_history() {
     struct Hooks;

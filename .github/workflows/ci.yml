@@ -48,13 +48,19 @@ jobs:
           # Bundle swap and codesign tests run in the macOS job.
           cargo test --locked -p onda-update -- --skip install::tests
 
+      - name: Linux real-GUI tests
+        run: |
+          dnf install -y xorg-x11-server-Xvfb dbus-daemon dbus-tools \
+            gnome-keyring libsecret xclip python3
+          scripts/test-linux-gui.sh
+
       - name: Linux build
         run: scripts/build-linux.sh
 
       - name: Shell lint
         run: |
           shellcheck scripts/build-linux.sh scripts/install-linux.sh \
-            scripts/test-linux-dictation.sh scripts/test-linux-post-processing.sh \
+            scripts/test-linux-dictation.sh scripts/test-linux-gui.sh \
             scripts/test-linux-overlay.sh
 
   build-and-test:

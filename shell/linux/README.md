@@ -263,18 +263,30 @@ command of the core's `App` has neither a call site under `shell/linux/src` nor
 a line in `tests/uncalled-core-commands.txt`, and when a listed command gains a
 call site. Delete a command's line in the same change that starts calling it.
 
-The post-processing GUI test uses Xvfb and a private D-Bus session and keyring.
-It checks provider switching, key storage and deletion, custom model selection,
-missing-key feedback, prompt editing, replacement editing, shortcuts, history
-search, and confirmation dialogs without using your credentials or normal Onda data.
-The same script runs the model update notice and critical alert tests. Each test
-starts from its own data directory and settings file.
+The real-GUI tests drive the GTK window and are marked `#[ignore]`.
+`scripts/test-linux-gui.sh` finds every ignored test of the shell and runs each
+one in its own process and data directory, under Xvfb with a private D-Bus
+session and keyring. CI runs the script on every push. The tests check provider
+switching, key storage and deletion, custom model selection, missing-key
+feedback, prompt editing, replacement editing, shortcuts, history search,
+confirmation dialogs, the model update notice, and critical alerts. They never
+use your credentials or normal Onda data. The script also runs the overlay
+test described below.
+
+The script needs no list of tests. Mark a new real-GUI test `#[ignore]`, and
+start the app with `launch` in `src/linux/ui/integration_tests.rs`. `launch`
+writes the settings the test starts from, and those settings begin no model
+download. The script routes the tests through a local proxy that refuses every
+request, prints the requests each test made, and fails when one names
+`huggingface.co`, the host of the speech models.
+
 Set `ONDA_TEST_SCREENSHOT_DIR` to capture the pages in light and dark appearances.
 Run it as a regular user:
 
 ```sh
-sudo dnf install xorg-x11-server-Xvfb dbus-daemon gnome-keyring libsecret
-scripts/test-linux-post-processing.sh
+sudo dnf install xorg-x11-server-Xvfb dbus-daemon dbus-tools gnome-keyring \
+  libsecret xclip python3
+scripts/test-linux-gui.sh
 ```
 
 The overlay test shows the recording overlay's X11 window in Xvfb, above a
