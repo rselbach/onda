@@ -255,6 +255,8 @@ The post-processing GUI test uses Xvfb and a private D-Bus session and keyring.
 It checks provider switching, key storage and deletion, custom model selection,
 missing-key feedback, prompt editing, replacement editing, shortcuts, history
 search, and confirmation dialogs without using your credentials or normal Onda data.
+The same script runs the model update notice and critical alert tests. Each test
+starts from its own data directory and settings file.
 Set `ONDA_TEST_SCREENSHOT_DIR` to capture the pages in light and dark appearances.
 Run it as a regular user:
 

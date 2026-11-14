@@ -81,7 +81,7 @@ pub(super) fn seed_history() {
 }
 
 #[track_caller]
-fn wait_for(ready: impl Fn() -> bool) {
+pub(super) fn wait_for(ready: impl Fn() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let context = gtk::glib::MainContext::default();
@@ -96,7 +96,9 @@ fn wait_for(ready: impl Fn() -> bool) {
     }
 }
 
-fn widgets<T: IsA<gtk::Widget> + Clone + 'static>(root: &impl IsA<gtk::Widget>) -> Vec<T> {
+pub(super) fn widgets<T: IsA<gtk::Widget> + Clone + 'static>(
+    root: &impl IsA<gtk::Widget>,
+) -> Vec<T> {
     let root = root.as_ref();
     let mut result = Vec::new();
     if let Ok(widget) = root.clone().downcast::<T>() {
@@ -116,7 +118,7 @@ fn text_visible(root: &impl IsA<gtk::Widget>, text: &str) -> bool {
         .any(|label| label.text().contains(text))
 }
 
-fn button(root: &impl IsA<gtk::Widget>, title: &str) -> gtk::Button {
+pub(super) fn button(root: &impl IsA<gtk::Widget>, title: &str) -> gtk::Button {
     widgets::<gtk::Button>(root)
         .into_iter()
         .find(|button| button.label().as_deref() == Some(title))

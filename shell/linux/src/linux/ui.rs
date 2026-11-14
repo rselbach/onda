@@ -5,6 +5,7 @@ mod general;
 mod history;
 mod hotkey;
 mod navigation;
+mod notice;
 mod post_processing;
 mod replacements;
 mod speech;
@@ -29,6 +30,7 @@ pub struct Window {
     models: gtk::Box,
     history: history::Page,
     hotkey: hotkey::Page,
+    notice: notice::Notice,
     replacements: replacements::Page,
     about: gtk::Box,
     section: Cell<MainWindowSection>,
@@ -171,6 +173,7 @@ impl Window {
             models,
             history,
             hotkey,
+            notice: notice::Notice::default(),
             replacements,
             about,
             section: Cell::new(MainWindowSection::GettingStarted),
@@ -356,9 +359,32 @@ impl Window {
                     self.stack.set_visible_child_name(navigation::name(section));
                     self.present();
                 }
-                Event::ShowAlert { title, message, .. } => self
-                    .toast
-                    .add_toast(adw::Toast::new(&format!("{title}: {message}"))),
+                Event::ShowAlert {
+                    title,
+                    message,
+                    button,
+                } => {
+                    let dialog = adw::AlertDialog::builder()
+                        .heading(&title)
+                        .body(&message)
+                        .build();
+                    dialog.add_response("close", button);
+                    dialog.set_default_response(Some("close"));
+                    self.present();
+                    dialog.present(Some(&self.window));
+                }
+                Event::ShowUpdateNotice(notice) => {
+                    // it arrives 750 ms after launch, when Onda is usually
+                    // behind other windows or has no window open
+                    self.present();
+                    let weak = Rc::downgrade(self);
+                    self.notice.show(&self.window, &notice, move |choice| {
+                        if let Some(this) = weak.upgrade() {
+                            this.core.app.update_notice_choice(choice);
+                        }
+                    });
+                }
+                Event::CloseUpdateNotice => self.notice.close(),
                 Event::ActivateApp => self.present(),
                 // #13 renders the shortcut recorder
                 Event::HotkeyChanged(_) => {}
@@ -366,10 +392,6 @@ impl Window {
                 Event::OnboardingChanged(_) => {}
                 // #15 closes the onboarding wizard
                 Event::CloseOnboarding => {}
-                // #28 shows the model update notice
-                Event::ShowUpdateNotice(_) => {}
-                // #28 closes the model update notice
-                Event::CloseUpdateNotice => {}
                 // #17 renders the Getting Started page
                 Event::GettingStartedChanged(_) => {}
                 // a GTK application is a regular one whenever a window is

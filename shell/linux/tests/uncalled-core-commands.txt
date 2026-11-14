@@ -45,4 +45,3 @@ show_all_history                 #3 tray menu
 shutdown                         never the shell owns the runtime and calls shutdown_async
 start                            never the shell owns the runtime and calls start_on
 toggle_hotkey_capture            #13 shortcut recorder
-update_notice_choice             #28 model update notice
