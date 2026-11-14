@@ -13,7 +13,7 @@ use onda_audio::{AudioCapture, AudioDeviceEvents, DeviceSelection, PollingDevice
 use onda_domain::{
     hotkey::{KeyCode, Modifier, ModifierSet, Shortcut},
     models::Catalog,
-    privacy_naming::PrivacyNaming,
+    platform::Platform,
 };
 use onda_history::{HistoryHooks, HistoryStore};
 use onda_settings::Settings;
@@ -134,8 +134,7 @@ impl Core {
                     application: super::application_id(),
                 }),
                 settings: source,
-                tray_term: "application".into(),
-                privacy_naming: PrivacyNaming::Accessibility,
+                platform: Platform::linux(),
                 app_version: env!("ONDA_VERSION").into(),
             },
             Arc::new(Sink(events)),

@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use onda_domain::hotkey::{ModifierSet, Shortcut};
 use onda_domain::messages::{Channel, MessageClass, UserMessage, route};
-use onda_domain::privacy_naming::PrivacyNaming;
+use onda_domain::platform::Platform;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::spawn_blocking;
 
@@ -68,8 +68,7 @@ pub(crate) struct EffectPorts {
     pub(crate) notifier: Arc<dyn Notifier>,
     pub(crate) login_item: Arc<dyn LoginItem>,
     pub(crate) updater: Arc<dyn Updater>,
-    pub(crate) tray_term: Arc<str>,
-    pub(crate) privacy_naming: PrivacyNaming,
+    pub(crate) platform: Platform,
 }
 
 /// Handle to the effects task.
@@ -154,8 +153,9 @@ fn run(ports: &EffectPorts, effect: Effect, fallback: &(dyn Fn(UserMessage) + Se
             let authorization = ports.notifier.authorization();
             match route(MessageClass::Background, authorization) {
                 Channel::Notification => {
-                    let title = message.title(ports.privacy_naming);
-                    let body = message.body(&ports.tray_term, ports.privacy_naming);
+                    let naming = ports.platform.privacy_naming();
+                    let title = message.title(naming);
+                    let body = message.body(ports.platform.tray_term, naming);
                     if let Err(error) = ports.notifier.post(title, &body) {
                         tracing::warn!(%error, title, "notification failed");
                         fallback(message);

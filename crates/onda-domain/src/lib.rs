@@ -20,6 +20,7 @@ pub mod models;
 pub mod non_dictation_ui;
 pub mod onboarding;
 pub mod overlay;
+pub mod platform;
 pub mod pre_roll;
 pub mod preview;
 pub mod preview_text;

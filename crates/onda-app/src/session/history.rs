@@ -254,8 +254,9 @@ impl Actor {
             CopyOutcome::Cancelled => return,
             CopyOutcome::Failed => {
                 tracing::warn!("could not copy a history entry");
+                let platform = self.ports.platform;
                 self.ui.history.error = Some(
-                    UserMessage::CopyFailed.body(&self.ports.tray_term, self.ports.privacy_naming),
+                    UserMessage::CopyFailed.body(platform.tray_term, platform.privacy_naming()),
                 );
                 return;
             }

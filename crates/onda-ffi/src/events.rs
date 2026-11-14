@@ -643,12 +643,12 @@ fn core_event(event: Event, tray_term: &str) -> CoreEvent {
 /// Forwards core events to the shell's listener.
 pub(crate) struct ListenerSink {
     pub(crate) listener: Arc<dyn CoreListener>,
-    pub(crate) tray_term: Arc<str>,
+    pub(crate) tray_term: &'static str,
 }
 
 impl EventSink for ListenerSink {
     fn emit(&self, event: Event) {
-        self.listener.on_event(core_event(event, &self.tray_term));
+        self.listener.on_event(core_event(event, self.tray_term));
     }
 }
 

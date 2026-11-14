@@ -19,6 +19,7 @@ use onda_domain::languages::LanguageSetting;
 use onda_domain::messages::{NotificationAuthorization, UserMessage};
 use onda_domain::models::ModelId;
 use onda_domain::overlay::OverlayContent;
+use onda_domain::platform::Platform;
 use onda_domain::privacy_naming::PrivacyNaming;
 use onda_domain::replacements::{ReplacementRule, RuleId};
 use onda_domain::tray::TrayIcon;
@@ -335,7 +336,7 @@ async fn accessibility_copy_uses_the_os_naming() {
         },
     ];
     for tc in cases {
-        let h = Harness::with_privacy_naming(tc.naming, |s| {
+        let h = Harness::on_platform(Platform::macos(tc.naming), |s| {
             s.activation_mode = ActivationMode::Toggle;
         })
         .await;
@@ -1126,6 +1127,39 @@ async fn aud_13_silent_microphone_names_the_device_after_a_rebuild() {
 
 // ---------------------------------------------------------------------------
 // failed ASR and retry (DICT-22..DICT-25)
+
+#[tokio::test(start_paused = true)]
+async fn failed_asr_points_at_the_platform_tray_term() {
+    struct Case {
+        name: &'static str,
+        platform: Platform,
+        want: &'static str,
+    }
+    let cases = [
+        Case {
+            name: "macOS",
+            platform: Platform::macos(PrivacyNaming::Accessibility),
+            want: "Choose Retry Failed Dictation from the menu bar icon to try again.",
+        },
+        Case {
+            name: "Linux",
+            platform: Platform::linux(),
+            want: "Choose Retry Failed Dictation from the application to try again.",
+        },
+    ];
+    for tc in cases {
+        let h = Harness::on_platform(tc.platform, |_| {}).await;
+        h.audio.starts_with(loud(24_000));
+        h.script.finals(vec![Err(asr_failure())]);
+        h.dictate().await;
+        let bodies = lock(&h.notifier.bodies).clone();
+        assert!(
+            matches!(bodies.as_slice(), [body] if body.contains(tc.want)),
+            "{}: {bodies:?}",
+            tc.name
+        );
+    }
+}
 
 #[tokio::test(start_paused = true)]
 async fn failed_asr_keeps_the_audio_and_retry_types_into_the_focused_app() {

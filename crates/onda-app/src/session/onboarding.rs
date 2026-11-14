@@ -147,7 +147,7 @@ impl Actor {
             accessibility: self.permissions.accessibility,
             hotkey_display: self.settings.hotkey.display(),
             hotkey_needs_accessibility: self.settings.hotkey.needs_accessibility(),
-            privacy_naming: self.ports.privacy_naming,
+            privacy_naming: self.ports.platform.privacy_naming(),
             selected: self
                 .catalog
                 .model(selected)

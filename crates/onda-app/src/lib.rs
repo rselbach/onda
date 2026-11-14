@@ -35,7 +35,7 @@ use onda_domain::cleanup::CleanupProvider;
 use onda_domain::hotkey::HotkeyPreset;
 use onda_domain::languages::LanguageSetting;
 use onda_domain::migration::NoticeChoice;
-use onda_domain::privacy_naming::PrivacyNaming;
+use onda_domain::platform::Platform;
 use onda_domain::setup::{PermissionFix, SetupAction};
 use onda_domain::types::{ActivationMode, HistoryRetention, OutputMode};
 use onda_domain::updates::UpdateAction;
@@ -94,12 +94,8 @@ pub struct Ports {
     pub secrets: Arc<dyn SecretSource>,
     /// Settings.
     pub settings: Arc<dyn SettingsSource>,
-    /// What copy calls the tray icon on this platform: "menu bar icon" on
-    /// macOS, "tray icon" elsewhere.
-    pub tray_term: Arc<str>,
-    /// What the OS calls the Accessibility permission, which copy names
-    /// the way the running OS does.
-    pub privacy_naming: PrivacyNaming,
+    /// The facts about the system the shell runs on.
+    pub platform: Platform,
     /// The app version the shell reports, e.g. "1.2.0" (WIN-14, WIN-21).
     pub app_version: String,
 }

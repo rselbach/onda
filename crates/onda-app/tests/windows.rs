@@ -21,6 +21,8 @@ use onda_domain::messages::LoginItemRegistryStatus;
 use onda_domain::migration::NoticeChoice;
 use onda_domain::models::ModelId;
 use onda_domain::onboarding::{OnboardingFlags, OnboardingStep};
+use onda_domain::platform::Platform;
+use onda_domain::privacy_naming::PrivacyNaming;
 use onda_domain::setup::PermissionFix;
 use onda_domain::tray::TrayIcon;
 use onda_domain::types::{HistoryRetention, MicrophonePermission};
@@ -1166,6 +1168,43 @@ async fn win_9_input_picker_and_live_device_list() {
         general(&h).input.caption.as_deref(),
         Some("Follows the input selected in macOS. Currently using MacBook Pro Microphone.")
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn win_9_the_system_default_caption_names_the_platform() {
+    struct Case {
+        name: &'static str,
+        platform: Platform,
+        want: &'static str,
+    }
+    let cases = [
+        Case {
+            name: "macOS",
+            platform: Platform::macos(PrivacyNaming::Accessibility),
+            want: "Follows the input selected in macOS. Currently using Troy's Podcast Mic.",
+        },
+        Case {
+            name: "Linux",
+            platform: Platform::linux(),
+            want: "Follows the input selected in Linux. Currently using Troy's Podcast Mic.",
+        },
+    ];
+    for tc in cases {
+        let h = Harness::on_platform(tc.platform, |_| {}).await;
+        *lock(&h.audio.devices) = vec![onda_app::seams::InputDeviceInfo {
+            uid: "troy-podcast-mic".to_owned(),
+            name: "Troy's Podcast Mic".to_owned(),
+            is_default: true,
+        }];
+        h.app.page_appeared(MainWindowSection::General);
+        sleep(10).await;
+        assert_eq!(
+            general(&h).input.caption.as_deref(),
+            Some(tc.want),
+            "{}",
+            tc.name
+        );
+    }
 }
 
 #[tokio::test(start_paused = true)]

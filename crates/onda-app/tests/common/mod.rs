@@ -46,6 +46,7 @@ use onda_domain::models::{Catalog, ModelId};
 use onda_domain::non_dictation_ui::DownloadOverlayView;
 use onda_domain::onboarding::OnboardingFlags;
 use onda_domain::overlay::{OverlayContent, OverlayView};
+use onda_domain::platform::Platform;
 use onda_domain::privacy_naming::PrivacyNaming;
 use onda_domain::status_menu::StatusMenu;
 use onda_domain::tray::TrayView;
@@ -1203,24 +1204,24 @@ impl Harness {
         system_speech: Option<Arc<dyn SystemSpeech>>,
         adjust: impl FnOnce(&mut Settings),
     ) -> Self {
-        Self::build_named(system_speech, PrivacyNaming::Accessibility, adjust)
+        Self::build_on(
+            system_speech,
+            Platform::macos(PrivacyNaming::Accessibility),
+            adjust,
+        )
     }
 
-    /// A ready core with adjusted settings, on an OS that calls the
-    /// Accessibility permission `naming`.
-    pub async fn with_privacy_naming(
-        naming: PrivacyNaming,
-        adjust: impl FnOnce(&mut Settings),
-    ) -> Self {
-        let harness = Self::build_named(None, naming, adjust);
+    /// A ready core with adjusted settings, running on `platform`.
+    pub async fn on_platform(platform: Platform, adjust: impl FnOnce(&mut Settings)) -> Self {
+        let harness = Self::build_on(None, platform, adjust);
         harness.app.ui_ready();
         sleep(1).await;
         harness
     }
 
-    fn build_named(
+    fn build_on(
         system_speech: Option<Arc<dyn SystemSpeech>>,
-        privacy_naming: PrivacyNaming,
+        platform: Platform,
         adjust: impl FnOnce(&mut Settings),
     ) -> Self {
         let mut settings = default_settings();
@@ -1324,8 +1325,7 @@ impl Harness {
             cleanup: cleanup.clone(),
             secrets: secrets.clone(),
             settings: settings.clone(),
-            tray_term: "menu bar icon".into(),
-            privacy_naming,
+            platform,
             app_version: "1.2.3".to_owned(),
         };
         let app = App::start_on(&tokio::runtime::Handle::current(), ports, recorder.clone());

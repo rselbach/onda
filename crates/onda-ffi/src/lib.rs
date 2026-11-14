@@ -37,6 +37,7 @@ use onda_cleanup::CleanupClient;
 use onda_domain::hotkey::{HeldModifiers, KeyCode, ModifierFlagsChange, RecorderEvent, Shortcut};
 use onda_domain::messages;
 use onda_domain::models::{Catalog, ModelId};
+use onda_domain::platform::Platform;
 use onda_domain::privacy_naming::PrivacyNaming;
 use onda_history::HistoryStore;
 use onda_models::ModelManager;
@@ -280,7 +281,12 @@ impl OndaCore {
             &app_version,
             runtime.handle(),
         );
-        let tray_term: Arc<str> = tray_term.into();
+        // the core reads the platform for as long as the app runs, so the
+        // shell's term is leaked once to live that long
+        let platform = Platform {
+            tray_term: Box::leak(tray_term.into_boxed_str()),
+            ..Platform::macos(privacy_naming)
+        };
         let core_ports = Ports {
             text_output: shell.clone(),
             permissions: shell.clone(),
@@ -306,13 +312,12 @@ impl OndaCore {
             )),
             secrets: Arc::new(Keychain::new(KeychainSecretStore::new())),
             settings: settings_source,
-            tray_term: tray_term.clone(),
-            privacy_naming,
+            platform,
             app_version,
         };
         let sink = Arc::new(ListenerSink {
             listener,
-            tray_term,
+            tray_term: platform.tray_term,
         });
         let started = App::start_on(runtime.handle(), core_ports, sink);
         forward_audio_events(audio_events, started.audio_signals());

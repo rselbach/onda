@@ -30,7 +30,7 @@ impl Window {
             inputs.set_subtitle(&warning);
             inputs.add_css_class("warning");
         } else if let Some(caption) = page.input.caption {
-            inputs.set_subtitle(&caption.replace("in macOS", "in your desktop settings"));
+            inputs.set_subtitle(&caption);
         }
         let devices = page.input.options;
         let weak = Rc::downgrade(self);

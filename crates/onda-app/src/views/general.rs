@@ -6,7 +6,7 @@ use std::time::SystemTime;
 use onda_domain::messages::{
     CaptionTone, LOGIN_ITEM_TOGGLE_LABEL, LoginItemError, LoginItemStatus, login_item_caption,
 };
-use onda_domain::privacy_naming::PrivacyNaming;
+use onda_domain::platform::Platform;
 use onda_domain::setup::{accessibility_row, microphone_row};
 use onda_domain::types::{MicrophonePermission, OutputMode};
 use onda_domain::updates::{
@@ -23,8 +23,6 @@ const UNAVAILABLE_MICROPHONE: &str = "Unavailable Microphone";
 /// The orange note under a missing device (AUD-3).
 const UNAVAILABLE_WARNING: &str =
     "The selected microphone is not connected. Onda will not fall back to another input.";
-/// The platform whose input setting "System Default" follows (WIN-9).
-const PLATFORM_NAME: &str = "macOS";
 
 /// The updater's state, read from its port (UPD-1).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -46,8 +44,9 @@ pub struct GeneralInputs<'a> {
     pub accessibility_granted: bool,
     /// Accessibility is needed by the current settings (UI-8).
     pub accessibility_needed: bool,
-    /// What the OS calls the Accessibility permission.
-    pub privacy_naming: PrivacyNaming,
+    /// The system the shell runs on: it names the Accessibility
+    /// permission and the place "System Default" follows (WIN-9).
+    pub platform: Platform,
     /// Connected input devices.
     pub devices: &'a [InputDeviceInfo],
     /// `inputDeviceUID`; empty for the system default.
@@ -170,10 +169,10 @@ pub fn general_page(inputs: GeneralInputs<'_>) -> GeneralPage {
         accessibility: accessibility_row(
             inputs.accessibility_granted,
             inputs.accessibility_needed,
-            inputs.privacy_naming,
+            inputs.platform.privacy_naming(),
         )
         .into(),
-        input: input_picker(inputs.devices, inputs.selected_uid),
+        input: input_picker(inputs.devices, inputs.selected_uid, inputs.platform.os_name),
         output: OutputModePicker {
             label: "After transcription".to_owned(),
             options: vec![
@@ -227,7 +226,7 @@ pub fn general_page(inputs: GeneralInputs<'_>) -> GeneralPage {
     }
 }
 
-fn input_picker(devices: &[InputDeviceInfo], selected_uid: &str) -> InputPickerView {
+fn input_picker(devices: &[InputDeviceInfo], selected_uid: &str, os_name: &str) -> InputPickerView {
     let mut sorted: Vec<&InputDeviceInfo> = devices.iter().collect();
     sorted.sort_by(|a, b| natural_cmp(&a.name, &b.name));
     let mut options = vec![InputOption {
@@ -243,10 +242,10 @@ fn input_picker(devices: &[InputDeviceInfo], selected_uid: &str) -> InputPickerV
         ("", _) => {
             let caption = match devices.iter().find(|device| device.is_default) {
                 Some(device) => format!(
-                    "Follows the input selected in {PLATFORM_NAME}. Currently using {}.",
+                    "Follows the input selected in {os_name}. Currently using {}.",
                     device.name
                 ),
-                None => format!("Follows the input selected in {PLATFORM_NAME}."),
+                None => format!("Follows the input selected in {os_name}."),
             };
             (None, Some(caption))
         }
@@ -318,6 +317,8 @@ fn digits(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> String {
 
 #[cfg(test)]
 mod tests {
+    use onda_domain::privacy_naming::PrivacyNaming;
+
     use super::*;
 
     fn device(uid: &str, name: &str, is_default: bool) -> InputDeviceInfo {
@@ -346,15 +347,18 @@ mod tests {
     fn win_9_input_picker() {
         struct Case {
             name: &'static str,
+            platform: Platform,
             devices: Vec<InputDeviceInfo>,
             selected: &'static str,
             want_names: Vec<&'static str>,
             want_warning: bool,
             want_caption: Option<&'static str>,
         }
+        let macos = Platform::macos(PrivacyNaming::Accessibility);
         let cases = [
             Case {
                 name: "system default names the current default",
+                platform: macos,
                 devices: vec![
                     device("usb-10", "Greendale USB 10", false),
                     device("usb-2", "Greendale USB 2", false),
@@ -373,7 +377,28 @@ mod tests {
                 ),
             },
             Case {
+                name: "system default on Linux names Linux",
+                platform: Platform::linux(),
+                devices: vec![device("alsa-1", "Greendale USB 2", true)],
+                selected: "",
+                want_names: vec!["System Default", "Greendale USB 2"],
+                want_warning: false,
+                want_caption: Some(
+                    "Follows the input selected in Linux. Currently using Greendale USB 2.",
+                ),
+            },
+            Case {
+                name: "system default on Linux with no default device",
+                platform: Platform::linux(),
+                devices: vec![device("alsa-1", "Greendale USB 2", false)],
+                selected: "",
+                want_names: vec!["System Default", "Greendale USB 2"],
+                want_warning: false,
+                want_caption: Some("Follows the input selected in Linux."),
+            },
+            Case {
                 name: "a specific connected device",
+                platform: macos,
                 devices: vec![device("usb-2", "Greendale USB 2", true)],
                 selected: "usb-2",
                 want_names: vec!["System Default", "Greendale USB 2"],
@@ -384,6 +409,7 @@ mod tests {
             },
             Case {
                 name: "a missing device shows as unavailable with the AUD-3 note",
+                platform: macos,
                 devices: vec![device("built-in", "MacBook Pro Microphone", true)],
                 selected: "troy-podcast-mic",
                 want_names: vec![
@@ -396,7 +422,7 @@ mod tests {
             },
         ];
         for tc in cases {
-            let got = input_picker(&tc.devices, tc.selected);
+            let got = input_picker(&tc.devices, tc.selected, tc.platform.os_name);
             let names: Vec<&str> = got.options.iter().map(|o| o.name.as_str()).collect();
             assert_eq!(names, tc.want_names, "{}", tc.name);
             assert_eq!(got.warning.is_some(), tc.want_warning, "{}", tc.name);
