@@ -1,4 +1,5 @@
 use super::{Window, clear, label};
+use crate::linux::speech::{cpus, preview_note};
 use adw::prelude::*;
 use onda_app::views::{ModelRowControl, SpeechPage};
 use onda_domain::{models::ModelId, routing::NoteActionKind};
@@ -154,7 +155,7 @@ impl Window {
             group.add(&row);
         }
         self.models.append(&group);
-        let note = label("Linux currently uses CPU inference. Live preview is unavailable.");
+        let note = label(&preview_note(cpus()));
         note.add_css_class("dim-label");
         note.set_xalign(0.0);
         self.models.append(&note);

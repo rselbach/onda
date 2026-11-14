@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Exercise a real GTK window, virtual microphone, inference, X11 paste, the
 # session's claim on Escape, the tray menu, media pause and mute, and sound
-# cues against a private bus and audio server.
+# cues against a private bus and audio server. With the Unified model as a
+# fourth argument, also exercise live preview.
 set -euo pipefail
 
 cleanup() {
@@ -57,13 +58,14 @@ wait_until() {
 
 write_settings() {
   cat > "${ONDA_DATA_DIR}/settings.json" <<JSON
-{"onboardingCompleted":true,"didShowFirstRunSetup":true,"selectedModel":"parakeet-tdt-v2","selectedLanguage":"en","recentLanguages":"en,pt","soundFeedbackEnabled":${2:-false},"pauseMediaDuringRecording":$1}
+{"onboardingCompleted":true,"didShowFirstRunSetup":true,"selectedModel":"${3:-parakeet-tdt-v2}","selectedLanguage":"en","recentLanguages":"en,pt","soundFeedbackEnabled":${2:-false},"pauseMediaDuringRecording":$1}
 JSON
 }
 
+# launcher, when set, is a command that runs Onda, such as taskset
 start_onda() {
   PIPEWIRE_PROPS='{ stream.capture.sink = true }' \
-    "${binary}" "$@" >> "${work}/onda.log" 2>&1 &
+    "${launcher[@]}" "${binary}" "$@" >> "${work}/onda.log" 2>&1 &
   app_pid=$!
   wait_ready
 }
@@ -192,6 +194,63 @@ target_received() {
   rg -q "$1" "${work}/transcript"
 }
 
+preview_decodes() {
+  local count
+  count="$(tail -n "+$(( $1 + 1 ))" "${work}/onda.log" \
+    | rg -c 'preview decode .*chars=[1-9]' || true)"
+  printf '%s\n' "${count:-0}"
+}
+
+# Dictates the sample into the target window on the CPUs the launcher allows.
+# Leaves in previews how many preview decodes had text before the recording
+# stopped.
+dictate_sample() {
+  local sample="$1" target_window="$2" log_start attempt
+  log_start="$(wc -l < "${work}/onda.log")"
+  start_onda --background
+  xdotool windowfocus --sync "${target_window}"
+  xdotool key ctrl+a BackSpace
+  wait_until 'the cleared target' target_is_empty
+  "${binary}" --start
+  sleep 0.5
+  paplay --device=onda-test "${sample}"
+  previews="$(preview_decodes "${log_start}")"
+  "${binary}" --stop
+  for ((attempt = 0; attempt < 600; attempt++)); do
+    if target_received 'country'; then break; fi
+    sleep 0.2
+  done
+  target_received 'country'
+  wait_ready
+  "${binary}" --quit
+  wait "${app_pid}"
+  app_pid=""
+}
+
+check_live_preview() {
+  local unified="$1" sample="$2" target_window="$3"
+  if (( $(nproc) < 4 )); then
+    echo "Live preview needs 4 CPUs, and this host has $(nproc)" >&2
+    return 1
+  fi
+  mkdir -p "${ONDA_DATA_DIR}/Models/parakeet-unified"
+  ln -s "${unified}" \
+    "${ONDA_DATA_DIR}/Models/parakeet-unified/parakeet-unified-en-0.6b-Q8_0.gguf"
+  write_settings false false parakeet-unified
+  dictate_sample "${sample}" "${target_window}"
+  if (( previews == 0 )); then
+    echo "No preview text appeared before the recording stopped" >&2
+    return 1
+  fi
+  launcher=(taskset -c '0,1')
+  dictate_sample "${sample}" "${target_window}"
+  launcher=()
+  if (( previews != 0 )); then
+    echo "A preview ran on two CPUs" >&2
+    return 1
+  fi
+}
+
 check_microphone_released() {
   pw-dump > "${work}/audio-state.json"
   python3 - "${work}/audio-state.json" <<'PY'
@@ -209,11 +268,13 @@ PY
 }
 
 main() {
-  if (( $# != 3 )); then
-    echo "usage: $0 /path/to/onda /path/to/v2-Q8_0.gguf /path/to/jfk.wav" >&2
+  if (( $# < 3 || $# > 4 )); then
+    echo "usage: $0 /path/to/onda /path/to/v2-Q8_0.gguf /path/to/jfk.wav" \
+      "[/path/to/unified-en-0.6b-Q8_0.gguf]" >&2
     return 2
   fi
-  local root binary model sample
+  local root binary model sample unified="" checked=""
+  launcher=()
   root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
   if [[ "${ONDA_TEST_SESSION:-}" != 1 ]]; then
     exec dbus-run-session \
@@ -223,12 +284,15 @@ main() {
   binary="$(realpath "$1")"
   model="$(realpath "$2")"
   sample="$(realpath "$3")"
+  if (( $# == 4 )); then unified="$(realpath "$4")"; fi
   work="$(mktemp -d)"
   trap cleanup EXIT
   export XDG_RUNTIME_DIR="${work}/runtime" XDG_CONFIG_HOME="${work}/config"
   export XDG_DATA_HOME="${work}/data" ONDA_DATA_DIR="${work}/onda"
   export XDG_STATE_HOME="${work}/state"
   export GDK_BACKEND=x11 GSK_RENDERER=cairo GTK_A11Y=none
+  # the preview check reads Onda's log
+  export NO_COLOR=1
   unset WAYLAND_DISPLAY
   mkdir -m 700 "${XDG_RUNTIME_DIR}"
   mkdir -p "${XDG_CONFIG_HOME}" "${XDG_DATA_HOME}" \
@@ -587,7 +651,11 @@ ${menu_tail}"
   "${binary}" --quit
   wait "${app_pid}"
   app_pid=""
-  echo "PASS: commands, cancellation, overlay cancel button, Escape, global shortcut, CPU transcription, GTK paste, clipboard restoration, target application, target left, tray menu, media pause, output mute, mute recovery, sound cues."
+  if [[ -n "${unified}" ]]; then
+    check_live_preview "${unified}" "${sample}" "${target_window}"
+    checked=", live preview"
+  fi
+  echo "PASS: commands, cancellation, overlay cancel button, Escape, global shortcut, CPU transcription, GTK paste, clipboard restoration, target application, target left, tray menu, media pause, output mute, mute recovery, sound cues${checked}."
 }
 
 main "$@"

@@ -251,7 +251,7 @@ impl Catalog {
         }
     }
 
-    /// Linux's downloadable GGUF models, decoded offline by transcribe.cpp.
+    /// Linux's downloadable GGUF models, decoded on the CPU by transcribe.cpp.
     pub fn gguf() -> Catalog {
         Catalog {
             system_speech: None,
@@ -280,7 +280,8 @@ impl Catalog {
         if let Some(info) = STATIC_MODELS.iter().find(|m| m.id == id) {
             let mut info = info.clone();
             if self.gguf {
-                info.live_preview = false;
+                // transcribe.cpp streams only the chunked-attention encoder
+                info.live_preview = id == ModelId::ParakeetUnified;
                 info.size_hint = match id {
                     ModelId::ParakeetTdtV2 => "~730MB",
                     ModelId::ParakeetUltra => "~740MB",
@@ -446,7 +447,13 @@ pub(crate) mod tests {
         assert!(!catalog.contains(ModelId::ParakeetJapanese));
         assert!(!catalog.contains(ModelId::SystemSpeech));
         assert_eq!(catalog.models().len(), 3);
-        assert!(catalog.models().iter().all(|model| !model.live_preview));
+        let previews: Vec<ModelId> = catalog
+            .models()
+            .iter()
+            .filter(|model| model.live_preview)
+            .map(|model| model.id)
+            .collect();
+        assert_eq!(previews, [ModelId::ParakeetUnified]);
         assert!(
             crate::routing::routes(
                 &catalog,

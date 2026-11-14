@@ -143,8 +143,15 @@ The XDG desktop session bus must be available.
 
 Choose **Speech**, then **Download & Use**. Linux offers pinned,
 SHA-256-verified GGUF versions of Parakeet TDT v2, Ultra, and Unified through
-transcribe.cpp. Inference uses the CPU; live preview and the CoreML Japanese
-model are unavailable. GPU inference is not enabled in this shell.
+transcribe.cpp. Inference uses the CPU. GPU inference is not enabled in this
+shell, and the CoreML Japanese model is unavailable.
+
+Parakeet Unified shows your words in the recording overlay while you speak.
+The preview needs at least 4 CPU cores: it costs a little over 2 CPU-seconds
+for each second of speech, so two cores fall behind the speaker. The text
+trails your voice by 1 to 3 seconds. The typed transcript is the same with or
+without the preview. Parakeet TDT v2 and Ultra have no live preview on Linux,
+because transcribe.cpp cannot stream them.
 
 ## Post-processing
 
@@ -332,6 +339,9 @@ virtual microphone, and a GTK text field. Its private PipeWire and WirePlumber
 processes use temporary sockets and disable physical-device discovery. The
 desktop audio session stays running. Supply the v2 GGUF file above and
 whisper.cpp's `samples/jfk.wav` (the expected transcript contains “country”).
+Add the Unified GGUF file as a fourth argument to also check live preview:
+preview text appears before the recording stops on a host with 4 CPUs or
+more, and no preview runs when Onda is held to 2 CPUs.
 It checks cancellation, the overlay's cancel button, Escape, command controls,
 global push-to-talk, CPU inference, paste, clipboard restoration, and
 single-instance activation. It checks that history records the text field's application, and
@@ -353,8 +363,21 @@ sudo dnf install xorg-x11-server-Xvfb pipewire pipewire-pulseaudio \
   pipewire-alsa wireplumber pulseaudio-utils dbus-daemon gcc ripgrep \
   xclip xdotool xprop python3 python3-dbus python3-gobject
 scripts/test-linux-dictation.sh \
-  target/debug/onda /path/to/parakeet-tdt-0.6b-v2-Q8_0.gguf /path/to/jfk.wav
+  target/debug/onda /path/to/parakeet-tdt-0.6b-v2-Q8_0.gguf /path/to/jfk.wav \
+  /path/to/parakeet-unified-en-0.6b-Q8_0.gguf
 ```
+
+The speech engine has tests of its own against the real models. They check
+that the catalog offers live preview for exactly the models that stream, and
+that the final transcript of `jfk.wav` is the same with and without a preview.
+Put the three GGUF files and `jfk.wav` in one folder:
+
+```sh
+ONDA_TEST_MODEL_DIR=/path/to/that/folder \
+  cargo test --locked -p onda-linux speech:: -- --test-threads=1
+```
+
+Without the variable these tests pass without running.
 
 `pulseaudio-utils` supplies client tools compatible with PipeWire. The
 `pulseaudio` daemon is not needed and conflicts with Fedora's
