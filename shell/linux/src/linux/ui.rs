@@ -6,6 +6,7 @@ mod history;
 mod hotkey;
 mod navigation;
 mod notice;
+mod onboarding;
 mod post_processing;
 mod replacements;
 mod speech;
@@ -36,6 +37,7 @@ pub struct Window {
     history: history::Page,
     hotkey: hotkey::Page,
     notice: notice::Notice,
+    onboarding: onboarding::Onboarding,
     replacements: replacements::Page,
     about: gtk::Box,
     section: Cell<MainWindowSection>,
@@ -205,6 +207,7 @@ impl Window {
             history,
             hotkey,
             notice: notice::Notice::default(),
+            onboarding: onboarding::Onboarding::default(),
             replacements,
             about,
             section: Cell::new(MainWindowSection::GettingStarted),
@@ -413,10 +416,9 @@ impl Window {
                 Event::AboutChanged(page) => self.about(*page),
                 Event::PostProcessingChanged(page) => self.post_processing.update(self, *page),
                 Event::HistoryChanged => self.core.app.page_appeared(MainWindowSection::History),
-                Event::OpenOnboarding => {
-                    self.stack.set_visible_child_name("speech");
-                    self.present();
-                }
+                Event::OpenOnboarding => self.onboarding.open(self),
+                Event::OnboardingChanged(view) => self.onboarding.update(*view),
+                Event::CloseOnboarding => self.onboarding.close(),
                 Event::OpenMainWindow(section) => {
                     self.stack.set_visible_child_name(navigation::name(section));
                     self.present();
@@ -450,10 +452,6 @@ impl Window {
                 Event::ActivateApp => self.present(),
                 // #13 renders the shortcut recorder
                 Event::HotkeyChanged(_) => {}
-                // #15 renders the onboarding wizard
-                Event::OnboardingChanged(_) => {}
-                // #15 closes the onboarding wizard
-                Event::CloseOnboarding => {}
                 // #17 renders the Getting Started page
                 Event::GettingStartedChanged(_) => {}
                 // a GTK application is a regular one whenever a window is
@@ -503,6 +501,15 @@ fn parse_shortcut(text: &str) -> anyhow::Result<onda_domain::hotkey::Shortcut> {
         .map_err(|_| anyhow::anyhow!("Choose a key other than Escape with Ctrl, Alt, or Super."))?;
     super::hotkeys::trigger(&shortcut)?;
     Ok(shortcut)
+}
+
+// the icon theme has Onda's icon only where Onda is installed
+fn app_icon() -> Option<gtk::gdk::Texture> {
+    let bytes = glib::Bytes::from_static(include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../assets/AppIcon.appiconset/icon_256x256.png"
+    )));
+    gtk::gdk::Texture::from_bytes(&bytes).ok()
 }
 
 fn page() -> gtk::Box {

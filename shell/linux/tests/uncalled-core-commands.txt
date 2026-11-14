@@ -12,21 +12,12 @@ end_hotkey_capture               #13 shortcut recorder
 fix_permission                   never Linux has no privacy permission to fix
 flush_events                     never a barrier for the core's own tests
 hotkey_capture_failed            #13 shortcut recorder
-onboarding_back                  #15 onboarding wizard
-onboarding_choose_model          #15 onboarding wizard
-onboarding_closed                #15 onboarding wizard
-onboarding_continue              #15 onboarding wizard
-onboarding_download_model        #15 onboarding wizard
-onboarding_search_languages      #15 onboarding wizard
-onboarding_select_hotkey         #15 onboarding wizard
-onboarding_select_language       #15 onboarding wizard
-onboarding_toggle_all_languages  #15 onboarding wizard
-onboarding_toggle_other_models   #15 onboarding wizard
 onboarding_use_clipboard         never the link sits on the Permissions step, which Linux does not have
 open_keyboard_settings           never it sits next to the Fn warning, and Linux has no Fn shortcuts
 open_login_items                 never Linux autostart needs no approval, so the caption never offers it
 recorder_event                   #13 shortcut recorder
 run_setup_again                  #17 Getting Started page
+settings_changed                 never the shell changes settings only through core commands
 setup_action                     #17 Getting Started page
 shutdown                         never the shell owns the runtime and calls shutdown_async
 start                            never the shell owns the runtime and calls start_on

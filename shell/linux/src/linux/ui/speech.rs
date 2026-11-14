@@ -102,10 +102,6 @@ impl Window {
                     let weak = Rc::downgrade(self);
                     button.connect_clicked(move |_| {
                         if let Some(owner) = weak.upgrade() {
-                            if let Err(error) = owner.core.finish_setup() {
-                                owner.toast.add_toast(adw::Toast::new(&error.to_string()));
-                                return;
-                            }
                             if download {
                                 owner.core.app.download_and_use(id);
                             } else {

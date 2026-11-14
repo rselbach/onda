@@ -144,14 +144,6 @@ impl Core {
             _devices: devices,
         })
     }
-
-    pub fn finish_setup(&self) -> anyhow::Result<()> {
-        if !self.settings.onboarding_completed() {
-            self.settings.complete_onboarding()?;
-            self.app.settings_changed();
-        }
-        Ok(())
-    }
 }
 
 struct Sink(async_channel::Sender<Message>);

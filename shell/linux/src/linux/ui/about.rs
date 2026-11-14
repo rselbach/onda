@@ -13,11 +13,7 @@ impl Window {
             .subtitle(&page.version)
             .build();
         let icon = gtk::Image::from_icon_name("com.rselbach.onda");
-        let bytes = gtk::glib::Bytes::from_static(include_bytes!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../assets/AppIcon.appiconset/icon_256x256.png"
-        )));
-        if let Ok(texture) = gtk::gdk::Texture::from_bytes(&bytes) {
+        if let Some(texture) = super::app_icon() {
             icon.set_paintable(Some(&texture));
         }
         icon.set_pixel_size(48);

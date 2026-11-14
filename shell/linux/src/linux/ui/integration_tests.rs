@@ -17,13 +17,17 @@ use std::{
 /// The key of the update notice that [`Start`] makes due.
 pub(super) const NOTICE_KEY: &str = "parakeet-ja->parakeet-ultra";
 
-/// The settings a real-GUI test starts from. Setup is finished and the
-/// selected model has left the catalog, so the app downloads nothing until
-/// the user answers the update notice.
+/// The settings a real-GUI test starts from. None of them makes the app
+/// download a model by itself.
 pub(super) enum Start {
-    /// The update notice is due.
+    /// No setting is stored, so the wizard opens. The recommended model
+    /// downloads when the user leaves the wizard's Language step.
+    FirstRun,
+    /// Setup is finished and the selected model has left the catalog, so
+    /// the update notice is due and the user's answer decides the download.
     NoticeDue,
-    /// The user declined the replacement model: no notice and no download.
+    /// As `NoticeDue`, but the user declined the replacement model: no
+    /// notice and no download.
     Declined,
 }
 
@@ -31,15 +35,21 @@ pub(super) enum Start {
 pub(super) fn launch(start: Start) -> Rc<Window> {
     let directory =
         PathBuf::from(std::env::var_os("ONDA_DATA_DIR").expect("use a scratch data directory"));
-    let mut settings = serde_json::json!({
+    let finished = serde_json::json!({
         "onboardingCompleted": true,
         "didShowFirstRunSetup": true,
         "selectedModel": "parakeet-ja",
     });
-    if let Start::Declined = start {
-        settings["declinedModelMigrationNoticeKey"] = NOTICE_KEY.into();
-        settings["lastModelMigrationNoticeKey"] = NOTICE_KEY.into();
-    }
+    let settings = match start {
+        Start::FirstRun => serde_json::json!({}),
+        Start::NoticeDue => finished,
+        Start::Declined => {
+            let mut settings = finished;
+            settings["declinedModelMigrationNoticeKey"] = NOTICE_KEY.into();
+            settings["lastModelMigrationNoticeKey"] = NOTICE_KEY.into();
+            settings
+        }
+    };
     // fails in a directory that holds settings, so a run cannot replace the
     // settings of a real installation
     std::fs::File::create_new(directory.join("settings.json"))
@@ -293,18 +303,23 @@ fn file_manager(shown: &Rc<RefCell<Vec<String>>>) -> impl FnOnce() {
 }
 
 pub(super) fn capture(owner: &Window, name: &str) {
+    capture_window(&owner.window, name);
+}
+
+pub(super) fn capture_window(window: &impl IsA<gtk::Window>, name: &str) {
     let Some(directory) = std::env::var_os("ONDA_TEST_SCREENSHOT_DIR") else {
         return;
     };
+    let window = window.as_ref();
     settle();
     // a window that awaits layout paints nothing
     let node = RefCell::new(None);
     wait_for(|| {
         let snapshot = gtk::Snapshot::new();
-        gtk::WidgetPaintable::new(Some(&owner.window)).snapshot(
+        gtk::WidgetPaintable::new(Some(window)).snapshot(
             &snapshot,
-            owner.window.width() as f64,
-            owner.window.height() as f64,
+            window.width() as f64,
+            window.height() as f64,
         );
         node.replace(snapshot.to_node());
         node.borrow().is_some()
@@ -312,8 +327,7 @@ pub(super) fn capture(owner: &Window, name: &str) {
     let node = node.into_inner().unwrap();
     let directory = std::path::PathBuf::from(directory);
     std::fs::create_dir_all(&directory).unwrap();
-    owner
-        .window
+    window
         .renderer()
         .unwrap()
         .render_texture(&node, None)

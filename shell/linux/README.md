@@ -298,12 +298,12 @@ call site. Delete a command's line in the same change that starts calling it.
 The real-GUI tests drive the GTK window and are marked `#[ignore]`.
 `scripts/test-linux-gui.sh` finds every ignored test of the shell and runs each
 one in its own process and data directory, under Xvfb with a private D-Bus
-session and keyring. CI runs the script on every push. The tests check provider
-switching, key storage and deletion, custom model selection, missing-key
-feedback, prompt editing, replacement editing, shortcuts, history search,
-confirmation dialogs, the model update notice, and critical alerts. They never
-use your credentials or normal Onda data. The script also runs the overlay
-tests described below.
+session and keyring. CI runs the script on every push. The tests check the
+first-run wizard, provider switching, key storage and deletion, custom model
+selection, missing-key feedback, prompt editing, replacement editing,
+shortcuts, history search, confirmation dialogs, the model update notice, and
+critical alerts. They never use your credentials or normal Onda data. The
+script also runs the overlay tests described below.
 
 The script needs no list of tests. Mark a new real-GUI test `#[ignore]`, and
 start the app with `launch` in `src/linux/ui/integration_tests.rs`. `launch`
@@ -311,6 +311,17 @@ writes the settings the test starts from, and those settings begin no model
 download. The script routes the tests through a local proxy that refuses every
 request, prints the requests each test made, and fails when one names
 `huggingface.co`, the host of the speech models.
+
+The first-run wizard starts the download of the recommended model when the
+user leaves its Language step. The test that walks the wizard therefore puts
+that model's file in its data directory first, with the right size and no
+content, so the wizard finds the model downloaded. To have the test also load
+the model, name a real copy of the file:
+
+```sh
+ONDA_TEST_SPEECH_MODEL=/path/to/parakeet-tdt-0.6b-v2-Q8_0.gguf \
+  scripts/test-linux-gui.sh
+```
 
 Set `ONDA_TEST_SCREENSHOT_DIR` to capture the pages in light and dark appearances.
 Run it as a regular user:
