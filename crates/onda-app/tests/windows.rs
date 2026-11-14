@@ -402,7 +402,7 @@ async fn onb_7_lone_modifier_presets_need_no_permission_linux_does_not_have() {
     h.app.onboarding_select_hotkey(HotkeyPreset::RightOption);
     sleep(1).await;
     let view = h.hotkey_view();
-    assert_eq!(view.display, "Right Option");
+    assert_eq!(view.display, "Right Alt");
     assert!(!view.needs_accessibility);
     assert_eq!(onboarding(&h).hint, None);
 }

@@ -57,7 +57,7 @@ fn snapshot(settings: &Settings) -> Snapshot {
         recent_languages: settings.recent_languages(),
         input_device_uid: settings.input_device_uid(),
         output_mode: settings.output_mode(),
-        hotkey: settings.hotkey(),
+        hotkey: settings.hotkey(&Shortcut::OPTION_SPACE),
         activation_mode: settings.activation_mode(),
         pause_media_during_recording: settings.pause_media_during_recording(),
         sound_feedback_enabled: settings.sound_feedback_enabled(),
@@ -90,7 +90,7 @@ fn defaults() -> Snapshot {
         recent_languages: String::new(),
         input_device_uid: String::new(),
         output_mode: OutputMode::Type,
-        hotkey: Shortcut::default(),
+        hotkey: Shortcut::OPTION_SPACE,
         activation_mode: ActivationMode::Hold,
         pause_media_during_recording: false,
         sound_feedback_enabled: true,
@@ -386,7 +386,10 @@ fn lone_modifier_hotkey_round_trips_hot_1() {
 
     settings.set_hotkey(&shortcut).expect("set");
 
-    assert_eq!(Settings::open(&path).hotkey(), shortcut);
+    assert_eq!(
+        Settings::open(&path).hotkey(&Shortcut::OPTION_SPACE),
+        shortcut
+    );
     assert_eq!(
         stored(&path)["hotkey"],
         json!({"key": "AltRight", "modifiers": []})
@@ -479,6 +482,29 @@ fn corrupt_values_read_as_defaults_set_2() {
         let (_dir, settings) = with_json(&file);
         assert_eq!(snapshot(&settings), defaults(), "{key} = {bad}");
         assert!(settings.first_run_pending(), "{key} = {bad}");
+    }
+}
+
+#[test]
+fn the_hotkey_default_is_the_callers_hot_2_hot_5() {
+    let default = Shortcut::CONTROL_ALT_SPACE;
+    let stored = Shortcut::lone(ModifierKey::AltRight);
+    let cases = [
+        ("no hotkey stored", json!({}), default.clone()),
+        (
+            "a hotkey that fails validation",
+            json!({"hotkey": {"key": "Escape", "modifiers": ["alt"]}}),
+            default.clone(),
+        ),
+        (
+            "a stored hotkey wins",
+            json!({"hotkey": {"key": "AltRight", "modifiers": []}}),
+            stored,
+        ),
+    ];
+    for (name, file, want) in cases {
+        let (_dir, settings) = with_json(&file);
+        assert_eq!(settings.hotkey(&default), want, "{name}");
     }
 }
 

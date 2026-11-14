@@ -10,11 +10,7 @@ use onda_adapters::{
 };
 use onda_app::{App, Event, EventSink, Ports};
 use onda_audio::{AudioCapture, AudioDeviceEvents, DeviceSelection, PollingDeviceEvents};
-use onda_domain::{
-    hotkey::{KeyCode, Modifier, ModifierSet, Shortcut},
-    models::Catalog,
-    platform::Platform,
-};
+use onda_domain::{models::Catalog, platform::Platform};
 use onda_history::{HistoryHooks, HistoryStore};
 use onda_settings::Settings;
 
@@ -28,6 +24,7 @@ use super::{
 
 pub struct Core {
     pub app: App,
+    pub platform: Platform,
     pub settings: Arc<Settings>,
     pub output: Arc<Output>,
     pub runtime: tokio::runtime::Runtime,
@@ -51,14 +48,7 @@ impl Core {
         std::fs::create_dir_all(paths.root())?;
         let settings = Arc::new(Settings::open(paths.settings_file()));
         settings.canonicalize()?;
-        if !paths.settings_file().exists() {
-            settings.set_hotkey(&Shortcut::new(
-                KeyCode::SPACE,
-                ModifierSet::EMPTY
-                    .with(Modifier::Control)
-                    .with(Modifier::Alt),
-            )?)?;
-        }
+        let platform = Platform::linux();
         let catalog = Catalog::gguf();
         let language = std::env::var("LANG")
             .ok()
@@ -67,6 +57,7 @@ impl Core {
             settings.clone(),
             catalog.clone(),
             language,
+            platform.default_shortcut,
         ));
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -106,7 +97,6 @@ impl Core {
             events: events.clone(),
         });
         let updater = super::updates::Updates::new(paths.root(), events.clone(), runtime.handle())?;
-        let platform = Platform::linux();
         let app = App::start_on(
             runtime.handle(),
             Ports {
@@ -147,6 +137,7 @@ impl Core {
         forward_audio_events(audio_events, app.audio_signals());
         Ok(Self {
             app,
+            platform,
             settings,
             output,
             runtime,

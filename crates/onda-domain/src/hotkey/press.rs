@@ -462,7 +462,7 @@ mod tests {
         let cases = [
             (
                 "combo waits the full threshold",
-                Shortcut::default(),
+                Shortcut::OPTION_SPACE,
                 ms(300),
             ),
             (

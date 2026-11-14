@@ -36,7 +36,7 @@ impl Page {
             .use_markup(false)
             .build();
         group.add(&status);
-        let reset = gtk::Button::with_label("Reset to Ctrl+Alt+Space");
+        let reset = gtk::Button::new();
         reset.set_halign(gtk::Align::Start);
         reset.set_margin_top(8);
         group.add(&reset);
@@ -77,11 +77,12 @@ impl Page {
         let weak = Rc::downgrade(owner);
         self.reset.connect_clicked(move |_| {
             if let Some(owner) = weak.upgrade() {
-                owner.hotkey.entry.set_text("Ctrl+Alt+Space");
+                let platform = owner.core.platform;
                 owner
-                    .core
-                    .app
-                    .set_hotkey(parse_shortcut("Ctrl+Alt+Space").expect("valid default shortcut"));
+                    .hotkey
+                    .entry
+                    .set_text(&platform.default_shortcut.display(platform.key_names));
+                owner.core.app.reset_hotkey();
             }
         });
         let weak = Rc::downgrade(owner);
@@ -107,10 +108,15 @@ impl Page {
     pub fn update(&self, owner: &Window, view: HotkeyPage) {
         self.updating.set(true);
         if !self.initialized.replace(true) {
-            self.entry.set_text(
-                &super::super::hotkeys::trigger(&owner.core.settings.hotkey()).unwrap_or_default(),
-            );
+            let hotkey = owner
+                .core
+                .settings
+                .hotkey(owner.core.platform.default_shortcut);
+            self.entry
+                .set_text(&super::super::hotkeys::trigger(&hotkey).unwrap_or_default());
         }
+        self.reset.set_label(&view.reset.title);
+        self.reset.set_sensitive(view.reset.enabled);
         self.entry.set_title(&view.press_to_talk_label);
         self.activation_group.set_title(&view.activation_label);
         self.activation.set_title(&view.activation_label);

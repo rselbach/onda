@@ -12,7 +12,7 @@ use crate::platform::Platform;
 pub struct HotkeyView {
     /// Display string, e.g. `⌥ Space`.
     pub display: String,
-    /// One keycap per modifier glyph plus one for the key.
+    /// One keycap per modifier plus one for the key.
     pub keycaps: Vec<String>,
     /// The shortcut needs Accessibility (lone modifiers).
     pub needs_accessibility: bool,
@@ -45,16 +45,17 @@ impl HotkeyView {
         globe: GlobeKeyAction,
         platform: Platform,
     ) -> Self {
+        let names = platform.key_names;
         Self {
-            display: shortcut.display(),
-            keycaps: shortcut.keycaps(),
+            display: shortcut.display(names),
+            keycaps: shortcut.keycaps(names),
             needs_accessibility: shortcut.needs_accessibility(platform),
             recording: recorder.is_recording(),
             listening: recorder.is_recording(),
             record_button_title: recorder.button_title(),
             cancel_button_title: RECORDER_CANCEL_TITLE,
-            help_text: recorder.help_text(shortcut),
-            message: recorder.message().map(|m| m.text()),
+            help_text: recorder.help_text(shortcut, names),
+            message: recorder.message().map(|m| m.text(names)),
             fn_warning: fn_key_warning(shortcut, globe),
             open_keyboard_settings_title: OPEN_KEYBOARD_SETTINGS_TITLE,
         }
@@ -64,7 +65,8 @@ impl HotkeyView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hotkey::recorder::{RECORDING_HELP_TEXT, RecorderEvent};
+    use crate::hotkey::key_names::KeyNames;
+    use crate::hotkey::recorder::RecorderEvent;
     use crate::hotkey::shortcut::{KeyCode, ModifierKey, ModifierSet};
     use crate::privacy_naming::PrivacyNaming;
 
@@ -106,7 +108,7 @@ mod tests {
         let cases = [
             Case {
                 name: "start failed stops listening with a message",
-                shortcut: Shortcut::default(),
+                shortcut: Shortcut::OPTION_SPACE,
                 recorder: failed,
                 globe: GlobeKeyAction::DoNothing,
                 want_title: "Record Shortcut",
@@ -118,7 +120,7 @@ mod tests {
             },
             Case {
                 name: "idle combo",
-                shortcut: Shortcut::default(),
+                shortcut: Shortcut::OPTION_SPACE,
                 recorder: idle,
                 globe: GlobeKeyAction::ChangeInputSource,
                 want_title: "Record Shortcut",
@@ -135,19 +137,19 @@ mod tests {
                 globe: GlobeKeyAction::DoNothing,
                 want_title: "Press shortcut...",
                 want_listening: true,
-                want_help: RECORDING_HELP_TEXT.to_owned(),
+                want_help: KeyNames::MACOS.recording_help.to_owned(),
                 want_message: None,
                 want_warning: false,
                 want_accessibility: true,
             },
             Case {
                 name: "rejected combo keeps recording with a message",
-                shortcut: Shortcut::default(),
+                shortcut: Shortcut::OPTION_SPACE,
                 recorder: rejected,
                 globe: GlobeKeyAction::DoNothing,
                 want_title: "Press shortcut...",
                 want_listening: true,
-                want_help: RECORDING_HELP_TEXT.to_owned(),
+                want_help: KeyNames::MACOS.recording_help.to_owned(),
                 want_message: Some(
                     "Shortcut must include Command, Control, or Option — or use a lone modifier like Right Option or Fn.",
                 ),
@@ -186,7 +188,12 @@ mod tests {
                 tc.globe,
                 Platform::macos(PrivacyNaming::Accessibility),
             );
-            assert_eq!(view.display, tc.shortcut.display(), "{}", tc.name);
+            assert_eq!(
+                view.display,
+                tc.shortcut.display(&KeyNames::MACOS),
+                "{}",
+                tc.name
+            );
             assert_eq!(view.record_button_title, tc.want_title, "{}", tc.name);
             assert_eq!(view.listening, tc.want_listening, "{}", tc.name);
             assert_eq!(view.recording, tc.want_listening, "{}", tc.name);
@@ -205,6 +212,37 @@ mod tests {
                 tc.name
             );
         }
+    }
+
+    #[test]
+    fn the_view_uses_the_platforms_key_names() {
+        let mut recorder = ShortcutRecorder::new();
+        let idle = HotkeyView::resolve(
+            &Shortcut::CONTROL_ALT_SPACE,
+            &recorder,
+            GlobeKeyAction::DoNothing,
+            Platform::linux(),
+        );
+        assert_eq!(idle.display, "Ctrl+Alt+Space");
+        assert_eq!(idle.keycaps, vec!["Ctrl", "Alt", "Space"]);
+        assert_eq!(idle.help_text, "Current shortcut: Ctrl+Alt+Space");
+
+        recorder.start();
+        recorder.handle(RecorderEvent::KeyDown {
+            key: KeyCode::SPACE,
+            modifiers: ModifierSet::EMPTY,
+        });
+        let rejected = HotkeyView::resolve(
+            &Shortcut::CONTROL_ALT_SPACE,
+            &recorder,
+            GlobeKeyAction::DoNothing,
+            Platform::linux(),
+        );
+        assert_eq!(rejected.help_text, KeyNames::LINUX.recording_help);
+        assert_eq!(
+            rejected.message,
+            Some(KeyNames::LINUX.missing_modifier_message)
+        );
     }
 
     #[test]

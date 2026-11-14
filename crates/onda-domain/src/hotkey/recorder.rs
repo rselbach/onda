@@ -1,5 +1,6 @@
 //! Shortcut recorder reducer and copy (HOT-9 to HOT-11).
 
+use super::key_names::KeyNames;
 use super::shortcut::{
     HeldModifiers, KeyCode, ModifierKey, ModifierSet, Shortcut, ValidationError,
 };
@@ -10,8 +11,6 @@ pub const RECORD_BUTTON_TITLE: &str = "Record Shortcut";
 pub const RECORDING_BUTTON_TITLE: &str = "Press shortcut...";
 /// Title of the cancel button shown while recording (HOT-11).
 pub const RECORDER_CANCEL_TITLE: &str = "Cancel";
-/// Help text while recording (HOT-11).
-pub const RECORDING_HELP_TEXT: &str = "Press a key with Command, Control, or Option. A lone modifier like Right Option or Fn also works. Escape cancels.";
 
 /// A local key event from Onda's own window, expressed platform-neutrally.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,10 +62,10 @@ pub enum RecorderMessage {
 }
 
 impl RecorderMessage {
-    /// The text to show.
-    pub fn text(self) -> &'static str {
+    /// The text to show, in the system's key names.
+    pub fn text(self, names: &KeyNames) -> &'static str {
         match self {
-            Self::Invalid(err) => err.message(),
+            Self::Invalid(err) => err.message(names),
             Self::CouldNotStart => "Could not start shortcut recording.",
         }
     }
@@ -139,13 +138,13 @@ impl ShortcutRecorder {
         RECORD_BUTTON_TITLE
     }
 
-    /// The help text (HOT-11): instructions while recording, otherwise
-    /// `Current shortcut: ⌥ Space`.
-    pub fn help_text(&self, current: &Shortcut) -> String {
+    /// The help text (HOT-11) in the system's key names: instructions
+    /// while recording, otherwise `Current shortcut: ⌥ Space`.
+    pub fn help_text(&self, current: &Shortcut, names: &KeyNames) -> String {
         if self.recording {
-            return RECORDING_HELP_TEXT.to_owned();
+            return names.recording_help.to_owned();
         }
-        format!("Current shortcut: {}", current.display())
+        format!("Current shortcut: {}", current.display(names))
     }
 
     /// Feeds one local key event.
@@ -317,7 +316,7 @@ mod tests {
                 name: "regression: left option then space records option space",
                 steps: vec![
                     step(flags("AltLeft", &[Alt], false), Wait, Some(AltLeft)),
-                    step(down("Space", &[Alt]), Commit(Shortcut::default()), None),
+                    step(down("Space", &[Alt]), Commit(Shortcut::OPTION_SPACE), None),
                 ],
             },
             Case {
@@ -463,7 +462,7 @@ mod tests {
             }
             assert_eq!(recorder.is_recording(), tc.want_recording, "{}", tc.name);
             assert_eq!(
-                recorder.message().map(RecorderMessage::text),
+                recorder.message().map(|m| m.text(&KeyNames::MACOS)),
                 tc.want_message,
                 "{}",
                 tc.name
@@ -473,7 +472,7 @@ mod tests {
 
     #[test]
     fn recorder_lifecycle_hot_8_hot_11() {
-        let current = Shortcut::default();
+        let current = Shortcut::OPTION_SPACE;
 
         let mut recorder = ShortcutRecorder::new();
         assert_eq!(
@@ -482,7 +481,14 @@ mod tests {
             "idle passes through"
         );
         assert_eq!(recorder.button_title(), "Record Shortcut");
-        assert_eq!(recorder.help_text(&current), "Current shortcut: ⌥ Space");
+        assert_eq!(
+            recorder.help_text(&current, &KeyNames::MACOS),
+            "Current shortcut: ⌥ Space"
+        );
+        assert_eq!(
+            recorder.help_text(&Shortcut::CONTROL_ALT_SPACE, &KeyNames::LINUX),
+            "Current shortcut: Ctrl+Alt+Space"
+        );
         assert!(
             !recorder.stop(),
             "stop while idle does not ask to re-register"
@@ -490,7 +496,14 @@ mod tests {
 
         recorder.start();
         assert_eq!(recorder.button_title(), "Press shortcut...");
-        assert_eq!(recorder.help_text(&current), RECORDING_HELP_TEXT);
+        assert_eq!(
+            recorder.help_text(&current, &KeyNames::MACOS),
+            "Press a key with Command, Control, or Option. A lone modifier like Right Option or Fn also works. Escape cancels."
+        );
+        assert_eq!(
+            recorder.help_text(&current, &KeyNames::LINUX),
+            "Press a key with Ctrl, Alt, or Super. A lone modifier like Right Alt or Fn also works. Escape cancels."
+        );
         recorder.handle(flags("AltRight", &[Alt], false));
         assert!(recorder.stop(), "stop while recording asks to re-register");
         assert_eq!(
@@ -513,7 +526,7 @@ mod tests {
         recorder.start_failed();
         assert!(!recorder.is_recording());
         assert_eq!(
-            recorder.message().map(RecorderMessage::text),
+            recorder.message().map(|m| m.text(&KeyNames::MACOS)),
             Some("Could not start shortcut recording.")
         );
     }

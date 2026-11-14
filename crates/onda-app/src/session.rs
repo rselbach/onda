@@ -1987,7 +1987,7 @@ impl Actor {
                 text: recent.text.clone(),
             })
             .collect();
-        let hotkey = settings.hotkey.display();
+        let hotkey = settings.hotkey.display(self.ports.platform.key_names);
         StatusMenu::resolve(StatusMenuInput {
             status,
             hotkey_display: &hotkey,

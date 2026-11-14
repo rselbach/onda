@@ -330,7 +330,7 @@ async fn hot_18_unregistering_while_held_delivers_the_key_up() {
     let cases = [
         Case {
             name: "combo",
-            hotkey: Shortcut::default(),
+            hotkey: Shortcut::OPTION_SPACE,
             press: Harness::press,
             release: Harness::release,
         },
@@ -429,7 +429,7 @@ async fn hot_19_explicit_registration_starts_a_new_episode() {
 #[tokio::test(start_paused = true)]
 async fn hot_19_combo_failure_ends_a_lone_modifier_episode() {
     let h = failing_lone(2, false).await;
-    h.app.set_hotkey(Shortcut::default());
+    h.app.set_hotkey(Shortcut::OPTION_SPACE);
     sleep(10).await;
     assert_eq!(
         h.notifications().len(),
@@ -674,12 +674,12 @@ async fn hot_34_escape_with_the_shortcuts_own_modifiers_also_cancels() {
     let cases = [
         (
             "option space",
-            Shortcut::default(),
+            Shortcut::OPTION_SPACE,
             vec![ModifierSet::EMPTY, mods(&[Modifier::Alt])],
         ),
         (
             "control option D",
-            Shortcut::new(code("KeyD"), control_alt).unwrap_or_default(),
+            Shortcut::new(code("KeyD"), control_alt).expect("valid shortcut"),
             vec![ModifierSet::EMPTY, control_alt],
         ),
         (

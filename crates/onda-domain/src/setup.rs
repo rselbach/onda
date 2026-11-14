@@ -2,6 +2,7 @@
 //! permission rows (WIN-8), the missing-permission rule (UI-8), and where
 //! setup guidance sends the user (DICT-5).
 
+use crate::hotkey::KeyNames;
 use crate::platform::Platform;
 use crate::privacy_naming::PrivacyNaming;
 use crate::types::{MicrophonePermission, OutputMode};
@@ -280,11 +281,14 @@ pub fn base_model_to_download<'a>(
     recommended_model_id
 }
 
-/// Placeholder for the "Try It" text fields (WIN-6, ONB-9).
-pub fn try_it_placeholder(output_mode: OutputMode) -> &'static str {
+/// Placeholder for the "Try It" text fields (WIN-6, ONB-9). `names` writes
+/// the paste shortcut.
+pub fn try_it_placeholder(output_mode: OutputMode, names: &KeyNames) -> String {
     match output_mode {
-        OutputMode::Type => "Click here and try it.",
-        OutputMode::Clipboard => "Click here, dictate, then paste with ⌘V.",
+        OutputMode::Type => "Click here and try it.".to_owned(),
+        OutputMode::Clipboard => {
+            format!("Click here, dictate, then paste with {}.", names.paste)
+        }
     }
 }
 
@@ -313,7 +317,7 @@ impl PermissionFix {
 }
 
 /// One General page permission row (WIN-8).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PermissionRow {
     /// Row title.
     pub title: &'static str,
@@ -322,7 +326,7 @@ pub struct PermissionRow {
     /// Render the detail line in the warning color.
     pub needs_attention: bool,
     /// What the permission is for, or why it is missing.
-    pub detail: &'static str,
+    pub detail: String,
     /// Fix button, when one helps.
     pub fix: Option<PermissionFix>,
 }
@@ -356,33 +360,35 @@ pub fn microphone_row(microphone: MicrophonePermission) -> PermissionRow {
         title: "Microphone",
         granted,
         needs_attention,
-        detail,
+        detail: detail.to_owned(),
         fix,
     }
 }
 
-/// The Accessibility row (WIN-8), titled with the OS's name for the
-/// permission. `needed` comes from [`accessibility_needed`].
-pub fn accessibility_row(granted: bool, needed: bool, naming: PrivacyNaming) -> PermissionRow {
+/// The Accessibility row (WIN-8), titled with `platform`'s name for the
+/// permission and naming a lone-key hotkey its way. `needed` comes from
+/// [`accessibility_needed`].
+pub fn accessibility_row(granted: bool, needed: bool, platform: Platform) -> PermissionRow {
+    let lone_key = platform.key_names.alt.right_key;
     let (needs_attention, detail, fix) = match (granted, needed) {
         (true, _) => (
             false,
-            "Onda can type into apps and use lone-key hotkeys like Right Option.",
+            format!("Onda can type into apps and use lone-key hotkeys like {lone_key}."),
             None,
         ),
         (false, true) => (
             true,
-            "Needed to type into apps and for lone-key hotkeys like Right Option.",
+            format!("Needed to type into apps and for lone-key hotkeys like {lone_key}."),
             Some(PermissionFix::OpenAccessibilitySettings),
         ),
         (false, false) => (
             false,
-            "Only needed to type into apps or for lone-key hotkeys like Right Option.",
+            format!("Only needed to type into apps or for lone-key hotkeys like {lone_key}."),
             Some(PermissionFix::OpenAccessibilitySettings),
         ),
     };
     PermissionRow {
-        title: naming.name(),
+        title: platform.privacy_naming().name(),
         granted,
         needs_attention,
         detail,
@@ -933,7 +939,11 @@ mod tests {
             },
         ];
         for tc in cases {
-            let got = accessibility_row(tc.granted, tc.needed, PrivacyNaming::Accessibility);
+            let got = accessibility_row(
+                tc.granted,
+                tc.needed,
+                Platform::macos(PrivacyNaming::Accessibility),
+            );
             assert_eq!(got.title, "Accessibility", "{}", tc.name);
             assert_eq!(got.granted, tc.granted, "{}", tc.name);
             assert_eq!(got.needs_attention, tc.want_attention, "{}", tc.name);
@@ -973,7 +983,7 @@ mod tests {
             let step = checklist.steps[1];
             assert_eq!(step.title, tc.want_title, "{}", tc.name);
             assert_eq!(step.message, tc.want_message, "{}", tc.name);
-            let row = accessibility_row(false, true, tc.naming);
+            let row = accessibility_row(false, true, Platform::macos(tc.naming));
             assert_eq!(row.title, tc.want_title, "{}", tc.name);
         }
     }
@@ -1068,22 +1078,36 @@ mod tests {
         struct Case {
             name: &'static str,
             mode: OutputMode,
+            names: &'static KeyNames,
             want: &'static str,
         }
         let cases = [
             Case {
                 name: "type",
                 mode: OutputMode::Type,
+                names: &KeyNames::MACOS,
                 want: "Click here and try it.",
             },
             Case {
                 name: "clipboard",
                 mode: OutputMode::Clipboard,
+                names: &KeyNames::MACOS,
                 want: "Click here, dictate, then paste with ⌘V.",
+            },
+            Case {
+                name: "clipboard on Linux",
+                mode: OutputMode::Clipboard,
+                names: &KeyNames::LINUX,
+                want: "Click here, dictate, then paste with Ctrl+V.",
             },
         ];
         for tc in cases {
-            assert_eq!(try_it_placeholder(tc.mode), tc.want, "{}", tc.name);
+            assert_eq!(
+                try_it_placeholder(tc.mode, tc.names),
+                tc.want,
+                "{}",
+                tc.name
+            );
         }
     }
 }

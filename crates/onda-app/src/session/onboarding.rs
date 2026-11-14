@@ -146,7 +146,7 @@ impl Actor {
         EnvParts {
             microphone: self.permissions.microphone,
             accessibility: self.permissions.accessibility,
-            hotkey_display: self.settings.hotkey.display(),
+            hotkey_display: self.settings.hotkey.display(self.ports.platform.key_names),
             hotkey_needs_accessibility: self
                 .settings
                 .hotkey

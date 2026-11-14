@@ -5,7 +5,7 @@
 use std::sync::{Mutex, PoisonError};
 
 use onda_domain::hotkey::{
-    CANCEL_HOTKEY_ID, DICTATION_HOTKEY_ID, HotkeyRoute, Modifier, ModifierSet, Shortcut,
+    CANCEL_HOTKEY_ID, DICTATION_HOTKEY_ID, HotkeyRoute, KeyNames, Modifier, ModifierSet, Shortcut,
 };
 use onda_domain::level::{self, BAR_SPACING, BAR_WIDTH};
 use onda_domain::non_dictation_ui::DOWNLOAD_OVERLAY_FADE;
@@ -113,7 +113,7 @@ impl From<&Shortcut> for HotkeyShortcut {
             shift: modifiers.contains(Modifier::Shift),
             meta: modifiers.contains(Modifier::Meta),
             lone_modifier: shortcut.is_lone_modifier(),
-            display: shortcut.display(),
+            display: shortcut.display(&KeyNames::MACOS),
         }
     }
 }
@@ -277,7 +277,7 @@ mod tests {
 
     #[test]
     fn default_shortcut_crosses_as_option_space() {
-        let shortcut = HotkeyShortcut::from(&Shortcut::default());
+        let shortcut = HotkeyShortcut::from(&Shortcut::OPTION_SPACE);
         assert_eq!(
             shortcut,
             HotkeyShortcut {

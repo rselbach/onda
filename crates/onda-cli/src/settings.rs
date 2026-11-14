@@ -3,12 +3,14 @@
 //! activation mode without the settings window. The app reads settings at
 //! launch, so restart it afterwards.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use onda_adapters::DataPaths;
-use onda_domain::hotkey::Shortcut;
+use onda_domain::hotkey::{KeyNames, Shortcut};
 use onda_domain::language_menu::recent_languages;
 use onda_domain::languages::LanguageSetting;
 use onda_domain::models::{Catalog, ModelId};
+use onda_domain::platform::Platform;
+use onda_domain::privacy_naming::PrivacyNaming;
 use onda_domain::types::{ActivationMode, HistoryRetention, OutputMode};
 use onda_settings::{Key, Settings};
 use serde_json::Value;
@@ -97,7 +99,10 @@ fn get(settings: &Settings, key: Key) -> Result<Value> {
         Key::SelectedLanguage => Value::from(settings.selected_language(None).code()),
         Key::RecentLanguages => Value::from(settings.recent_languages()),
         Key::HistoryRetention => Value::from(name_of(&RETENTIONS, settings.history_retention())),
-        Key::Hotkey => serde_json::to_value(settings.hotkey())?,
+        Key::Hotkey => {
+            let default = Platform::macos(PrivacyNaming::Accessibility).default_shortcut;
+            serde_json::to_value(settings.hotkey(default))?
+        }
         Key::HotkeyActivationMode => {
             Value::from(name_of(&ACTIVATION_MODES, settings.activation_mode()))
         }
@@ -135,7 +140,9 @@ fn set(settings: &Settings, key: Key, value: &Value) -> Result<()> {
         }
         Key::HistoryRetention => settings.set_history_retention(value_of(&RETENTIONS, value)?)?,
         Key::Hotkey => {
-            let shortcut = Shortcut::from_setting(value).context("invalid hotkey")?;
+            let shortcut = Shortcut::from_setting(value)
+                .map_err(|error| anyhow!(error.message(&KeyNames::MACOS)))
+                .context("invalid hotkey")?;
             settings.set_hotkey(&shortcut)?;
         }
         Key::HotkeyActivationMode => {

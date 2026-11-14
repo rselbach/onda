@@ -294,7 +294,7 @@ Check for Updates…
 Quit Onda'
   wait_until 'the idle tray menu' tray_is "icon audio-input-microphone-symbolic
 tooltip Onda, ready to dictate
-[Onda, ready to dictate]
+[Ready to Dictate — Ctrl+Alt+Space]
 Start Dictation
 [Paste Last Transcript]
 ---
@@ -314,7 +314,7 @@ ${menu_tail}"
   "${binary}" --start
   wait_until 'the recording tray menu' tray_is "icon media-record-symbolic
 tooltip Onda, recording
-[Onda, recording]
+[Recording…]
 Stop Dictation
 Cancel Dictation
 [Paste Last Transcript]
@@ -381,12 +381,12 @@ ${menu_tail}"
   tray click 'Recent Transcripts' "${recent}"
   wait_until 'the recent transcript' rg -qi 'ask not|country' "${work}/transcript"
   xdotool key ctrl+a BackSpace
-  xdotool keydown alt+space
+  xdotool keydown ctrl+alt+space
   wait_until 'the mute' speakers_muted
   sleep 0.5
   paplay --device=onda-test "${sample}"
   speakers_muted
-  xdotool keyup alt+space
+  xdotool keyup ctrl+alt+space
   wait_until 'the unmute' speakers_audible
   for ((attempt = 0; attempt < 600; attempt++)); do
     if [[ -s "${work}/transcript" ]] && \

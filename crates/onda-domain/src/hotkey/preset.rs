@@ -1,12 +1,13 @@
 //! One-click shortcut choices offered in onboarding (Presets table, ONB-7).
 
+use super::key_names::KeyNames;
 use super::shortcut::{ModifierKey, Shortcut};
 
 /// A preset shortcut. Anything else is "Another shortcut", recorded with the
 /// recorder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HotkeyPreset {
-    /// `⌥ Space`, the default.
+    /// `⌥ Space`.
     OptionSpace,
     /// Right Option on its own.
     RightOption,
@@ -21,22 +22,25 @@ impl HotkeyPreset {
     /// The shortcut this preset selects.
     pub fn shortcut(self) -> Shortcut {
         match self {
-            Self::OptionSpace => Shortcut::default(),
+            Self::OptionSpace => Shortcut::OPTION_SPACE,
             Self::RightOption => Shortcut::lone(ModifierKey::AltRight),
             Self::Fn => Shortcut::lone(ModifierKey::Fn),
         }
     }
 
-    /// The detail text under the preset's keycaps.
-    pub fn detail(self) -> &'static str {
+    /// The detail text under the preset's keycaps, in the system's key
+    /// names.
+    pub fn detail(self, names: &KeyNames) -> String {
         match self {
             Self::OptionSpace => {
                 "Works without Typing Access. Alfred, Raycast, and ChatGPT default to it too."
+                    .to_owned()
             }
-            Self::RightOption => {
-                "The Option key right of the space bar. Left Option works as usual."
-            }
-            Self::Fn => "The fn or 🌐 key. Some third-party keyboards don't send it.",
+            Self::RightOption => format!(
+                "The {alt} key right of the space bar. Left {alt} works as usual.",
+                alt = names.alt.key
+            ),
+            Self::Fn => "The fn or 🌐 key. Some third-party keyboards don't send it.".to_owned(),
         }
     }
 
@@ -61,7 +65,7 @@ mod tests {
         let cases = [
             (
                 "option space",
-                Shortcut::default(),
+                Shortcut::OPTION_SPACE,
                 Some(HotkeyPreset::OptionSpace),
             ),
             (
@@ -115,8 +119,20 @@ mod tests {
             ),
         ];
         for (preset, want_detail, want_display) in cases {
-            assert_eq!(preset.detail(), want_detail, "{preset:?}");
-            assert_eq!(preset.shortcut().display(), want_display, "{preset:?}");
+            assert_eq!(preset.detail(&KeyNames::MACOS), want_detail, "{preset:?}");
+            assert_eq!(
+                preset.shortcut().display(&KeyNames::MACOS),
+                want_display,
+                "{preset:?}"
+            );
         }
+    }
+
+    #[test]
+    fn preset_details_use_the_systems_key_names() {
+        assert_eq!(
+            HotkeyPreset::RightOption.detail(&KeyNames::LINUX),
+            "The Alt key right of the space bar. Left Alt works as usual."
+        );
     }
 }

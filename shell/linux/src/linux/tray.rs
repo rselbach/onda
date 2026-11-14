@@ -102,17 +102,22 @@ impl ksni::Tray for Tray {
     }
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
         use ksni::MenuItem::Separator;
-        // #8 puts the core's header here once Linux has its own key names
-        let header = StandardItem {
-            label: label(&self.view.accessibility_label),
-            enabled: false,
-            ..Default::default()
-        }
-        .into();
-        let Some(menu) = &self.menu else {
-            return vec![header, item("Quit Onda", true, Command::Quit)];
+        let header = |text: &str| {
+            StandardItem {
+                label: label(text),
+                enabled: false,
+                ..Default::default()
+            }
+            .into()
         };
-        let mut items = vec![header];
+        // the core has sent no menu yet, so the tray's own label stands in
+        let Some(menu) = &self.menu else {
+            return vec![
+                header(&self.view.accessibility_label),
+                item("Quit Onda", true, Command::Quit),
+            ];
+        };
+        let mut items = vec![header(&menu.header)];
         if let Some(fix) = &menu.fix_permissions {
             items.push(item(fix.title, fix.enabled, Command::FixPermissions));
         }
@@ -362,7 +367,7 @@ mod tests {
                         );
                     },
                     want: &[
-                        "[Onda, microphone access needed]",
+                        "[Microphone Access Needed]",
                         "Fix Permissions… => FixPermissions",
                         "Start Dictation => ToggleDictation",
                         "Paste Last Transcript => DeliverLastTranscript",
@@ -403,7 +408,7 @@ mod tests {
                         input.can_start_session = false;
                     },
                     want: &[
-                        "[Onda, recording]",
+                        "[Recording…]",
                         "Stop Dictation => ToggleDictation",
                         "Cancel Dictation => CancelDictation",
                         "[Copy Last Transcript] => DeliverLastTranscript",
@@ -443,7 +448,7 @@ mod tests {
                         input.languages.clear();
                     },
                     want: &[
-                        "[Onda, transcribing]",
+                        "[Transcribing…]",
                         "Cancel Dictation => ToggleDictation",
                         "[Paste Last Transcript] => DeliverLastTranscript",
                         "---",
@@ -483,6 +488,27 @@ mod tests {
             };
             assert_eq!(rows(&mut tray, &sent), tc.want, "{name}");
         }
+    }
+
+    #[test]
+    fn the_first_row_is_the_cores_header() {
+        let (events, sent) = async_channel::unbounded();
+        let ready = ModelState::Ready;
+        let input = input(&ready);
+        let mut tray = Tray {
+            events,
+            view: tray_view(
+                input.status,
+                input.missing_permission,
+                input.first_run_pending,
+                input.privacy_naming,
+            ),
+            menu: Some(StatusMenu::resolve(input)),
+        };
+        assert_eq!(
+            rows(&mut tray, &sent).first().map(String::as_str),
+            Some("[Ready to Dictate — Ctrl+Alt+Space]")
+        );
     }
 
     #[test]

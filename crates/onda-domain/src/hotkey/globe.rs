@@ -147,7 +147,7 @@ mod tests {
             ),
             (
                 "option space with unknown",
-                Shortcut::default(),
+                Shortcut::OPTION_SPACE,
                 Unknown,
                 false,
             ),

@@ -13,21 +13,30 @@ use onda_domain::onboarding::OnboardingFlags;
 use onda_settings::Settings;
 
 /// [`SettingsSource`] over the settings file. Computed defaults follow the
-/// OS language and the catalog (SET-2a).
+/// OS language and the catalog (SET-2a); the hotkey's follows the platform
+/// (HOT-2).
 pub struct SettingsAdapter {
     settings: Arc<Settings>,
     catalog: Catalog,
     os_language: Option<String>,
+    default_hotkey: &'static Shortcut,
 }
 
 impl SettingsAdapter {
     /// Reads `settings`; `os_language` is the OS locale's language code
-    /// (LANG-2) and `catalog` reflects whether the shell has a system engine.
-    pub fn new(settings: Arc<Settings>, catalog: Catalog, os_language: Option<String>) -> Self {
+    /// (LANG-2), `catalog` reflects whether the shell has a system engine,
+    /// and `default_hotkey` is the platform's default shortcut.
+    pub fn new(
+        settings: Arc<Settings>,
+        catalog: Catalog,
+        os_language: Option<String>,
+        default_hotkey: &'static Shortcut,
+    ) -> Self {
         Self {
             settings,
             catalog,
             os_language,
+            default_hotkey,
         }
     }
 }
@@ -60,7 +69,7 @@ impl SettingsSource for SettingsAdapter {
             keep_audio: settings.history_keeps_audio(),
             pause_media: settings.pause_media_during_recording(),
             sounds: settings.sound_feedback_enabled(),
-            hotkey: settings.hotkey(),
+            hotkey: settings.hotkey(self.default_hotkey),
             first_run_pending: settings.first_run_pending(),
             onboarding: OnboardingFlags {
                 onboarding_completed: settings.onboarding_completed(),

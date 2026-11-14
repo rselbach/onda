@@ -2655,7 +2655,7 @@ async fn hot_19_registration_failures_notify_per_episode() {
     let cases = [
         Case {
             name: "combo: every failure",
-            hotkey: Shortcut::default(),
+            hotkey: Shortcut::OPTION_SPACE,
             failures: 2,
             want: vec!["Hotkey Registration Failed"; 2],
         },

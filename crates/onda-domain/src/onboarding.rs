@@ -8,6 +8,7 @@
 
 use std::time::Duration;
 
+use crate::hotkey::KeyNames;
 use crate::platform::Platform;
 use crate::privacy_naming::PrivacyNaming;
 use crate::setup::{PermissionFix, try_it_placeholder};
@@ -907,24 +908,26 @@ pub struct ReadyStepView {
     /// Text after the hotkey keycaps.
     pub prompt_suffix: &'static str,
     /// Try-it field placeholder (WIN-6).
-    pub try_it_placeholder: &'static str,
+    pub try_it_placeholder: String,
     /// How long transcripts are kept, when history is on.
     pub retention_note: Option<String>,
 }
 
 /// Builds the Ready step (ONB-9). `computer_term` is what the platform
-/// calls the computer the transcripts are saved on.
+/// calls the computer the transcripts are saved on, and `names` writes the
+/// paste shortcut.
 pub fn ready_step(
     history_enabled: bool,
     retention: HistoryRetention,
     output_mode: OutputMode,
     computer_term: &str,
+    names: &KeyNames,
 ) -> ReadyStepView {
     ReadyStepView {
         title: "You're all set",
         prompt_prefix: "Press",
         prompt_suffix: "and start talking.",
-        try_it_placeholder: try_it_placeholder(output_mode),
+        try_it_placeholder: try_it_placeholder(output_mode, names),
         retention_note: retention_note(history_enabled, retention, computer_term),
     }
 }
@@ -2458,6 +2461,7 @@ mod tests {
                 tc.retention,
                 OutputMode::Clipboard,
                 tc.computer_term,
+                &KeyNames::MACOS,
             );
             assert_eq!(got.retention_note.as_deref(), tc.want_note, "{}", tc.name);
             assert_eq!(got.title, "You're all set", "{}", tc.name);

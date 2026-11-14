@@ -247,15 +247,16 @@ impl Settings {
         self.put_enum(mode)
     }
 
-    /// The dictation shortcut. Default `⌥ Space`; a stored value that does
-    /// not parse or fails HOT-4 reads as the default (HOT-5).
-    pub fn hotkey(&self) -> Shortcut {
+    /// The dictation shortcut. `default` is the platform's (HOT-2); a
+    /// stored value that does not parse or fails HOT-4 reads as it too
+    /// (HOT-5).
+    pub fn hotkey(&self, default: &Shortcut) -> Shortcut {
         let Some(raw) = self.raw(Key::Hotkey) else {
-            return Shortcut::default();
+            return default.clone();
         };
         Shortcut::from_setting(&raw).unwrap_or_else(|error| {
             tracing::warn!(key = %Key::Hotkey, %error, "invalid setting; using the default");
-            Shortcut::default()
+            default.clone()
         })
     }
 

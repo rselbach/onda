@@ -96,7 +96,15 @@ pub fn run(args: &Args, paths: &DataPaths, models_dir: &Path) -> Result<()> {
     apply_overrides(args, &settings)?;
     let os_language = os_language();
     let catalog = Catalog::new(None);
-    let settings_source = SettingsAdapter::new(settings.clone(), catalog.clone(), os_language);
+    // the terminal always reports Accessibility as trusted, so no copy
+    // names the permission
+    let platform = Platform::macos(PrivacyNaming::Accessibility);
+    let settings_source = SettingsAdapter::new(
+        settings.clone(),
+        catalog.clone(),
+        os_language,
+        platform.default_shortcut,
+    );
     let snapshot = settings_source.snapshot();
     if snapshot.first_run_pending {
         bail!(
@@ -143,9 +151,6 @@ pub fn run(args: &Args, paths: &DataPaths, models_dir: &Path) -> Result<()> {
     let terminal = Arc::new(Terminal {
         console: console.clone(),
     });
-    // the terminal always reports Accessibility as trusted, so no copy
-    // names the permission
-    let platform = Platform::macos(PrivacyNaming::Accessibility);
     let ports = Ports {
         text_output: terminal.clone(),
         permissions: terminal.clone(),

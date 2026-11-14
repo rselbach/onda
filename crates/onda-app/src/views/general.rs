@@ -169,7 +169,7 @@ pub fn general_page(inputs: GeneralInputs<'_>) -> GeneralPage {
         accessibility: accessibility_row(
             inputs.accessibility_granted,
             inputs.accessibility_needed,
-            inputs.platform.privacy_naming(),
+            inputs.platform,
         )
         .into(),
         input: input_picker(inputs.devices, inputs.selected_uid, inputs.platform.os_name),

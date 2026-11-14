@@ -232,7 +232,7 @@ impl From<PermissionRow> for PermissionRowView {
             title: row.title.to_owned(),
             granted: row.granted,
             granted_label: GRANTED_LABEL.to_owned(),
-            detail: row.detail.to_owned(),
+            detail: row.detail,
             detail_warning: row.needs_attention,
             fix: row.fix.map(PermissionFixButton::from),
         }

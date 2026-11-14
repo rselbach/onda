@@ -4,8 +4,9 @@
 use std::borrow::Cow;
 use std::fmt;
 
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize, Serializer};
 
+use super::key_names::KeyNames;
 use crate::platform::Platform;
 
 /// A key identified by its W3C `KeyboardEvent.code` name (HOT-1), such as
@@ -38,14 +39,14 @@ impl KeyCode {
     }
 
     /// The key's display name (HOT-6): letters and digits as themselves,
-    /// named keys spelled out, arrows and punctuation as glyphs, and
-    /// `Key <code>` for anything unknown.
-    pub fn display_name(&self) -> String {
-        if let Some(name) = named_key(self.as_str()) {
+    /// named keys spelled out the way `names` spells them, arrows and
+    /// punctuation as glyphs, and `Key <code>` for anything unknown.
+    pub fn display_name(&self, names: &KeyNames) -> String {
+        if let Some(name) = named_key(self.as_str(), names) {
             return name.to_owned();
         }
         if let Some(modifier) = ModifierKey::from_code(self.as_str()) {
-            return modifier.display_name().to_owned();
+            return names.modifier_key(modifier).to_owned();
         }
         let code = self.as_str();
         if let Some(rest) = code.strip_prefix("Key")
@@ -84,13 +85,13 @@ impl From<ModifierKey> for KeyCode {
 }
 
 // display names for named keys and punctuation, keyed by W3C code (HOT-6).
-// on macOS the key W3C calls `Backspace` is labelled Delete.
-fn named_key(code: &str) -> Option<&'static str> {
+// `Enter` and `Backspace` are the two a Mac keyboard labels differently.
+fn named_key(code: &str, names: &KeyNames) -> Option<&'static str> {
     let name = match code {
-        "Enter" => "Return",
+        "Enter" => names.enter,
         "Tab" => "Tab",
         "Space" => "Space",
-        "Backspace" => "Delete",
+        "Backspace" => names.backspace,
         "Escape" => "Escape",
         "CapsLock" => "Caps Lock",
         "Home" => "Home",
@@ -149,17 +150,7 @@ impl Modifier {
         Self::ALL.into_iter().find(|m| m.name() == name)
     }
 
-    /// The macOS glyph shown in shortcut displays and keycaps.
-    pub fn glyph(self) -> &'static str {
-        match self {
-            Self::Control => "⌃",
-            Self::Alt => "⌥",
-            Self::Shift => "⇧",
-            Self::Meta => "⌘",
-        }
-    }
-
-    fn bit(self) -> u8 {
+    const fn bit(self) -> u8 {
         match self {
             Self::Control => 1,
             Self::Alt => 1 << 1,
@@ -180,7 +171,7 @@ impl ModifierSet {
 
     /// Returns this set plus `modifier`.
     #[must_use]
-    pub fn with(self, modifier: Modifier) -> Self {
+    pub const fn with(self, modifier: Modifier) -> Self {
         Self(self.0 | modifier.bit())
     }
 
@@ -275,21 +266,6 @@ impl ModifierKey {
             Self::Fn => None,
         }
     }
-
-    /// The display name (HOT-6), e.g. `Option` or `Right Option`.
-    pub fn display_name(self) -> &'static str {
-        match self {
-            Self::ControlLeft => "Control",
-            Self::ControlRight => "Right Control",
-            Self::AltLeft => "Option",
-            Self::AltRight => "Right Option",
-            Self::ShiftLeft => "Shift",
-            Self::ShiftRight => "Right Shift",
-            Self::MetaLeft => "Command",
-            Self::MetaRight => "Right Command",
-            Self::Fn => "Fn",
-        }
-    }
 }
 
 /// Why a shortcut is not allowed (HOT-4).
@@ -302,20 +278,24 @@ pub enum ValidationError {
 }
 
 impl ValidationError {
-    /// The message shown under the recorder (HOT-10).
-    pub fn message(self) -> &'static str {
+    /// The message shown under the recorder (HOT-10), in the system's key
+    /// names.
+    pub fn message(self, names: &KeyNames) -> &'static str {
         match self {
             Self::EscapeReserved => "Escape is reserved for cancelling shortcut recording.",
-            Self::MissingRequiredModifier => {
-                "Shortcut must include Command, Control, or Option — or use a lone modifier like Right Option or Fn."
-            }
+            Self::MissingRequiredModifier => names.missing_modifier_message,
         }
     }
 }
 
 impl fmt::Display for ValidationError {
+    /// For logs and errors about a stored value, in the settings file's
+    /// own modifier names. Copy for the user is [`Self::message`].
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.message())
+        f.write_str(match self {
+            Self::EscapeReserved => "Escape is reserved for cancelling",
+            Self::MissingRequiredModifier => "a combo needs the control, alt, or meta modifier",
+        })
     }
 }
 
@@ -332,17 +312,21 @@ pub struct Shortcut {
     modifiers: ModifierSet,
 }
 
-impl Default for Shortcut {
-    /// `⌥ Space` (HOT-2).
-    fn default() -> Self {
-        Self {
-            key: KeyCode::SPACE,
-            modifiers: ModifierSet::EMPTY.with(Modifier::Alt),
-        }
-    }
-}
-
 impl Shortcut {
+    /// `⌥ Space`, the default on macOS (HOT-2).
+    pub const OPTION_SPACE: Self = Self {
+        key: KeyCode::SPACE,
+        modifiers: ModifierSet::EMPTY.with(Modifier::Alt),
+    };
+    /// Ctrl+Alt+Space, the default on Linux, where GNOME opens the window
+    /// menu on Alt+Space (HOT-2).
+    pub const CONTROL_ALT_SPACE: Self = Self {
+        key: KeyCode::SPACE,
+        modifiers: ModifierSet::EMPTY
+            .with(Modifier::Control)
+            .with(Modifier::Alt),
+    };
+
     /// Builds a shortcut, or reports the first HOT-4 rule it breaks.
     pub fn new(key: KeyCode, modifiers: ModifierSet) -> Result<Self, ValidationError> {
         validate(&key, modifiers)?;
@@ -387,29 +371,39 @@ impl Shortcut {
         platform.typing_permission.is_some() && self.is_lone_modifier()
     }
 
-    /// The display string (HOT-6), e.g. `⌃⌥ Space` or `Right Option`.
-    pub fn display(&self) -> String {
-        let glyphs: String = self.modifiers.iter().map(Modifier::glyph).collect();
-        let key = self.key.display_name();
-        if glyphs.is_empty() {
+    /// The display string (HOT-6) in the system's key names: `⌃⌥ Space`
+    /// or `Right Option` on macOS, `Ctrl+Alt+Space` or `Right Alt` on Linux.
+    pub fn display(&self, names: &KeyNames) -> String {
+        let key = self.key.display_name(names);
+        if self.modifiers.is_empty() {
             return key;
         }
-        format!("{glyphs} {key}")
+        let modifiers: Vec<&str> = self
+            .modifiers
+            .iter()
+            .map(|m| names.modifier(m).label)
+            .collect();
+        format!(
+            "{}{}{key}",
+            modifiers.join(names.modifier_separator),
+            names.key_separator
+        )
     }
 
-    /// One keycap label per modifier glyph plus one for the whole key name
-    /// (HOT-6): `⌃⌥ Space` gives `["⌃", "⌥", "Space"]`.
-    pub fn keycaps(&self) -> Vec<String> {
+    /// One keycap label per modifier plus one for the whole key name
+    /// (HOT-6): `⌃⌥ Space` gives `["⌃", "⌥", "Space"]`, and
+    /// `Ctrl+Alt+Space` gives `["Ctrl", "Alt", "Space"]`.
+    pub fn keycaps(&self, names: &KeyNames) -> Vec<String> {
         self.modifiers
             .iter()
-            .map(|m| m.glyph().to_owned())
-            .chain(std::iter::once(self.key.display_name()))
+            .map(|m| names.modifier(m).label.to_owned())
+            .chain(std::iter::once(self.key.display_name(names)))
             .collect()
     }
 
     /// Parses the settings form `{"key":"Space","modifiers":["alt"]}`
     /// strictly, so the settings layer can log why a value was rejected
-    /// (SET-2). Use the lenient [`Deserialize`] impl to read settings.
+    /// and fall back to the platform's default (HOT-5, SET-2).
     pub fn from_setting(value: &serde_json::Value) -> Result<Self, ShortcutSettingError> {
         let wire: ShortcutWire =
             serde_json::from_value(value.clone()).map_err(|_| ShortcutSettingError::Malformed)?;
@@ -455,6 +449,17 @@ pub enum ShortcutSettingError {
     Invalid(ValidationError),
 }
 
+impl ShortcutSettingError {
+    /// Why the value was rejected, for the person who typed it: a failed
+    /// validation reads in the system's key names.
+    pub fn message(self, names: &KeyNames) -> String {
+        match self {
+            Self::Malformed => self.to_string(),
+            Self::Invalid(err) => format!("invalid hotkey setting: {}", err.message(names)),
+        }
+    }
+}
+
 impl fmt::Display for ShortcutSettingError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -475,15 +480,6 @@ struct ShortcutWire {
 impl Serialize for Shortcut {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         self.to_wire().serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for Shortcut {
-    /// Lenient: any well-formed input that is not a valid shortcut reads back
-    /// as the default (HOT-5, SET-2).
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let value = serde_json::Value::deserialize(deserializer)?;
-        Ok(Self::from_setting(&value).unwrap_or_default())
     }
 }
 
@@ -550,12 +546,18 @@ mod tests {
     use Modifier::{Alt, Control, Meta, Shift};
 
     #[test]
-    fn default_shortcut_is_option_space_hot_2() {
-        let got = Shortcut::default();
-        assert_eq!(got.key(), &KeyCode::SPACE);
-        assert_eq!(got.modifiers(), mods(&[Alt]));
-        assert_eq!(got.display(), "⌥ Space");
-        assert_eq!(Shortcut::new(got.key().clone(), got.modifiers()), Ok(got));
+    fn default_shortcuts_are_valid_combos_hot_2() {
+        let cases = [
+            ("macOS", Shortcut::OPTION_SPACE, combo("Space", &[Alt])),
+            (
+                "Linux",
+                Shortcut::CONTROL_ALT_SPACE,
+                combo("Space", &[Control, Alt]),
+            ),
+        ];
+        for (name, got, want) in cases {
+            assert_eq!(got, want, "{name}");
+        }
     }
 
     #[test]
@@ -649,9 +651,17 @@ mod tests {
             ),
         ];
         for (name, err, want) in cases {
-            assert_eq!(err.message(), want, "{name}");
-            assert_eq!(err.to_string(), want, "{name}");
+            assert_eq!(err.message(&KeyNames::MACOS), want, "{name}");
         }
+    }
+
+    #[test]
+    fn validation_messages_use_the_systems_key_names() {
+        let got = ValidationError::MissingRequiredModifier.message(&KeyNames::LINUX);
+        assert_eq!(
+            got,
+            "Shortcut must include Ctrl, Alt, or Super — or use a lone modifier like Right Alt or Fn."
+        );
     }
 
     #[test]
@@ -683,7 +693,7 @@ mod tests {
             },
             Case {
                 name: "option space",
-                shortcut: Shortcut::default(),
+                shortcut: Shortcut::OPTION_SPACE,
                 want: None,
             },
         ];
@@ -705,7 +715,7 @@ mod tests {
         let linux = Platform::linux();
         let right_option = Shortcut::lone(ModifierKey::AltRight);
         let cases = [
-            ("option space", macos, Shortcut::default(), false),
+            ("option space", macos, Shortcut::OPTION_SPACE, false),
             ("right option", macos, right_option.clone(), true),
             (
                 "right option on macOS 27",
@@ -721,7 +731,12 @@ mod tests {
                 false,
             ),
             ("right option on Linux", linux, right_option, false),
-            ("option space on Linux", linux, Shortcut::default(), false),
+            (
+                "option space on Linux",
+                linux,
+                Shortcut::OPTION_SPACE,
+                false,
+            ),
         ];
         for (name, platform, shortcut, want) in cases {
             assert_eq!(shortcut.needs_accessibility(platform), want, "{name}");
@@ -736,7 +751,7 @@ mod tests {
                 combo("KeyA", &[Meta, Shift, Alt, Control]),
                 "⌃⌥⇧⌘ A",
             ),
-            ("option space", Shortcut::default(), "⌥ Space"),
+            ("option space", Shortcut::OPTION_SPACE, "⌥ Space"),
             (
                 "control option space",
                 combo("Space", &[Control, Alt]),
@@ -751,7 +766,38 @@ mod tests {
             ("unknown key", combo("Numpad1", &[Meta]), "⌘ Key Numpad1"),
         ];
         for (name, shortcut, want) in cases {
-            assert_eq!(shortcut.display(), want, "{name}");
+            assert_eq!(shortcut.display(&KeyNames::MACOS), want, "{name}");
+        }
+    }
+
+    #[test]
+    fn display_spells_names_on_linux_hot_6() {
+        let cases = [
+            (
+                "all modifiers in stable order",
+                combo("KeyA", &[Meta, Shift, Alt, Control]),
+                "Ctrl+Alt+Shift+Super+A",
+            ),
+            (
+                "control alt space",
+                Shortcut::CONTROL_ALT_SPACE,
+                "Ctrl+Alt+Space",
+            ),
+            (
+                "right alt",
+                Shortcut::lone(ModifierKey::AltRight),
+                "Right Alt",
+            ),
+            ("enter", combo("Enter", &[Control]), "Ctrl+Enter"),
+            ("backspace", combo("Backspace", &[Meta]), "Super+Backspace"),
+            (
+                "unknown key",
+                combo("Numpad1", &[Meta]),
+                "Super+Key Numpad1",
+            ),
+        ];
+        for (name, shortcut, want) in cases {
+            assert_eq!(shortcut.display(&KeyNames::LINUX), want, "{name}");
         }
     }
 
@@ -776,7 +822,26 @@ mod tests {
             ),
         ];
         for (name, shortcut, want) in cases {
-            assert_eq!(shortcut.keycaps(), want, "{name}");
+            assert_eq!(shortcut.keycaps(&KeyNames::MACOS), want, "{name}");
+        }
+    }
+
+    #[test]
+    fn keycaps_spell_names_on_linux_hot_6() {
+        let cases = [
+            (
+                "modifiers plus key",
+                Shortcut::CONTROL_ALT_SPACE,
+                vec!["Ctrl", "Alt", "Space"],
+            ),
+            (
+                "lone modifier keeps multi-word name",
+                Shortcut::lone(ModifierKey::MetaRight),
+                vec!["Right Super"],
+            ),
+        ];
+        for (name, shortcut, want) in cases {
+            assert_eq!(shortcut.keycaps(&KeyNames::LINUX), want, "{name}");
         }
     }
 
@@ -831,7 +896,7 @@ mod tests {
             ("IntlYen", "Key IntlYen"),
         ];
         for (code, want) in cases {
-            assert_eq!(key(code).display_name(), want, "{code}");
+            assert_eq!(key(code).display_name(&KeyNames::MACOS), want, "{code}");
         }
     }
 
@@ -856,7 +921,7 @@ mod tests {
         let cases = [
             (
                 "default",
-                Shortcut::default(),
+                Shortcut::OPTION_SPACE,
                 r#"{"key":"Space","modifiers":["alt"]}"#,
             ),
             (
@@ -873,88 +938,71 @@ mod tests {
         for (name, shortcut, want) in cases {
             let got = serde_json::to_string(&shortcut).expect("serialize");
             assert_eq!(got, want, "{name}");
-            let back: Shortcut = serde_json::from_str(&got).expect("deserialize");
-            assert_eq!(back, shortcut, "{name}");
+            let value: serde_json::Value = serde_json::from_str(&got).expect("json");
+            assert_eq!(Shortcut::from_setting(&value), Ok(shortcut), "{name}");
         }
     }
 
     #[test]
-    fn settings_read_is_lenient_hot_5_set_2() {
+    fn settings_read_rejects_what_it_cannot_use_hot_5_set_2() {
         let cases = [
             (
                 "valid combo",
                 r#"{"key":"KeyD","modifiers":["control","alt"]}"#,
-                combo("KeyD", &[Control, Alt]),
+                Some(combo("KeyD", &[Control, Alt])),
             ),
             (
                 "modifiers in any order",
                 r#"{"key":"KeyD","modifiers":["alt","control"]}"#,
-                combo("KeyD", &[Control, Alt]),
+                Some(combo("KeyD", &[Control, Alt])),
             ),
             (
                 "duplicate modifiers",
                 r#"{"key":"KeyD","modifiers":["alt","alt"]}"#,
-                combo("KeyD", &[Alt]),
+                Some(combo("KeyD", &[Alt])),
             ),
             (
                 "extra fields ignored",
                 r#"{"key":"Fn","modifiers":[],"by":"Troy Barnes"}"#,
-                Shortcut::lone(ModifierKey::Fn),
+                Some(Shortcut::lone(ModifierKey::Fn)),
             ),
             (
                 "fails validation",
                 r#"{"key":"KeyA","modifiers":["shift"]}"#,
-                Shortcut::default(),
+                None,
             ),
-            (
-                "escape",
-                r#"{"key":"Escape","modifiers":["alt"]}"#,
-                Shortcut::default(),
-            ),
+            ("escape", r#"{"key":"Escape","modifiers":["alt"]}"#, None),
             (
                 "unknown modifier",
                 r#"{"key":"KeyA","modifiers":["hyper","alt"]}"#,
-                Shortcut::default(),
+                None,
             ),
             (
                 "fn as a modifier",
                 r#"{"key":"KeyA","modifiers":["fn","alt"]}"#,
-                Shortcut::default(),
+                None,
             ),
-            (
-                "empty key",
-                r#"{"key":"","modifiers":["alt"]}"#,
-                Shortcut::default(),
-            ),
+            ("empty key", r#"{"key":"","modifiers":["alt"]}"#, None),
             (
                 "junk key",
                 r#"{"key":"Greendale Community College","modifiers":["alt"]}"#,
-                Shortcut::default(),
+                None,
             ),
-            (
-                "missing modifiers",
-                r#"{"key":"AltRight"}"#,
-                Shortcut::default(),
-            ),
-            (
-                "missing key",
-                r#"{"modifiers":["alt"]}"#,
-                Shortcut::default(),
-            ),
+            ("missing modifiers", r#"{"key":"AltRight"}"#, None),
+            ("missing key", r#"{"modifiers":["alt"]}"#, None),
             (
                 "jabber integer key code",
                 r#"{"key":49,"modifiers":["alt"]}"#,
-                Shortcut::default(),
+                None,
             ),
-            ("huge number", "5000000000", Shortcut::default()),
-            ("string", r#""alt+Space""#, Shortcut::default()),
-            ("null", "null", Shortcut::default()),
-            ("array", r#"["Space","alt"]"#, Shortcut::default()),
+            ("huge number", "5000000000", None),
+            ("string", r#""alt+Space""#, None),
+            ("null", "null", None),
+            ("array", r#"["Space","alt"]"#, None),
         ];
         for (name, input, want) in cases {
-            let got: Shortcut =
-                serde_json::from_str(input).expect("lenient read never fails on valid JSON");
-            assert_eq!(got, want, "{name}");
+            let value: serde_json::Value = serde_json::from_str(input).expect("json");
+            assert_eq!(Shortcut::from_setting(&value).ok(), want, "{name}");
         }
     }
 
@@ -964,7 +1012,7 @@ mod tests {
             (
                 "valid",
                 r#"{"key":"Space","modifiers":["alt"]}"#,
-                Ok(Shortcut::default()),
+                Ok(Shortcut::OPTION_SPACE),
             ),
             (
                 "malformed",
@@ -982,6 +1030,34 @@ mod tests {
         for (name, input, want) in cases {
             let value: serde_json::Value = serde_json::from_str(input).expect("json");
             assert_eq!(Shortcut::from_setting(&value), want, "{name}");
+        }
+    }
+
+    #[test]
+    fn setting_error_messages_use_the_systems_key_names() {
+        let invalid = ShortcutSettingError::Invalid(ValidationError::MissingRequiredModifier);
+        let cases = [
+            (
+                "malformed",
+                ShortcutSettingError::Malformed,
+                &KeyNames::MACOS,
+                "malformed hotkey setting",
+            ),
+            (
+                "invalid on macOS",
+                invalid,
+                &KeyNames::MACOS,
+                "invalid hotkey setting: Shortcut must include Command, Control, or Option — or use a lone modifier like Right Option or Fn.",
+            ),
+            (
+                "invalid on Linux",
+                invalid,
+                &KeyNames::LINUX,
+                "invalid hotkey setting: Shortcut must include Ctrl, Alt, or Super — or use a lone modifier like Right Alt or Fn.",
+            ),
+        ];
+        for (name, err, names, want) in cases {
+            assert_eq!(err.message(names), want, "{name}");
         }
     }
 

@@ -485,7 +485,7 @@ impl App {
         self.ui(UiMsg::SetActivationMode(mode));
     }
 
-    /// "Reset to ⌥ Space" (WIN-16).
+    /// "Reset to ⌥ Space": back to the platform's default shortcut (WIN-16).
     pub fn reset_hotkey(&self) {
         self.ui(UiMsg::ResetHotkey);
     }

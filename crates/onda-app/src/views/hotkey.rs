@@ -2,14 +2,10 @@
 //! recorder, and Fn warning arrive in `HotkeyChanged`.
 
 use onda_domain::hotkey::Shortcut;
+use onda_domain::platform::Platform;
 use onda_domain::types::ActivationMode;
 
 use super::ButtonView;
-
-/// The footer under the shortcut section (WIN-16).
-const FOOTER: &str = "Shortcuts must include Command, Control, or Option — or use a single \
-                      modifier key like Right Option or Fn on its own — so Onda does not steal \
-                      every innocent keystroke like a gremlin.";
 
 /// One activation mode in the picker (WIN-17).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,7 +21,8 @@ pub struct ActivationOption {
 pub struct HotkeyPage {
     /// "Press to talk", the row with the keycaps.
     pub press_to_talk_label: String,
-    /// "Reset to ⌥ Space", disabled when already the default.
+    /// "Reset to ⌥ Space", naming the platform's default shortcut.
+    /// Disabled when already the default.
     pub reset: ButtonView,
     /// Footer under the shortcut section.
     pub footer: String,
@@ -39,16 +36,22 @@ pub struct HotkeyPage {
     pub activation_description: String,
 }
 
-/// Builds the Hotkey page.
-pub fn hotkey_page(shortcut: &Shortcut, activation: ActivationMode) -> HotkeyPage {
-    let default = Shortcut::default();
+/// Builds the Hotkey page for `platform`, which names the keys and holds
+/// the default shortcut.
+pub fn hotkey_page(
+    shortcut: &Shortcut,
+    activation: ActivationMode,
+    platform: Platform,
+) -> HotkeyPage {
+    let names = platform.key_names;
+    let default = platform.default_shortcut;
     HotkeyPage {
         press_to_talk_label: "Press to talk".to_owned(),
         reset: ButtonView::new(
-            &format!("Reset to {}", default.display()),
-            *shortcut != default,
+            &format!("Reset to {}", default.display(names)),
+            shortcut != default,
         ),
-        footer: FOOTER.to_owned(),
+        footer: names.hotkey_footer.to_owned(),
         activation_label: "Activation".to_owned(),
         activation_options: ActivationMode::ALL
             .into_iter()
@@ -66,21 +69,76 @@ pub fn hotkey_page(shortcut: &Shortcut, activation: ActivationMode) -> HotkeyPag
 mod tests {
     use super::*;
     use onda_domain::hotkey::ModifierKey;
+    use onda_domain::privacy_naming::PrivacyNaming;
 
     #[test]
-    fn win_16_reset_is_disabled_for_the_default() {
+    fn win_16_reset_is_disabled_for_the_platforms_default() {
+        let macos = Platform::macos(PrivacyNaming::Accessibility);
+        let linux = Platform::linux();
+        let right_option = Shortcut::lone(ModifierKey::AltRight);
         let cases = [
-            ("default", Shortcut::default(), false),
-            ("right option", Shortcut::lone(ModifierKey::AltRight), true),
+            (
+                "the macOS default",
+                macos,
+                Shortcut::OPTION_SPACE,
+                "Reset to ⌥ Space",
+                false,
+            ),
+            (
+                "right option",
+                macos,
+                right_option.clone(),
+                "Reset to ⌥ Space",
+                true,
+            ),
+            (
+                "the Linux default",
+                linux,
+                Shortcut::CONTROL_ALT_SPACE,
+                "Reset to Ctrl+Alt+Space",
+                false,
+            ),
+            (
+                "the macOS default on Linux",
+                linux,
+                Shortcut::OPTION_SPACE,
+                "Reset to Ctrl+Alt+Space",
+                true,
+            ),
+            (
+                "right alt on Linux",
+                linux,
+                right_option,
+                "Reset to Ctrl+Alt+Space",
+                true,
+            ),
         ];
-        for (name, shortcut, want) in cases {
-            let page = hotkey_page(&shortcut, ActivationMode::Toggle);
-            assert_eq!(page.reset.enabled, want, "{name}");
-            assert_eq!(page.reset.title, "Reset to ⌥ Space", "{name}");
+        for (name, platform, shortcut, want_title, want_enabled) in cases {
+            let page = hotkey_page(&shortcut, ActivationMode::Toggle, platform);
+            assert_eq!(page.reset.title, want_title, "{name}");
+            assert_eq!(page.reset.enabled, want_enabled, "{name}");
             assert_eq!(
                 page.activation_description, "Tap once to start recording, tap again to stop.",
                 "{name}"
             );
+        }
+    }
+
+    #[test]
+    fn win_16_the_footer_names_the_platforms_keys() {
+        let cases = [
+            (
+                Platform::macos(PrivacyNaming::Accessibility),
+                "Shortcuts must include Command, Control, or Option — or use a single modifier key like Right Option or Fn on its own — so Onda does not steal every innocent keystroke like a gremlin.",
+            ),
+            (
+                Platform::linux(),
+                "Shortcuts must include Ctrl, Alt, or Super — or use a single modifier key like Right Alt or Fn on its own — so Onda does not steal every innocent keystroke like a gremlin.",
+            ),
+        ];
+        for (platform, want) in cases {
+            let page = hotkey_page(&Shortcut::OPTION_SPACE, ActivationMode::Hold, platform);
+            assert_eq!(page.footer, want, "{}", platform.os_name);
         }
     }
 }

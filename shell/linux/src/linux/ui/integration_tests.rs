@@ -375,11 +375,21 @@ pub(super) fn exercise_pages(owner: &Rc<Window>) {
     assert_eq!(options(&activation), ["Hold", "Toggle", "Automatic"]);
     entry.set_text("Ctrl+Alt+G");
     entry.emit_by_name::<()>("apply", &[]);
+    let default = owner.core.platform.default_shortcut;
     wait_for(|| {
-        super::super::hotkeys::trigger(&owner.core.settings.hotkey()).unwrap() == "CTRL+ALT+G"
+        super::super::hotkeys::trigger(&owner.core.settings.hotkey(default)).unwrap()
+            == "CTRL+ALT+G"
     });
+    let reset = || {
+        widgets::<gtk::Button>(&owner.hotkey.widget)
+            .into_iter()
+            .find(|button| button.label().as_deref() == Some("Reset to Ctrl+Alt+Space"))
+    };
+    wait_for(|| reset().is_some_and(|button| button.is_sensitive()));
     button(&owner.hotkey.widget, "Reset to Ctrl+Alt+Space").emit_clicked();
-    wait_for(|| owner.core.settings.hotkey() == super::parse_shortcut("Ctrl+Alt+Space").unwrap());
+    wait_for(|| owner.core.settings.hotkey(default) == *default);
+    wait_for(|| reset().is_some_and(|button| !button.is_sensitive()));
+    assert_eq!(entry.text(), "Ctrl+Alt+Space");
 
     owner.stack.set_visible_child_name("history");
     wait_for(|| text_visible(&owner.history.widget, "Troy Barnes"));

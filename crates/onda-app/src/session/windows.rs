@@ -6,7 +6,7 @@
 use std::collections::{HashMap, VecDeque};
 
 use onda_domain::cleanup::{CleanupError, CleanupModel, CleanupProvider};
-use onda_domain::hotkey::{HotkeyPreset, Shortcut};
+use onda_domain::hotkey::HotkeyPreset;
 use onda_domain::languages::LanguageSetting;
 use onda_domain::messages::{LoginItemError, LoginItemRegistryStatus, LoginItemStatus};
 use onda_domain::migration::{Migration, NoticeChoice};
@@ -321,7 +321,7 @@ impl Actor {
             UiMsg::SetActivationMode(mode) => {
                 self.apply_setting(SettingChange::ActivationMode(mode));
             }
-            UiMsg::ResetHotkey => self.set_hotkey(&Shortcut::default()),
+            UiMsg::ResetHotkey => self.set_hotkey(self.ports.platform.default_shortcut),
             UiMsg::OpenKeyboardSettings => self.effects.send(Effect::OpenKeyboardSettings),
             UiMsg::SelectLanguage(language) => {
                 self.apply_setting(SettingChange::Language(language));
@@ -681,10 +681,12 @@ impl Actor {
     fn publish_page(&mut self, page: MainWindowSection) {
         match page {
             MainWindowSection::GettingStarted => {
+                let names = self.ports.platform.key_names;
                 let view = getting_started_page(
                     &self.checklist(),
-                    self.settings.hotkey.keycaps(),
+                    self.settings.hotkey.keycaps(names),
                     self.settings.output_mode,
+                    names,
                 );
                 if self.ui.published.getting_started.as_ref() != Some(&view) {
                     self.events
@@ -701,7 +703,11 @@ impl Actor {
                 }
             }
             MainWindowSection::Hotkey => {
-                let view = hotkey_page(&self.settings.hotkey, self.settings.activation_mode);
+                let view = hotkey_page(
+                    &self.settings.hotkey,
+                    self.settings.activation_mode,
+                    self.ports.platform,
+                );
                 if self.ui.published.hotkey.as_ref() != Some(&view) {
                     self.events
                         .emit(Event::HotkeyPageChanged(Box::new(view.clone())));

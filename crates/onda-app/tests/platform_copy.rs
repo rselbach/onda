@@ -304,7 +304,7 @@ fn next_message(message: Option<&UserMessage>) -> Option<UserMessage> {
             Platform::linux(),
         ))
     };
-    let combo = failed(Shortcut::default());
+    let combo = failed(Shortcut::CONTROL_ALT_SPACE);
     Some(match message {
         None => ModelNotReady,
         Some(ModelNotReady) => ModelNotDownloaded,

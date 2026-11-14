@@ -941,7 +941,7 @@ mod tests {
             Case {
                 name: "combo hotkey failed",
                 message: UserMessage::HotkeyRegistrationFailed(RegistrationFailureNotice::new(
-                    &Shortcut::default(),
+                    &Shortcut::OPTION_SPACE,
                     -9878,
                     Platform::macos(PrivacyNaming::Accessibility),
                 )),

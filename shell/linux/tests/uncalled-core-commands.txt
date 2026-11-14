@@ -28,7 +28,6 @@ onboarding_use_clipboard         never the link sits on the Permissions step, wh
 open_keyboard_settings           never it sits next to the Fn warning, and Linux has no Fn shortcuts
 open_login_items                 never Linux autostart needs no approval, so the caption never offers it
 recorder_event                   #13 shortcut recorder
-reset_hotkey                     #8 reset button on the Hotkey page
 run_setup_again                  #17 Getting Started page
 setup_action                     #17 Getting Started page
 shutdown                         never the shell owns the runtime and calls shutdown_async

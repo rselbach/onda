@@ -301,6 +301,7 @@ pub fn onboarding_view(inputs: OnboardingInputs<'_>) -> OnboardingView {
 }
 
 fn content(inputs: &OnboardingInputs<'_>) -> OnboardingContent {
+    let names = inputs.platform.key_names;
     match inputs.wizard.step() {
         OnboardingStep::Welcome => OnboardingContent::Welcome {
             title: WELCOME_TITLE.to_owned(),
@@ -353,8 +354,8 @@ fn content(inputs: &OnboardingInputs<'_>) -> OnboardingContent {
                 .map(|preset| {
                     let shortcut = preset.shortcut();
                     HotkeyPresetChoice {
-                        keycaps: shortcut.keycaps(),
-                        detail: preset.detail().to_owned(),
+                        keycaps: shortcut.keycaps(names),
+                        detail: preset.detail(names),
                         needs_accessibility: shortcut.needs_accessibility(inputs.platform),
                         selected: shortcut == *inputs.shortcut,
                         warning: fn_key_warning(&shortcut, inputs.globe).map(str::to_owned),
@@ -364,7 +365,7 @@ fn content(inputs: &OnboardingInputs<'_>) -> OnboardingContent {
             let step = hotkey_step(
                 inputs.activation.description(),
                 &choices,
-                &inputs.shortcut.keycaps(),
+                &inputs.shortcut.keycaps(names),
                 inputs.env.accessibility_granted,
             );
             let (custom_keycaps, custom_label) = match step.custom_label {
@@ -415,13 +416,14 @@ fn content(inputs: &OnboardingInputs<'_>) -> OnboardingContent {
                 inputs.retention,
                 inputs.output_mode,
                 inputs.platform.computer_term,
+                names,
             );
             OnboardingContent::Ready {
                 title: step.title.to_owned(),
                 prompt_prefix: step.prompt_prefix.to_owned(),
-                keycaps: inputs.shortcut.keycaps(),
+                keycaps: inputs.shortcut.keycaps(names),
                 prompt_suffix: step.prompt_suffix.to_owned(),
-                try_it_placeholder: step.try_it_placeholder.to_owned(),
+                try_it_placeholder: step.try_it_placeholder,
                 retention_note: step.retention_note,
             }
         }

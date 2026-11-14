@@ -86,10 +86,10 @@ pub struct RegistrationFailureNotice {
 
 impl RegistrationFailureNotice {
     /// The notice for `shortcut` failing with OS status `status` (HOT-19).
-    /// A lone modifier is explained by the typing permission only where
-    /// the platform has one.
+    /// The shortcut reads in `platform`'s key names. A lone modifier is
+    /// explained by the typing permission only where the platform has one.
     pub fn new(shortcut: &Shortcut, status: i32, platform: Platform) -> Self {
-        let display = shortcut.display();
+        let display = shortcut.display(platform.key_names);
         let reason = match platform.typing_permission {
             Some(naming) if shortcut.is_lone_modifier() => format!(
                 "Could not register {display} as a global hotkey. {}",
@@ -266,7 +266,7 @@ impl HotkeyRoute {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hotkey::shortcut::{KeyCode, Modifier, ModifierKey};
+    use crate::hotkey::shortcut::{Modifier, ModifierKey};
     use crate::privacy_naming::PrivacyNaming;
 
     fn secs(s: f64) -> MonoTime {
@@ -576,7 +576,7 @@ mod tests {
             },
         ];
         let lone = Shortcut::lone(ModifierKey::AltRight);
-        let combo = Shortcut::default();
+        let combo = Shortcut::OPTION_SPACE;
         for tc in cases {
             let mut retry = RegistrationRetry::new();
             let mut got = Vec::new();
@@ -617,7 +617,7 @@ mod tests {
         let cases = [
             (
                 "combo",
-                Shortcut::default(),
+                Shortcut::OPTION_SPACE,
                 -9878,
                 macos_26,
                 "Could not register the global hotkey (⌥ Space). It may be in use by another application. OSStatus: -9878",
@@ -638,7 +638,7 @@ mod tests {
             ),
             (
                 "combo on macOS 27",
-                Shortcut::default(),
+                Shortcut::OPTION_SPACE,
                 -9878,
                 macos_27,
                 "Could not register the global hotkey (⌥ Space). It may be in use by another application. OSStatus: -9878",
@@ -652,17 +652,17 @@ mod tests {
             ),
             (
                 "combo on Linux has no status name",
-                Shortcut::default(),
+                Shortcut::CONTROL_ALT_SPACE,
                 1,
                 Platform::linux(),
-                "Could not register the global hotkey (⌥ Space). It may be in use by another application.",
+                "Could not register the global hotkey (Ctrl+Alt+Space). It may be in use by another application.",
             ),
             (
                 "lone modifier on Linux has no typing permission to name",
                 Shortcut::lone(ModifierKey::AltRight),
                 1,
                 Platform::linux(),
-                "Could not register the global hotkey (Right Option). It may be in use by another application.",
+                "Could not register the global hotkey (Right Alt). It may be in use by another application.",
             ),
         ];
         for (name, shortcut, status, platform, want) in cases {
@@ -721,16 +721,15 @@ mod tests {
     fn cancel_modifiers_add_the_shortcuts_own_hot_34_deviation() {
         let alt = ModifierSet::EMPTY.with(Modifier::Alt);
         let control_alt = alt.with(Modifier::Control);
-        let space = KeyCode::SPACE;
         let cases = [
             (
                 "option space adds option escape",
-                Shortcut::default(),
+                Shortcut::OPTION_SPACE,
                 vec![ModifierSet::EMPTY, alt],
             ),
             (
                 "every combo modifier is kept",
-                Shortcut::new(space, control_alt).unwrap_or_default(),
+                Shortcut::CONTROL_ALT_SPACE,
                 vec![ModifierSet::EMPTY, control_alt],
             ),
             (

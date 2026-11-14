@@ -37,7 +37,7 @@ use onda_domain::cleanup::{
     ModelListing, OnDeviceStatus, default_model,
 };
 use onda_domain::history::{HistoryEntry, NewEntry, RecentTranscript, plan_retention};
-use onda_domain::hotkey::{GlobeKeyAction, HotkeyView, ModifierSet, Shortcut};
+use onda_domain::hotkey::{GlobeKeyAction, HotkeyView, KeyNames, ModifierSet, Shortcut};
 use onda_domain::language_menu::recent_languages;
 use onda_domain::languages::{Language, LanguageSetting};
 use onda_domain::messages::LoginItemRegistryStatus;
@@ -354,8 +354,10 @@ impl Power for FakeShell {
 
 impl HotkeySource for FakeShell {
     fn register(&self, shortcut: &Shortcut) -> Result<(), i32> {
-        self.log
-            .push(format!("hotkey:register {}", shortcut.display()));
+        self.log.push(format!(
+            "hotkey:register {}",
+            shortcut.display(&KeyNames::MACOS)
+        ));
         lock(&self.register_results).pop_front().unwrap_or(Ok(()))
     }
 
@@ -1090,8 +1092,10 @@ impl SettingsSource for FakeSettings {
     }
 
     fn set_hotkey(&self, shortcut: &Shortcut) -> Result<(), String> {
-        self.log
-            .push(format!("settings:hotkey {}", shortcut.display()));
+        self.log.push(format!(
+            "settings:hotkey {}",
+            shortcut.display(&KeyNames::MACOS)
+        ));
         lock(&self.settings).hotkey = shortcut.clone();
         Ok(())
     }
@@ -1120,7 +1124,7 @@ pub fn default_settings() -> Settings {
         keep_audio: false,
         pause_media: false,
         sounds: true,
-        hotkey: Shortcut::default(),
+        hotkey: Shortcut::OPTION_SPACE,
         first_run_pending: false,
         onboarding: OnboardingFlags {
             onboarding_completed: true,

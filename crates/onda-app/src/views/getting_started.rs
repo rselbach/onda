@@ -1,5 +1,6 @@
 //! The Getting Started page (WIN-4..WIN-7).
 
+use onda_domain::hotkey::KeyNames;
 use onda_domain::setup::{
     SetupAction, SetupChecklist, SetupStepId, SetupStepStatus, try_it_placeholder,
 };
@@ -58,6 +59,7 @@ pub fn getting_started_page(
     checklist: &SetupChecklist,
     keycaps: Vec<String>,
     output_mode: OutputMode,
+    names: &KeyNames,
 ) -> GettingStartedPage {
     GettingStartedPage {
         ready_line: checklist.ready_line().map(str::to_owned),
@@ -79,6 +81,6 @@ pub fn getting_started_page(
         try_it_prefix: "Press".to_owned(),
         keycaps,
         try_it_suffix: "and speak.".to_owned(),
-        try_it_placeholder: try_it_placeholder(output_mode).to_owned(),
+        try_it_placeholder: try_it_placeholder(output_mode, names),
     }
 }

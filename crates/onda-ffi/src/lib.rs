@@ -34,7 +34,9 @@ use onda_asr_coreml::ParakeetEngine;
 use onda_asr_coreml::manifest::manifest;
 use onda_audio::{AudioCapture, AudioDeviceEvents, DeviceSelection, PollingDeviceEvents};
 use onda_cleanup::CleanupClient;
-use onda_domain::hotkey::{HeldModifiers, KeyCode, ModifierFlagsChange, RecorderEvent, Shortcut};
+use onda_domain::hotkey::{
+    HeldModifiers, KeyCode, KeyNames, ModifierFlagsChange, RecorderEvent, Shortcut,
+};
 use onda_domain::messages;
 use onda_domain::models::{Catalog, ModelId};
 use onda_domain::platform::Platform;
@@ -212,6 +214,7 @@ impl OndaCore {
             settings.clone(),
             catalog.clone(),
             os_language,
+            Platform::macos(privacy_naming).default_shortcut,
         ));
 
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -382,8 +385,8 @@ impl OndaCore {
     pub fn set_hotkey(&self, key: String, modifiers: HotkeyModifiers) -> Result<(), HotkeyError> {
         let invalid = |message: String| HotkeyError::Invalid { message };
         let key = KeyCode::parse(&key).ok_or_else(|| invalid(format!("Unknown key {key}")))?;
-        let shortcut =
-            Shortcut::new(key, modifiers.into()).map_err(|error| invalid(error.to_string()))?;
+        let shortcut = Shortcut::new(key, modifiers.into())
+            .map_err(|error| invalid(error.message(&KeyNames::MACOS).to_owned()))?;
         self.with_app(|app| app.set_hotkey(shortcut));
         Ok(())
     }

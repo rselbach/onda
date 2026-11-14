@@ -210,7 +210,7 @@ impl Actor {
         match outcome {
             RegisterOutcome::Registered => {
                 tracing::info!(
-                    hotkey = %self.settings.hotkey.display(),
+                    hotkey = %self.settings.hotkey.display(self.ports.platform.key_names),
                     retried = self.hotkeys.retry.is_pending(),
                     "registered the dictation hotkey"
                 );
@@ -247,7 +247,7 @@ impl Actor {
     fn registration_failed(&mut self, status: i32, trusted: bool) {
         tracing::error!(
             status,
-            hotkey = %self.settings.hotkey.display(),
+            hotkey = %self.settings.hotkey.display(self.ports.platform.key_names),
             "could not register the dictation hotkey"
         );
         match self.hotkeys.mailbox.report(status) {

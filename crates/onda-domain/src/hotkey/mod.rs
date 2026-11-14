@@ -8,6 +8,7 @@
 
 mod gesture;
 mod globe;
+mod key_names;
 mod preset;
 mod press;
 mod recorder;
@@ -21,14 +22,15 @@ pub use gesture::{
     gesture_input_for_key_down,
 };
 pub use globe::{GlobeKeyAction, OPEN_KEYBOARD_SETTINGS_TITLE, fn_key_warning};
+pub use key_names::{KeyNames, ModifierNames};
 pub use preset::HotkeyPreset;
 pub use press::{
     AUTOMATIC_HOLD_THRESHOLD, HOLD_TAP_THRESHOLD, PressIntent, PressRouter, SessionSnapshot,
     provisional_confirmation_delay,
 };
 pub use recorder::{
-    RECORD_BUTTON_TITLE, RECORDER_CANCEL_TITLE, RECORDING_BUTTON_TITLE, RECORDING_HELP_TEXT,
-    RecorderEvent, RecorderMessage, RecorderOutcome, ShortcutRecorder,
+    RECORD_BUTTON_TITLE, RECORDER_CANCEL_TITLE, RECORDING_BUTTON_TITLE, RecorderEvent,
+    RecorderMessage, RecorderOutcome, ShortcutRecorder,
 };
 pub use registration::{
     ACCESSIBILITY_POLL_INTERVAL, CANCEL_HOTKEY_ID, DICTATION_HOTKEY_ID, FailureMailbox,

@@ -5,6 +5,7 @@
 //! A new fact is a field here, set in [`Platform::macos`] and
 //! [`Platform::linux`].
 
+use crate::hotkey::{KeyNames, Shortcut};
 use crate::privacy_naming::PrivacyNaming;
 
 /// What the core knows about the system it runs on.
@@ -34,6 +35,12 @@ pub struct Platform {
     pub typing_permission: Option<PrivacyNaming>,
     /// The OS asks the user before an app may record from the microphone.
     pub microphone_permission: bool,
+    /// How the system writes keys and shortcuts: `⌥ Space`,
+    /// `Ctrl+Alt+Space`.
+    pub key_names: &'static KeyNames,
+    /// The dictation shortcut until the user picks one, and what Reset
+    /// restores (HOT-2).
+    pub default_shortcut: &'static Shortcut,
 }
 
 impl Platform {
@@ -49,6 +56,8 @@ impl Platform {
             excludes_from_backups: true,
             typing_permission: Some(typing_permission),
             microphone_permission: true,
+            key_names: &KeyNames::MACOS,
+            default_shortcut: &Shortcut::OPTION_SPACE,
         }
     }
 
@@ -65,6 +74,8 @@ impl Platform {
             excludes_from_backups: false,
             typing_permission: None,
             microphone_permission: false,
+            key_names: &KeyNames::LINUX,
+            default_shortcut: &Shortcut::CONTROL_ALT_SPACE,
         }
     }
 
@@ -80,6 +91,22 @@ impl Platform {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_default_shortcut_reads_the_platforms_way_hot_2() {
+        let cases = [
+            (
+                "macOS",
+                Platform::macos(PrivacyNaming::Accessibility),
+                "⌥ Space",
+            ),
+            ("Linux", Platform::linux(), "Ctrl+Alt+Space"),
+        ];
+        for (name, platform, want) in cases {
+            let got = platform.default_shortcut.display(platform.key_names);
+            assert_eq!(got, want, "{name}");
+        }
+    }
 
     #[test]
     fn privacy_naming_follows_the_typing_permission() {
