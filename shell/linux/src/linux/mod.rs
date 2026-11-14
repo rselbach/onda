@@ -2,6 +2,7 @@
 
 mod clipboard;
 mod core;
+mod field;
 mod hotkeys;
 mod media;
 mod output;

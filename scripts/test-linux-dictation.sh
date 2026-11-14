@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Exercise a real GTK window, virtual microphone, inference, X11 paste, the
-# session's claim on Escape, the tray menu, media pause and mute, and sound
-# cues against a private bus and audio server. With the Unified model as a
-# fourth argument, also exercise live preview.
+# join to the text before the caret, the session's claim on Escape, the tray
+# menu, media pause and mute, and sound cues against a private bus, audio
+# server, and accessibility bus. With the Unified model as a fourth argument,
+# also exercise live preview.
 set -euo pipefail
 
 cleanup() {
@@ -10,6 +11,7 @@ cleanup() {
   if [[ -n "${app_pid:-}" ]]; then kill "${app_pid}" 2>/dev/null || true; fi
   if [[ -n "${target_pid:-}" ]]; then kill "${target_pid}" 2>/dev/null || true; fi
   if [[ -n "${other_pid:-}" ]]; then kill "${other_pid}" 2>/dev/null || true; fi
+  if [[ -n "${secret_pid:-}" ]]; then kill "${secret_pid}" 2>/dev/null || true; fi
   if [[ -n "${music_pid:-}" ]]; then kill "${music_pid}" 2>/dev/null || true; fi
   if [[ -n "${player_pid:-}" ]]; then kill "${player_pid}" 2>/dev/null || true; fi
   if [[ -n "${toggle_pid:-}" ]]; then kill "${toggle_pid}" 2>/dev/null || true; fi
@@ -19,6 +21,7 @@ cleanup() {
   if [[ -n "${pulse_pid:-}" ]]; then kill "${pulse_pid}" 2>/dev/null || true; fi
   if [[ -n "${wireplumber_pid:-}" ]]; then kill "${wireplumber_pid}" 2>/dev/null || true; fi
   if [[ -n "${pipewire_pid:-}" ]]; then kill "${pipewire_pid}" 2>/dev/null || true; fi
+  if [[ -n "${a11y_pid:-}" ]]; then kill "${a11y_pid}" 2>/dev/null || true; fi
   if [[ -n "${display_pid:-}" ]]; then kill "${display_pid}" 2>/dev/null || true; fi
   if (( status != 0 )); then
     cat "${work}/onda.log" >&2 || true
@@ -62,9 +65,12 @@ write_settings() {
 JSON
 }
 
-# launcher, when set, is a command that runs Onda, such as taskset
+# launcher, when set, is a command that runs Onda, such as taskset. At debug
+# level the field reader says why a read failed, which the log shows when a
+# join check fails.
 start_onda() {
   PIPEWIRE_PROPS='{ stream.capture.sink = true }' \
+    RUST_LOG='onda=info,onda::linux::field=debug' \
     "${launcher[@]}" "${binary}" "$@" >> "${work}/onda.log" 2>&1 &
   app_pid=$!
   wait_ready
@@ -93,6 +99,17 @@ tray_watcher_ready() {
 
 target_is_empty() {
   [[ ! -s "${work}/transcript" ]]
+}
+
+a11y_bus_ready() {
+  gdbus call --session --dest org.a11y.Bus --object-path /org/a11y/bus \
+    --method org.a11y.Bus.GetAddress > /dev/null 2>&1
+}
+
+# Types text into the focused field for the next dictation to follow.
+type_before_caret() {
+  xdotool type "$1"
+  wait_until 'typing to reach the field' rg -qF "$1" "$2"
 }
 
 # No window manager runs here, so the test names the active window as one
@@ -322,6 +339,12 @@ ENTRY
   export DISPLAY
   dbus-update-activation-environment DISPLAY XDG_RUNTIME_DIR XDG_CONFIG_HOME \
     XDG_DATA_HOME GDK_BACKEND
+  # the private bus activates nothing, so the accessibility bus that the
+  # text fields report to is started by hand
+  /usr/libexec/at-spi-bus-launcher --launch-immediately \
+    > "${work}/a11y.log" 2>&1 &
+  a11y_pid=$!
+  wait_until 'the accessibility bus' a11y_bus_ready
   export PIPEWIRE_RUNTIME_DIR="${XDG_RUNTIME_DIR}" PIPEWIRE_REMOTE=pipewire-0
   export PIPEWIRE_CONFIG_DIR="${work}/pipewire"
   unset PIPEWIRE_CONFIG_PREFIX PIPEWIRE_CONFIG_NAME
@@ -448,8 +471,9 @@ Language: English
 ${menu_tail}"
   tray click 'Cancel Dictation'
   wait_ready
-  "${work}/target" "${work}/transcript" "${work}/escapes" \
-    > "${work}/target.log" 2>&1 &
+  # Onda stays off the accessibility bus; the text fields are on it
+  env --unset=GTK_A11Y "${work}/target" "${work}/transcript" \
+    "${work}/escapes" > "${work}/target.log" 2>&1 &
   target_pid=$!
   local target_window
   target_window="$(xdotool search --sync --name 'Greendale dictation target' | head -1)"
@@ -491,6 +515,7 @@ ${menu_tail}"
   wait_until 'the media player' player_is greendale Playing
   pw-play "${work}/music.wav" > "${work}/music.log" 2>&1 &
   music_pid=$!
+  type_before_caret 'Troy Barnes joined the' "${work}/transcript"
   "${binary}" --start
   wait_until 'the player to pause' player_is greendale Paused
   sleep 0.5
@@ -505,6 +530,8 @@ ${menu_tail}"
     sleep 0.2
   done
   rg -qi 'ask not|country' "${work}/transcript"
+  # mid-sentence: one space, and the model's capital "And" lowered
+  rg -q '^Troy Barnes joined the and so' "${work}/transcript"
   wait_ready
   [[ "$(xclip -selection clipboard -out)" == 'Greendale clipboard' ]]
   rg -q '"appName": "Greendale Dictation Target"' \
@@ -555,6 +582,7 @@ ${menu_tail}"
   other_pid=""
   xprop -root -remove _NET_ACTIVE_WINDOW
   xdotool windowfocus --sync "${target_window}"
+  type_before_caret 'Greendale is open.' "${work}/transcript"
   xdotool keydown ctrl+alt+space
   wait_until 'the mute' speakers_muted
   sleep 0.5
@@ -568,6 +596,8 @@ ${menu_tail}"
     sleep 0.2
   done
   rg -qi 'ask not|country' "${work}/transcript"
+  # after a sentence: one space, and the capital kept
+  rg -q '^Greendale is open\. And so' "${work}/transcript"
   wait_ready
   player_is greendale Paused
   [[ ! -s "${work}/greendale.log" ]]
@@ -630,6 +660,14 @@ ${menu_tail}"
   player greendale org.mpris.MediaPlayer2.Player.Pause > /dev/null
   write_settings true true
   start_onda
+  env --unset=GTK_A11Y "${work}/target" --password "${work}/secret" \
+    > "${work}/secret.log" 2>&1 &
+  secret_pid=$!
+  local secret_window
+  secret_window="$(xdotool search --sync --all --pid "${secret_pid}" \
+    --name 'Greendale dictation target' | head -1)"
+  xdotool windowfocus --sync "${secret_window}"
+  type_before_caret 'Greendale7' "${work}/secret"
   parecord --device=onda-speakers.monitor --rate=44100 --channels=1 \
     --format=s16le --file-format=wav --latency-msec=20 "${work}/heard.wav" &
   recorder_pid=$!
@@ -648,6 +686,15 @@ ${menu_tail}"
   python3 "${root}/shell/linux/tests/cues-heard.py" "${work}/heard.wav" \
     "${root}/assets/sounds/dictation_start.wav" \
     "${root}/assets/sounds/dictation_stop.wav"
+  # a password field is not read, so the transcript arrives as the model
+  # wrote it
+  wait_until 'the dictation in the password field' \
+    rg -q '^Greendale7And so' "${work}/secret"
+  if rg -qi 'Troy Barnes|Greendale is open|Greendale7|fellow Americans' \
+    "${work}/onda.log"; then
+    echo "Onda logged field text or a transcript" >&2
+    return 1
+  fi
   "${binary}" --quit
   wait "${app_pid}"
   app_pid=""
@@ -655,7 +702,7 @@ ${menu_tail}"
     check_live_preview "${unified}" "${sample}" "${target_window}"
     checked=", live preview"
   fi
-  echo "PASS: commands, cancellation, overlay cancel button, Escape, global shortcut, CPU transcription, GTK paste, clipboard restoration, target application, target left, tray menu, media pause, output mute, mute recovery, sound cues${checked}."
+  echo "PASS: commands, cancellation, overlay cancel button, Escape, global shortcut, CPU transcription, GTK paste, text before the caret, password field, clipboard restoration, target application, target left, tray menu, media pause, output mute, mute recovery, sound cues${checked}."
 }
 
 main "$@"

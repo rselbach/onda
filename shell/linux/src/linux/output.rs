@@ -14,7 +14,7 @@ use ashpd::desktop::{
 use onda_app::ports::{CopyOutcome, Delivery, FieldText, InsertOutcome, Target, TextOutput};
 use tokio::sync::OwnedMutexGuard;
 
-use super::{hotkeys::HeldKeys, process, target};
+use super::{field, hotkeys::HeldKeys, process, target};
 
 pub struct Output {
     runtime: tokio::runtime::Handle,
@@ -293,8 +293,8 @@ impl TextOutput for Output {
             None
         })
     }
-    fn field_text(&self, _: Option<&Target>) -> Option<FieldText> {
-        None
+    fn field_text(&self, target: Option<&Target>) -> Option<FieldText> {
+        field::read(target.map(|target| target.process_id))
     }
     fn insert(&self, text: &str, target: Option<&Target>, delivery: &Delivery) -> InsertOutcome {
         let _serial = self.serial.lock().unwrap_or_else(|e| e.into_inner());

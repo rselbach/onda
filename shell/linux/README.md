@@ -243,7 +243,14 @@ removes your custom prompt. Onda does not accept a blank prompt.
   rows and the indicator carry no application, post-processing gets no
   application name, and Onda pastes into whatever has the focus at delivery
   time.
-- **Surrounding text:** unavailable in both session types.
+- **Text before the caret:** Onda reads the focused text field through the
+  accessibility bus (AT-SPI), in both session types, and fits the dictation
+  to what precedes it. Mid-sentence it adds a space and lowers a word such as
+  "And". After a sentence it adds the space and keeps the capital. This works
+  in GTK 3 and GTK 4 text fields. A password field is never read, and a field
+  that does not answer within 250 ms, or that is not on the accessibility
+  bus, gets the transcript as the model wrote it (see
+  [Text before the caret](#text-before-the-caret)).
 
 ## Desktop command bindings
 
@@ -303,7 +310,10 @@ first-run wizard, provider switching, key storage and deletion, custom model
 selection, missing-key feedback, prompt editing, replacement editing,
 shortcuts, history search, confirmation dialogs, the model update notice, and
 critical alerts. They never use your credentials or normal Onda data. The
-script also runs the overlay tests described below.
+script also runs the overlay tests described below, and the test of the text
+field reader. That test serves a stand-in accessibility bus on the private
+session bus, with fields, a password field, and applications that never
+answer.
 
 The script needs no list of tests. Mark a new real-GUI test `#[ignore]`, and
 start the app with `launch` in `src/linux/ui/integration_tests.rs`. `launch`
@@ -355,7 +365,11 @@ preview text appears before the recording stops on a host with 4 CPUs or
 more, and no preview runs when Onda is held to 2 CPUs.
 It checks cancellation, the overlay's cancel button, Escape, command controls,
 global push-to-talk, CPU inference, paste, clipboard restoration, and
-single-instance activation. It checks that history records the text field's application, and
+single-instance activation. It starts a private accessibility bus and checks
+that a dictation after "Troy Barnes joined the" continues with one space and
+a lowercase "and", that one after a full sentence keeps its capital, that a
+dictation into a password field arrives unchanged, and that the log holds
+neither the fields' text nor the transcript. It checks that history records the text field's application, and
 that a dictation whose window lost the focus before delivery is copied instead
 of pasted. A stand-in tray host reads the tray's menu over D-Bus and clicks
 its items. It never uses your normal Onda data or microphone. It also checks
@@ -372,7 +386,7 @@ stop cues play in full and that the start cue alone does not mute the output.
 ```sh
 sudo dnf install xorg-x11-server-Xvfb pipewire pipewire-pulseaudio \
   pipewire-alsa wireplumber pulseaudio-utils dbus-daemon gcc ripgrep \
-  xclip xdotool xprop python3 python3-dbus python3-gobject
+  xclip xdotool xprop python3 python3-dbus python3-gobject at-spi2-core
 scripts/test-linux-dictation.sh \
   target/debug/onda /path/to/parakeet-tdt-0.6b-v2-Q8_0.gguf /path/to/jfk.wav \
   /path/to/parakeet-unified-en-0.6b-Q8_0.gguf
@@ -438,6 +452,62 @@ The route to the focused text field is the application's window in the
 accessible's `Text` interface for the text and the caret. The report's `pid`
 is the process the accessibility bus saw, which is the process id Onda records
 for an X11 target.
+
+## Text before the caret
+
+Onda reads the focused field over AT-SPI with the D-Bus access GTK already
+gives it. It needs no library or package of its own. The read works for an
+application that is on the accessibility bus and keeps its focus there. For
+any other application Onda finds no field and delivers the transcript
+unchanged, as it did before it could read fields.
+
+The route is the one described above. On X11 Onda asks only the target
+application, which it finds by process id. On Wayland it has no target, so it
+asks every application for its active window. It reads the role, the text,
+and the selection of the focused accessible. The dictation follows the start
+of the selection, or the caret when nothing is selected. AT-SPI counts in
+characters and Onda's core in UTF-16 units, so Onda converts.
+
+Each row is a real dictation on GNOME Shell 50.1 with `org.a11y.Status
+IsEnabled` false, the default. "Joined" means the transcript arrived fitted
+to the text before the caret:
+
+| Field | Toolkit | Session | Result |
+| --- | --- | --- | --- |
+| Text view | GTK 4.22 | X11, Wayland | joined |
+| Text view | GTK 3.24 | Wayland | joined |
+| Text view, caret after emoji | GTK 4.22 | Wayland | joined, with the caret converted |
+| GNOME Text Editor 50 | GTK 4, GtkSourceView | Wayland | joined, 31 accessibles in 24 ms |
+| `GtkPasswordEntry` | GTK 4.22 | X11, Wayland | not read: role `password text` |
+| `GtkEntry` with hidden text | GTK 4.22 | Wayland | not joined: see below |
+| Button with the focus | GTK 4.22 | Wayland | no text, unchanged |
+| Text view started with `GTK_A11Y=none` | none | X11 | not on the bus, unchanged |
+| Text view, beside a stopped application | GTK 4.22 | Wayland | joined, after 100 ms |
+
+The X11 rows come from `scripts/test-linux-dictation.sh`. The Wayland rows
+come from a private headless GNOME Shell, where Onda cannot paste, so the
+transcript was read from the clipboard it was left on.
+
+Limits found by measuring:
+
+- **Password fields.** GTK 3 entries with hidden text, `GtkPasswordEntry`, and
+  libadwaita's `AdwPasswordEntryRow` report the role `password text`, and Onda
+  does not ask them for their text. A GTK 4 `GtkEntry` with hidden text
+  reports as an ordinary field whose text is its mask, such as `•••`. Onda
+  treats a field that holds nothing but one repeated mask character as
+  hidden. A field that really holds only `***` is therefore not joined either.
+- **Applications that do not answer.** One call may take 100 ms and the whole
+  read 250 ms. On Wayland a stopped application ahead of the focused one
+  costs 100 ms, and three of them use up the read.
+- **Terminals.** Not established. In the test session GNOME Terminal and
+  Ptyxis each had the focus on a button, not on the terminal, and nothing was
+  joined.
+- **Other toolkits.** Not measured, because the test machine has no Qt
+  application, no KDE Plasma, and a Firefox that does not start in a private
+  session. An Electron application was listed without window states (see
+  [Focused application on Wayland](#focused-application-on-wayland)), which
+  Onda reads as no field. Onda does not switch on the desktop's accessibility
+  (`org.a11y.Status IsEnabled`) to make an application report more.
 
 ## Blank GNOME shortcut dialog
 
