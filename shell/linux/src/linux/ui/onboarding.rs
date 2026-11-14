@@ -16,10 +16,13 @@ use onda_app::views::{
     OtherModelsView, PresetCardView,
 };
 use onda_domain::{
-    hotkey::HotkeyPreset, languages::LanguageSetting, models::ModelId, onboarding::OnboardingStep,
+    hotkey::{HotkeyPreset, HotkeyView},
+    languages::LanguageSetting,
+    models::ModelId,
+    onboarding::OnboardingStep,
 };
 
-use super::{Window, try_it::TryIt};
+use super::{Window, recorder, try_it::TryIt};
 
 const CONTENT_WIDTH: i32 = 560;
 
@@ -27,6 +30,9 @@ const CONTENT_WIDTH: i32 = 560;
 #[derive(Default)]
 pub struct Onboarding {
     open: Rc<RefCell<Option<Wizard>>>,
+    // the recorder as the core last sent it, which arrives only when it
+    // changes and so before a Hotkey step that opens later
+    recorder: RefCell<Option<HotkeyView>>,
 }
 
 impl Onboarding {
@@ -46,6 +52,14 @@ impl Onboarding {
     pub fn update(&self, view: OnboardingView) {
         if let Some(wizard) = &*self.open.borrow() {
             wizard.update(view);
+        }
+    }
+
+    /// Renders the recorder of the Hotkey step, from `HotkeyChanged`.
+    pub fn render(&self, view: &HotkeyView) {
+        self.recorder.replace(Some(view.clone()));
+        if let Some(wizard) = &*self.open.borrow() {
+            wizard.render(view);
         }
     }
 
@@ -148,6 +162,16 @@ impl Wizard {
             self.navigation.push(&step.page);
         }
         step.focus.grab_focus();
+    }
+
+    fn render(&self, view: &HotkeyView) {
+        if let Some(Step {
+            body: Body::Hotkey(body),
+            ..
+        }) = self.steps.borrow().get(&OnboardingStep::Hotkey)
+        {
+            body.custom.recorder.render(view);
+        }
     }
 }
 
@@ -272,7 +296,7 @@ enum Body {
     // Linux has no privacy permission to grant, so the core's Linux wizard
     // has no such step (`OnboardingStep::on_platform`)
     Permissions,
-    Hotkey(Presets),
+    Hotkey(Shortcuts),
     SpeechModel(Models),
     Ready(Ready),
 }
@@ -291,7 +315,7 @@ impl Body {
             }
             OnboardingStep::Permissions => (Self::Permissions, gtk::Box::default().upcast()),
             OnboardingStep::Hotkey => {
-                let (body, widget) = Presets::new(owner);
+                let (body, widget) = Shortcuts::new(owner);
                 (Self::Hotkey(body), widget)
             }
             OnboardingStep::SpeechModel => {
@@ -329,16 +353,18 @@ impl Body {
                     title,
                     subtitle,
                     presets,
-                    // #16 adds the "Another shortcut" row, with the
-                    // recorder of the Hotkey page, below the presets
-                    custom_selected: _,
-                    custom_keycaps: _,
-                    custom_label: _,
+                    custom_selected,
+                    custom_keycaps,
+                    custom_label,
                     // it sits next to the Fn warning, and Linux has no Fn
                     // shortcut to warn about
                     open_keyboard_settings_title: _,
                 },
-            ) => body.update(&title, &subtitle, &presets),
+            ) => {
+                body.update(&title, &subtitle, &presets);
+                body.custom
+                    .update(custom_selected, custom_keycaps, custom_label);
+            }
             (
                 Self::SpeechModel(body),
                 OnboardingContent::SpeechModel {
@@ -429,21 +455,23 @@ impl<K: PartialEq + 'static, R: 'static> Rows<K, R> {
     }
 }
 
-/// A row the user picks, and the check mark that shows the current pick.
-struct Choice {
-    row: adw::ActionRow,
+/// A row that stands for a choice, and the check mark that shows the
+/// current pick.
+struct Choice<R = adw::ActionRow> {
+    row: R,
     check: gtk::Image,
 }
 
 impl Choice {
     fn new(row: adw::ActionRow) -> Self {
-        let check = gtk::Image::from_icon_name("object-select-symbolic");
-        check.add_css_class("accent");
+        let check = check_mark();
         row.add_suffix(&check);
         row.set_activatable(true);
         Self { row, check }
     }
+}
 
+impl<R: IsA<gtk::Widget>> Choice<R> {
     fn set_selected(&self, selected: bool) {
         self.check.set_visible(selected);
         self.row
@@ -535,13 +563,76 @@ impl Languages {
     }
 }
 
-struct Presets {
+/// The "Another shortcut" card (ONB-7): the shortcut's keycaps once it is
+/// no preset, above the recorder of the Hotkey page. Recording a shortcut
+/// is what picks the card, so a click on it does nothing.
+struct Custom {
+    choice: Choice<adw::PreferencesRow>,
+    keycaps: gtk::Box,
+    label: gtk::Label,
+    recorder: recorder::Controls,
+}
+
+impl Custom {
+    fn new(owner: &Rc<Window>) -> Self {
+        let keycaps = keycaps();
+        keycaps.set_halign(gtk::Align::Start);
+        let label = gtk::Label::builder().xalign(0.0).build();
+        let recorder = recorder::Controls::new();
+        recorder.connect(owner);
+        if let Some(view) = &*owner.onboarding.recorder.borrow() {
+            recorder.render(view);
+        }
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        content.set_hexpand(true);
+        content.append(&keycaps);
+        content.append(&label);
+        content.append(&recorder.widget);
+        let check = check_mark();
+        let card = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        card.set_margin_top(12);
+        card.set_margin_bottom(12);
+        card.set_margin_start(12);
+        card.set_margin_end(12);
+        card.append(&content);
+        card.append(&check);
+        let row = adw::PreferencesRow::builder()
+            .activatable(false)
+            .child(&card)
+            .build();
+        Self {
+            choice: Choice { row, check },
+            keycaps,
+            label,
+            recorder,
+        }
+    }
+
+    fn update(&self, selected: bool, keycaps: Option<Vec<String>>, label: Option<String>) {
+        // a row of labels and buttons has no name for a screen reader
+        let name = label
+            .clone()
+            .unwrap_or_else(|| keycaps.as_deref().unwrap_or_default().join(" "));
+        self.choice
+            .row
+            .upcast_ref::<gtk::Widget>()
+            .update_property(&[accessible::Property::Label(&name)]);
+        self.keycaps.set_visible(keycaps.is_some());
+        fill_keycaps(&self.keycaps, &keycaps.unwrap_or_default());
+        self.label.set_visible(label.is_some());
+        self.label.set_label(&label.unwrap_or_default());
+        self.choice.set_selected(selected);
+    }
+}
+
+struct Shortcuts {
     heading: gtk::Label,
     subtitle: gtk::Label,
     rows: Rows<HotkeyPreset, Choice>,
+    custom: Custom,
 }
 
-impl Presets {
+impl Shortcuts {
     fn new(owner: &Rc<Window>) -> (Self, gtk::Widget) {
         let heading = heading();
         let subtitle = gtk::Label::builder()
@@ -566,6 +657,7 @@ impl Presets {
             heading,
             subtitle,
             rows,
+            custom: Custom::new(owner),
         };
         (body, scrolled(&content).upcast())
     }
@@ -589,6 +681,11 @@ impl Presets {
                 choice.set_selected(card.selected);
             },
         );
+        // the last of the choices, and the list drops every row when the
+        // presets change
+        if self.custom.choice.row.parent().is_none() {
+            self.rows.list.append(&self.custom.choice.row);
+        }
     }
 }
 
@@ -815,6 +912,12 @@ fn fill_keycaps(keycaps: &gtk::Box, labels: &[String]) {
     }
 }
 
+fn check_mark() -> gtk::Image {
+    let check = gtk::Image::from_icon_name("object-select-symbolic");
+    check.add_css_class("accent");
+    check
+}
+
 fn heading() -> gtk::Label {
     gtk::Label::builder()
         .wrap(true)
@@ -864,7 +967,7 @@ mod tests {
         },
     };
     use onda_domain::{
-        hotkey::Shortcut,
+        hotkey::{KeyCode, KeyNames, Modifier, Shortcut},
         languages::LanguageSetting,
         models::Catalog,
         onboarding::{AUTOMATIC_ONBOARDING_DELAY, OnboardingStep},
@@ -873,14 +976,15 @@ mod tests {
     use super::super::{
         Window,
         integration_tests::{
-            MODEL, Start, button, capture_window, launch, seed_model, text_visible, wait_for,
-            widgets,
+            ALT_LEFT, CONTROL_LEFT, ESCAPE, KEY_G, Keyboard, MODEL, Rival, SPACE, Start, button,
+            capture_window, focus, launch, seed_model, text_visible, wait_for, widgets,
         },
     };
     use crate::linux::Message;
 
     const PENDING: &str = "Onda, finish setup to dictate";
     const READY: &str = "Onda, ready to dictate";
+    const WIZARD: &str = "Set Up Onda";
 
     fn data_dir() -> PathBuf {
         PathBuf::from(std::env::var_os("ONDA_DATA_DIR").expect("use a scratch data directory"))
@@ -916,7 +1020,7 @@ mod tests {
         assert!(gtk::prelude::WidgetExt::activate(row));
     }
 
-    fn picked(row: &adw::ActionRow) -> bool {
+    fn picked(row: &impl IsA<gtk::Widget>) -> bool {
         widgets::<gtk::Image>(row).iter().any(|image| {
             image.icon_name().as_deref() == Some("object-select-symbolic") && image.is_visible()
         })
@@ -940,6 +1044,49 @@ mod tests {
         widgets::<gtk::LevelBar>(page).remove(0)
     }
 
+    /// The "Another shortcut" card of the Hotkey step.
+    fn custom_card(page: &adw::NavigationPage) -> adw::PreferencesRow {
+        widgets::<adw::PreferencesRow>(page)
+            .into_iter()
+            .find(|row| !row.is::<adw::ActionRow>())
+            .unwrap()
+    }
+
+    fn recording(record: &gtk::Button) -> bool {
+        record.label().as_deref() == Some("Press shortcut...")
+    }
+
+    // the Hotkey page of the main window shows the one recorder too
+    fn main_window_recording(owner: &Window) -> bool {
+        widgets::<gtk::Button>(&owner.hotkey.widget)
+            .iter()
+            .any(recording)
+    }
+
+    fn control_alt_g() -> Shortcut {
+        Shortcut::new(
+            KeyCode::parse("KeyG").unwrap(),
+            [Modifier::Control, Modifier::Alt].into_iter().collect(),
+        )
+        .unwrap()
+    }
+
+    /// Walks a wizard from Welcome to its Hotkey step. English makes the
+    /// model of [`seed_model`] the recommended one, so leaving the Language
+    /// step asks the network for nothing.
+    fn reach_hotkey(window: &adw::Window) -> adw::NavigationPage {
+        button(&arrive(window, "welcome"), "Get Started").emit_clicked();
+        let page = arrive(window, "language");
+        let english = rows(&page)
+            .into_iter()
+            .find(|row| row.title() == "English")
+            .unwrap();
+        pick(&english);
+        wait_for(|| picked(&english));
+        button(&page, "Continue").emit_clicked();
+        arrive(window, "hotkey")
+    }
+
     fn quit(owner: &Window) {
         owner.core.runtime.block_on(owner.core.app.shutdown_async());
         owner.window.close();
@@ -958,7 +1105,7 @@ mod tests {
         let window = wizard(&owner);
         assert!(launched.elapsed() >= AUTOMATIC_ONBOARDING_DELAY);
         assert!(!owner.window.is_visible(), "the wizard opens by itself");
-        assert_eq!(window.title().as_deref(), Some("Set Up Onda"));
+        assert_eq!(window.title().as_deref(), Some(WIZARD));
         assert_eq!(owner.status(), PENDING);
 
         let page = arrive(&window, "welcome");
@@ -1034,16 +1181,71 @@ mod tests {
         wait_for(|| picked(&presets[0]));
         wait_for(|| owner.getting_started.shortcut() == "Control+Alt+Space");
 
+        let custom = custom_card(&page);
+        assert!(shown(&custom, "Another shortcut") && !picked(&custom));
+        assert!(shown(&custom, "Current shortcut: Ctrl+Alt+Space"));
+        let record = button(&custom, "Record Shortcut");
+        let cancel = button(&custom, "Cancel");
+        assert!(!cancel.is_visible());
+        let keyboard = Keyboard::connect();
+        focus(WIZARD);
+        record.emit_clicked();
+        wait_for(|| recording(&record) && cancel.is_visible());
+        assert!(shown(&custom, KeyNames::LINUX.recording_help));
+        assert!(
+            main_window_recording(&owner),
+            "the Hotkey page shows the same recorder"
+        );
+        capture_window(&window, "onboarding-hotkey-recording");
+        keyboard.tap(&[], SPACE);
+        wait_for(|| shown(&custom, KeyNames::LINUX.missing_modifier_message));
+        assert!(
+            recording(&record),
+            "Space must reach the recorder, not the focused Continue button"
+        );
+        keyboard.tap(&[], ESCAPE);
+        wait_for(|| !recording(&record) && !cancel.is_visible());
+        assert_eq!(
+            super::visible_tag(&navigation(&window)).as_deref(),
+            Some("hotkey"),
+            "Escape must end the recording, not go back a step"
+        );
+        assert_eq!(owner.core.settings.hotkey(default), *default);
+
+        record.emit_clicked();
+        wait_for(|| recording(&record));
         // what the header's Back button, Escape, and Alt+Left do
         assert!(navigation(&window).pop());
         let page = arrive(&window, "language");
+        wait_for(|| !recording(&record));
         button(&page, "Continue").emit_clicked();
         // the core went back with the window, or it would now show the
         // model step
         let page = arrive(&window, "hotkey");
+        assert_eq!(button(&page, "Record Shortcut"), record);
+
+        record.emit_clicked();
+        wait_for(|| recording(&record));
+        keyboard.tap(&[CONTROL_LEFT, ALT_LEFT], KEY_G);
+        wait_for(|| owner.core.settings.hotkey(default) == control_alt_g());
+        wait_for(|| picked(&custom) && !presets.iter().any(picked));
+        assert!(!recording(&record));
+        assert_eq!(keycaps(&custom), ["Ctrl", "Alt", "G"]);
+        assert!(!shown(&custom, "Another shortcut"));
+        assert!(shown(&custom, "Current shortcut: Ctrl+Alt+G"));
+        wait_for(|| owner.getting_started.shortcut() == "Control+Alt+KeyG");
+        let rival = Rival::connect();
+        assert!(!rival.grab(KEY_G), "Onda must hold the recorded shortcut");
+        assert!(rival.grab(SPACE), "Onda must have let go of the preset");
+        rival.release(SPACE);
+        capture_window(&window, "onboarding-hotkey-custom");
+
+        record.emit_clicked();
+        wait_for(|| recording(&record));
         button(&page, "Continue").emit_clicked();
 
         let page = arrive(&window, "speech-model");
+        wait_for(|| !recording(&record));
         assert!(shown(&page, "Choose a speech model"));
         assert_eq!(progress(&page).value(), 3.0);
         assert_eq!(rows(&page).len(), 1);
@@ -1066,7 +1268,7 @@ mod tests {
         assert!(shown(&page, "You're all set"));
         assert_eq!(progress(&page).value(), 4.0);
         assert!(shown(&page, "Press") && shown(&page, "and start talking."));
-        assert_eq!(keycaps(&page), ["Ctrl", "Alt", "Space"]);
+        assert_eq!(keycaps(&page), ["Ctrl", "Alt", "G"]);
         assert!(shown(
             &page,
             "Transcripts are saved on this computer for 1 month."
@@ -1199,6 +1401,42 @@ mod tests {
 
         show(model_step(download(), None));
         assert!(!error.is_visible());
+        window.close();
+        wait_for(|| owner.onboarding.window().is_none());
+        quit(&owner);
+    }
+
+    #[test]
+    #[ignore = "requires an isolated GTK display, D-Bus session, and ONDA_DATA_DIR"]
+    fn real_gui_closing_the_wizard_ends_a_recording() {
+        seed_model();
+        let owner = launch(Start::FirstRun);
+        let window = wizard(&owner);
+        let page = reach_hotkey(&window);
+        let record = button(&custom_card(&page), "Record Shortcut");
+        record.emit_clicked();
+        wait_for(|| recording(&record));
+        window.close();
+        wait_for(|| owner.onboarding.window().is_none());
+        // the wizard's button went with its window
+        wait_for(|| !main_window_recording(&owner));
+        let default = onda_domain::platform::Platform::linux().default_shortcut;
+        wait_for(|| owner.getting_started.shortcut() == "Control+Alt+Space");
+
+        // a window that opens later is heard only if the shell stopped
+        // listening with the recording
+        owner.core.app.run_setup_again();
+        let window = wizard(&owner);
+        let page = reach_hotkey(&window);
+        let custom = custom_card(&page);
+        let record = button(&custom, "Record Shortcut");
+        let keyboard = Keyboard::connect();
+        focus(WIZARD);
+        record.emit_clicked();
+        wait_for(|| recording(&record));
+        keyboard.tap(&[CONTROL_LEFT, ALT_LEFT], KEY_G);
+        wait_for(|| owner.core.settings.hotkey(default) == control_alt_g());
+        wait_for(|| picked(&custom) && keycaps(&custom) == ["Ctrl", "Alt", "G"]);
         window.close();
         wait_for(|| owner.onboarding.window().is_none());
         quit(&owner);

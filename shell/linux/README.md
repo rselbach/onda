@@ -176,10 +176,11 @@ removes your custom prompt. Onda does not accept a blank prompt.
 
 ## Desktop integration
 
-- **Recording a shortcut:** click **Record Shortcut** on the Hotkey page and
-  press a key with Ctrl, Alt, or Super. Escape cancels. Modifier-only gestures
-  are unavailable. The desktop keeps some combinations for itself, such as
-  many Super shortcuts, and those never reach Onda.
+- **Recording a shortcut:** click **Record Shortcut** on the Hotkey page, or
+  under **Another shortcut** in the first-run wizard, and press a key with
+  Ctrl, Alt, or Super. Escape cancels. Modifier-only gestures are unavailable.
+  The desktop keeps some combinations for itself, such as many Super
+  shortcuts, and those never reach Onda.
 - **Wayland shortcuts:** GlobalShortcuts portal, with the desktop's granted
   shortcut displayed in the window. The initial preference is Ctrl+Alt+Space.
 - **X11 shortcuts:** native global key grabs. Onda claims the key by its place

@@ -15,6 +15,15 @@ use std::{
     rc::Rc,
     time::{Duration, Instant, SystemTime},
 };
+use x11rb::{
+    connection::Connection,
+    protocol::{
+        xproto::{ConnectionExt, GrabMode, KEY_PRESS_EVENT, KEY_RELEASE_EVENT, ModMask},
+        xtest::ConnectionExt as _,
+    },
+    rust_connection::RustConnection,
+    wrapper::ConnectionExt as _,
+};
 
 /// The key of the update notice that [`Start`] makes due.
 pub(super) const NOTICE_KEY: &str = "parakeet-ja->parakeet-ultra";
@@ -246,19 +255,129 @@ pub(super) fn x11_window(name: &str) -> Option<u32> {
     })
 }
 
-/// Gives the main window the keyboard, which no window manager does here.
+/// Gives the main window the keyboard.
 pub(super) fn focus_onda() {
+    focus("Onda");
+}
+
+/// Gives the window with this title the keyboard, which no window manager
+/// does here.
+pub(super) fn focus(title: &str) {
     use x11rb::{protocol::xproto::*, wrapper::ConnectionExt as _};
-    wait_for(|| x11_window("Onda").is_some());
+    wait_for(|| x11_window(title).is_some());
     let (connection, _) = x11rb::connect(None).unwrap();
     connection
         .set_input_focus(
             InputFocus::POINTER_ROOT,
-            x11_window("Onda").unwrap(),
+            x11_window(title).unwrap(),
             x11rb::CURRENT_TIME,
         )
         .unwrap();
     connection.sync().unwrap();
+}
+
+// hardware keycodes, which name a key's place whatever the layout
+pub(super) const ESCAPE: u8 = 9;
+pub(super) const CONTROL_LEFT: u8 = 37;
+pub(super) const KEY_Q: u8 = 24;
+pub(super) const KEY_A: u8 = 38;
+pub(super) const KEY_G: u8 = 42;
+pub(super) const ALT_LEFT: u8 = 64;
+pub(super) const SPACE: u8 = 65;
+
+/// Another application that wants a key with Ctrl and Alt.
+pub(super) struct Rival {
+    connection: RustConnection,
+    root: u32,
+}
+
+impl Rival {
+    pub fn connect() -> Self {
+        let (connection, screen) = x11rb::connect(None).unwrap();
+        let root = connection.setup().roots[screen].root;
+        Self { connection, root }
+    }
+
+    // the X server grants a key to one application at a time
+    pub fn grab(&self, key: u8) -> bool {
+        self.connection
+            .grab_key(
+                false,
+                self.root,
+                ModMask::CONTROL | ModMask::M1,
+                key,
+                GrabMode::ASYNC,
+                GrabMode::ASYNC,
+            )
+            .unwrap()
+            .check()
+            .is_ok()
+    }
+
+    pub fn release(&self, key: u8) {
+        self.connection
+            .ungrab_key(key, self.root, ModMask::CONTROL | ModMask::M1)
+            .unwrap()
+            .check()
+            .unwrap();
+    }
+}
+
+/// The user's hands: key presses that reach Onda's window as a real
+/// keyboard's do.
+pub(super) struct Keyboard {
+    connection: RustConnection,
+    root: u32,
+}
+
+impl Keyboard {
+    pub fn connect() -> Self {
+        let (connection, screen) = x11rb::connect(None).unwrap();
+        let root = connection.setup().roots[screen].root;
+        Self { connection, root }
+    }
+
+    fn send(&self, kind: u8, keys: &[u8]) {
+        for &key in keys {
+            self.connection
+                .xtest_fake_input(kind, key, x11rb::CURRENT_TIME, self.root, 0, 0, 0)
+                .unwrap();
+        }
+        self.connection.sync().unwrap();
+    }
+
+    /// Swaps what two keys type, as a layout other than the US one does.
+    pub fn swap(&self, a: u8, b: u8) {
+        let typed = |key| {
+            self.connection
+                .get_keyboard_mapping(key, 1)
+                .unwrap()
+                .reply()
+                .unwrap()
+        };
+        let (first, second) = (typed(a), typed(b));
+        for (key, mapping) in [(a, second), (b, first)] {
+            self.connection
+                .change_keyboard_mapping(1, key, mapping.keysyms_per_keycode, &mapping.keysyms)
+                .unwrap();
+        }
+        self.connection.sync().unwrap();
+    }
+
+    pub fn press(&self, keys: &[u8]) {
+        self.send(KEY_PRESS_EVENT, keys);
+    }
+
+    pub fn release(&self, keys: &[u8]) {
+        self.send(KEY_RELEASE_EVENT, keys);
+    }
+
+    pub fn tap(&self, held: &[u8], key: u8) {
+        self.press(held);
+        self.press(&[key]);
+        self.release(&[key]);
+        self.release(held);
+    }
 }
 
 // whether the floating overlay's X11 window is on screen

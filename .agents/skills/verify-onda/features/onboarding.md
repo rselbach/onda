@@ -74,14 +74,24 @@ Driving it:
 4. Walk the steps by name: `ui RUN_ID press "Get Started"`, then
    `ui RUN_ID press "Continue"` on each step and `ui RUN_ID press "Back"`
    to return. Take a tree and a screenshot per step.
-5. Speech Model: the step shows the model recommended for the language.
+5. Hotkey: the row `list item "Another shortcut"` holds the recorder of
+   the Hotkey page. `ui RUN_ID press "Record Shortcut"`, then
+   `key RUN_ID ctrl+alt+g` records Ctrl+Alt+G. The row then reads
+   `list item "Ctrl Alt G" [selected]`, `hotkey` in `<data>/settings.json`
+   names the key, and the log says `registered the dictation hotkey
+   hotkey=Ctrl+Alt+G`. From then on pass the keys to `hotkey`, as in
+   `hotkey RUN_ID hold 14 ctrl+alt+g`. `key RUN_ID Escape` and
+   `ui RUN_ID press "Back"`, `"Continue"`, or `"Close"` each end a
+   recording: the button reads `Record Shortcut` again and the log gains
+   another `registered the dictation hotkey` line.
+6. Speech Model: the step shows the model recommended for the language.
    `ui RUN_ID press "Show other models"` lists the rest, and the linked
    model reads `Selected`.
-6. Ready: the step has a "Click here and try it." field. `ui RUN_ID press
+7. Ready: the step has a "Click here and try it." field. `ui RUN_ID press
    "Start Dictating"` closes the window. `status` then reads
    `Onda, ready to dictate` and `onboardingCompleted` in
    `<data>/settings.json` is `true`.
-7. `ctl RUN_ID quit` and `relaunch RUN_ID` prove what a second launch
+8. `ctl RUN_ID quit` and `relaunch RUN_ID` prove what a second launch
    shows, such as the wizard returning after it was closed early. The
    macOS helper cannot do this.
 

@@ -385,6 +385,7 @@ impl Window {
                 Event::HotkeyChanged(view) => {
                     self.recorder.render(self, &view);
                     self.hotkey.render(&view);
+                    self.onboarding.render(&view);
                 }
                 Event::GettingStartedChanged(page) => self.getting_started.update(self, *page),
                 // a GTK application is a regular one whenever a window is
