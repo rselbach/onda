@@ -1,6 +1,11 @@
-use super::Window;
+use super::{super::Message, Window};
 use adw::prelude::*;
 use gtk::gio;
+use onda_app::Event;
+use onda_domain::{
+    non_dictation_ui::{DownloadOverlayView, OverlayProgress},
+    overlay::{OverlayContent, OverlayIcon, OverlayView},
+};
 use std::{
     cell::RefCell,
     path::Path,
@@ -414,6 +419,49 @@ pub(super) fn exercise_pages(owner: &Rc<Window>) {
     wait_for(|| !text_visible(&owner.history.widget, "Troy Barnes"));
     search.set_text("");
     wait_for(|| text_visible(&owner.history.widget, "Troy Barnes"));
+
+    let download = |view| owner.event(Message::Core(Event::DownloadOverlayChanged(view)));
+    let recording = |visible| {
+        owner.event(Message::Core(Event::OverlayChanged(OverlayView {
+            visible,
+            icon: OverlayIcon::None,
+            content: OverlayContent::Processing {
+                label: "Transcribing...",
+                preview: None,
+            },
+            trailing: None,
+        })))
+    };
+    let downloading = || {
+        download(DownloadOverlayView::Shown {
+            status: "Downloading Greendale model… 42%".into(),
+            progress: OverlayProgress::Determinate(0.42),
+        })
+    };
+    downloading();
+    assert_eq!(owner.detail.text(), "Downloading Greendale model… 42%");
+    download(DownloadOverlayView::Hidden);
+    assert_eq!(owner.detail.text(), super::IDLE_HINT);
+    downloading();
+    recording(true);
+    download(DownloadOverlayView::Hidden);
+    assert!(
+        owner.detail.text().starts_with("Transcribing..."),
+        "a hidden download must not replace the recording status"
+    );
+    recording(false);
+    assert_eq!(owner.detail.text(), super::IDLE_HINT);
+    assert!(
+        widgets::<adw::PreferencesGroup>(&owner.about)
+            .iter()
+            .any(|group| group.title() == "Libraries")
+    );
+    assert!(
+        widgets::<adw::PreferencesGroup>(&owner.about)
+            .iter()
+            .all(|group| group.title() != "Updates"),
+        "General owns updates"
+    );
 
     for name in [
         "dictation",

@@ -15,9 +15,12 @@ mod integration_tests;
 use adw::prelude::*;
 use gtk::{gio, glib};
 use onda_app::{Event, views::MainWindowSection};
+use onda_domain::non_dictation_ui::DownloadOverlayView;
 use std::{cell::Cell, rc::Rc};
 
 use super::{Message, core::Core, overlay::Overlay};
+
+const IDLE_HINT: &str = "Use your global shortcut to dictate into another application.";
 
 pub struct Window {
     pub core: Core,
@@ -38,6 +41,7 @@ pub struct Window {
     shortcut: gtk::Label,
     toast: adw::ToastOverlay,
     overlay: Overlay,
+    overlay_visible: Cell<bool>,
     inhibitor: Cell<Option<u32>>,
     tray: Option<ksni::blocking::Handle<super::tray::Tray>>,
 }
@@ -179,6 +183,7 @@ impl Window {
             shortcut,
             toast,
             overlay,
+            overlay_visible: Cell::new(false),
             inhibitor: Cell::new(None),
             tray,
         });
@@ -312,17 +317,22 @@ impl Window {
                         tray.update(|tray| tray.label = view.accessibility_label);
                     }
                 }
-                Event::DownloadOverlayChanged(
-                    onda_domain::non_dictation_ui::DownloadOverlayView::Shown { status, .. },
-                ) => self.detail.set_text(&status),
+                Event::DownloadOverlayChanged(DownloadOverlayView::Shown { status, .. }) => {
+                    self.detail.set_text(&status)
+                }
+                // the core also hides the download when a recording or a
+                // notice takes the line, and reports that overlay first
+                Event::DownloadOverlayChanged(DownloadOverlayView::Hidden) => {
+                    if !self.overlay_visible.get() {
+                        self.detail.set_text(IDLE_HINT);
+                    }
+                }
                 Event::OverlayChanged(view) => {
                     self.overlay.update(&view);
+                    self.overlay_visible.set(view.visible);
                     let (text, level) = super::overlay::content(&view);
-                    self.detail.set_text(if view.visible {
-                        &text
-                    } else {
-                        "Use your global shortcut to dictate into another application."
-                    });
+                    self.detail
+                        .set_text(if view.visible { &text } else { IDLE_HINT });
                     self.meter.set_value(level);
                 }
                 Event::SpeechChanged(page) => self.speech(*page),
@@ -350,10 +360,6 @@ impl Window {
                     .toast
                     .add_toast(adw::Toast::new(&format!("{title}: {message}"))),
                 Event::ActivateApp => self.present(),
-                // #30 resets the status line when the download overlay hides
-                Event::DownloadOverlayChanged(
-                    onda_domain::non_dictation_ui::DownloadOverlayView::Hidden,
-                ) => {}
                 // #13 renders the shortcut recorder
                 Event::HotkeyChanged(_) => {}
                 // #15 renders the onboarding wizard

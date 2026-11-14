@@ -94,13 +94,5 @@ impl Window {
             group.add(&row);
         }
         self.about.append(&group);
-        let group = adw::PreferencesGroup::builder().title("Updates").build();
-        group.add(
-            &adw::ActionRow::builder()
-                .title("Installed locally")
-                .subtitle("Update Onda by installing a newer Linux build.")
-                .build(),
-        );
-        self.about.append(&group);
     }
 }
