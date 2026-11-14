@@ -130,7 +130,7 @@ fn read(
 
 /// Every modifier state that counts as one of `modifiers`: X11 matches a
 /// grab against the exact state, and a lock that is on is part of it.
-fn masks(modifiers: &[ModifierSet], locks: u16) -> Vec<u16> {
+pub(super) fn masks(modifiers: &[ModifierSet], locks: u16) -> Vec<u16> {
     let mut masks = Vec::new();
     for set in modifiers {
         let held = set.iter().fold(0, |mask, modifier| {
@@ -153,14 +153,14 @@ fn masks(modifiers: &[ModifierSet], locks: u16) -> Vec<u16> {
     masks
 }
 
-struct Keyboard {
+pub(super) struct Keyboard {
     first: Keycode,
     // the first symbol of each key, from `first` on
     symbols: Vec<u32>,
 }
 
 impl Keyboard {
-    fn read(connection: &RustConnection) -> anyhow::Result<Self> {
+    pub(super) fn read(connection: &RustConnection) -> anyhow::Result<Self> {
         let setup = connection.setup();
         let first = setup.min_keycode;
         let mapping = connection
@@ -184,7 +184,7 @@ impl Keyboard {
 
     /// The modifier bits that locks set: Caps Lock's, and those of whichever
     /// modifiers this keyboard gives Num Lock and Scroll Lock.
-    fn locks(&self, connection: &RustConnection) -> anyhow::Result<u16> {
+    pub(super) fn locks(&self, connection: &RustConnection) -> anyhow::Result<u16> {
         let mapping = connection.get_modifier_mapping()?.reply()?;
         let per_modifier = usize::from(mapping.keycodes_per_modifier()).max(1);
         let lock_keys = [self.keycodes(NUM_LOCK), self.keycodes(SCROLL_LOCK)].concat();

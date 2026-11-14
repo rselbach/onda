@@ -8,6 +8,7 @@ mod navigation;
 mod notice;
 mod onboarding;
 mod post_processing;
+mod recorder;
 mod replacements;
 mod speech;
 
@@ -36,6 +37,7 @@ pub struct Window {
     models: gtk::Box,
     history: history::Page,
     hotkey: hotkey::Page,
+    recorder: recorder::KeyMonitor,
     notice: notice::Notice,
     onboarding: onboarding::Onboarding,
     replacements: replacements::Page,
@@ -206,6 +208,7 @@ impl Window {
             models,
             history,
             hotkey,
+            recorder: recorder::KeyMonitor::default(),
             notice: notice::Notice::default(),
             onboarding: onboarding::Onboarding::default(),
             replacements,
@@ -411,7 +414,7 @@ impl Window {
                 }
                 Event::GeneralChanged(page) => self.settings(*page),
                 Event::HistoryPageChanged(page) => self.history.update(self, *page),
-                Event::HotkeyPageChanged(page) => self.hotkey.update(self, *page),
+                Event::HotkeyPageChanged(page) => self.hotkey.update(*page),
                 Event::ReplacementsChanged(page) => self.replacements.update(self, *page),
                 Event::AboutChanged(page) => self.about(*page),
                 Event::PostProcessingChanged(page) => self.post_processing.update(self, *page),
@@ -450,8 +453,10 @@ impl Window {
                 }
                 Event::CloseUpdateNotice => self.notice.close(),
                 Event::ActivateApp => self.present(),
-                // #13 renders the shortcut recorder
-                Event::HotkeyChanged(_) => {}
+                Event::HotkeyChanged(view) => {
+                    self.recorder.render(self, &view);
+                    self.hotkey.render(&view);
+                }
                 // #17 renders the Getting Started page
                 Event::GettingStartedChanged(_) => {}
                 // a GTK application is a regular one whenever a window is
@@ -460,47 +465,6 @@ impl Window {
             },
         }
     }
-}
-
-fn parse_shortcut(text: &str) -> anyhow::Result<onda_domain::hotkey::Shortcut> {
-    use onda_domain::hotkey::{KeyCode, Modifier, ModifierSet, Shortcut};
-    let mut parts: Vec<&str> = text.split('+').map(str::trim).collect();
-    let key = parts
-        .pop()
-        .ok_or_else(|| anyhow::anyhow!("Enter a shortcut"))?;
-    let mut modifiers = ModifierSet::EMPTY;
-    for part in parts {
-        modifiers = modifiers.with(match part.to_ascii_lowercase().as_str() {
-            "ctrl" | "control" => Modifier::Control,
-            "alt" => Modifier::Alt,
-            "shift" => Modifier::Shift,
-            "super" | "logo" => Modifier::Meta,
-            _ => anyhow::bail!("Unknown modifier: {part}"),
-        });
-    }
-    let code = match key.to_ascii_lowercase().as_str() {
-        "space" => "Space".into(),
-        "enter" | "return" => "Enter".into(),
-        "tab" => "Tab".into(),
-        "left" => "ArrowLeft".into(),
-        "right" => "ArrowRight".into(),
-        "up" => "ArrowUp".into(),
-        "down" => "ArrowDown".into(),
-        "backspace" => "Backspace".into(),
-        _ if key.len() == 1 && key.as_bytes()[0].is_ascii_alphabetic() => {
-            format!("Key{}", key.to_ascii_uppercase())
-        }
-        _ if key.len() == 1 && key.as_bytes()[0].is_ascii_digit() => format!("Digit{key}"),
-        _ => key.to_owned(),
-    };
-    let key = KeyCode::parse(&code).ok_or_else(|| anyhow::anyhow!("Invalid key"))?;
-    format!("Control+{code}")
-        .parse::<global_hotkey::hotkey::HotKey>()
-        .map_err(|_| anyhow::anyhow!("Unknown key: {key}"))?;
-    let shortcut = Shortcut::new(key, modifiers)
-        .map_err(|_| anyhow::anyhow!("Choose a key other than Escape with Ctrl, Alt, or Super."))?;
-    super::hotkeys::trigger(&shortcut)?;
-    Ok(shortcut)
 }
 
 // the icon theme has Onda's icon only where Onda is installed
@@ -538,39 +502,4 @@ fn clear(parent: &gtk::Box) {
 }
 fn label(text: &str) -> gtk::Label {
     gtk::Label::builder().label(text).wrap(true).build()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::parse_shortcut;
-
-    #[test]
-    fn shortcut_editor_round_trips_portal_labels() {
-        for input in [
-            "Ctrl+Alt+Space",
-            "Super+Left",
-            "Ctrl+Return",
-            "Alt+D",
-            "Ctrl+5",
-            "Alt+F8",
-        ] {
-            let shortcut = parse_shortcut(input).unwrap();
-            let label = crate::linux::hotkeys::trigger(&shortcut).unwrap();
-            assert_eq!(parse_shortcut(&label).unwrap(), shortcut, "{input}");
-        }
-    }
-
-    #[test]
-    fn shortcut_editor_rejects_unknown_or_reserved_combinations() {
-        for input in [
-            "",
-            "Space",
-            "Shift+Space",
-            "Ctrl+Escape",
-            "Ctrl+MadeUpKey",
-            "Ctrl+Alt",
-        ] {
-            assert!(parse_shortcut(input).is_err(), "{input}");
-        }
-    }
 }

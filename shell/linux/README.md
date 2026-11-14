@@ -176,10 +176,15 @@ removes your custom prompt. Onda does not accept a blank prompt.
 
 ## Desktop integration
 
+- **Recording a shortcut:** click **Record Shortcut** on the Hotkey page and
+  press a key with Ctrl, Alt, or Super. Escape cancels. Modifier-only gestures
+  are unavailable. The desktop keeps some combinations for itself, such as
+  many Super shortcuts, and those never reach Onda.
 - **Wayland shortcuts:** GlobalShortcuts portal, with the desktop's granted
   shortcut displayed in the window. The initial preference is Ctrl+Alt+Space.
-  Configure a key with modifiers; modifier-only gestures are unavailable.
-- **X11 shortcuts:** native global key grabs.
+- **X11 shortcuts:** native global key grabs. Onda claims the key by its place
+  on the keyboard, so a shortcut stays on the keys you pressed in every
+  keyboard layout.
 - **Paste:** `wl-copy` plus `wtype` when the compositor advertises virtual
   keyboards, otherwise a keyboard-only RemoteDesktop portal session. X11 uses
   `xclip` and `xdotool`. Refused or failed injection leaves the transcript on

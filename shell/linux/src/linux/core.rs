@@ -24,7 +24,8 @@ use super::{
 
 pub struct Core {
     pub app: App,
-    pub platform: Platform,
+    /// What the app saved, which the real-GUI tests read back.
+    #[cfg(test)]
     pub settings: Arc<Settings>,
     pub output: Arc<Output>,
     pub runtime: tokio::runtime::Runtime,
@@ -137,7 +138,7 @@ impl Core {
         forward_audio_events(audio_events, app.audio_signals());
         Ok(Self {
             app,
-            platform,
+            #[cfg(test)]
             settings,
             output,
             runtime,

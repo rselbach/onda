@@ -184,18 +184,18 @@ fn options(row: &adw::ComboRow) -> Vec<String> {
         .collect()
 }
 
-// whether the floating overlay's X11 window is on screen
-fn overlay_on_screen() -> bool {
+/// The X11 window on screen whose title is `name`.
+pub(super) fn x11_window(name: &str) -> Option<u32> {
     use x11rb::{connection::Connection, protocol::xproto::*};
     let (connection, screen) = x11rb::connect(None).unwrap();
     let root = connection.setup().roots[screen].root;
     let windows = connection.query_tree(root).unwrap().reply().unwrap();
-    windows.children.into_iter().any(|window| {
+    windows.children.into_iter().find(|&window| {
         connection
             .get_property(false, window, AtomEnum::WM_NAME, AtomEnum::STRING, 0, 64)
             .unwrap()
             .reply()
-            .is_ok_and(|name| name.value == b"onda-recording")
+            .is_ok_and(|title| title.value == name.as_bytes())
             && connection
                 .get_window_attributes(window)
                 .unwrap()
@@ -204,7 +204,12 @@ fn overlay_on_screen() -> bool {
     })
 }
 
-fn settle() {
+// whether the floating overlay's X11 window is on screen
+fn overlay_on_screen() -> bool {
+    x11_window("onda-recording").is_some()
+}
+
+pub(super) fn settle() {
     let until = Instant::now() + Duration::from_millis(350);
     wait_for(|| Instant::now() >= until);
 }
@@ -402,28 +407,10 @@ pub(super) fn exercise_pages(owner: &Rc<Window>) {
 
     owner.stack.set_visible_child_name("hotkey");
     wait_for(|| text_visible(&owner.hotkey.widget, "Activation"));
-    let entry = widgets::<adw::EntryRow>(&owner.hotkey.widget).remove(0);
-    assert_eq!(entry.title(), "Press to talk");
+    assert!(text_visible(&owner.hotkey.widget, "Press to talk"));
     let activation = widgets::<adw::ComboRow>(&owner.hotkey.widget).remove(0);
     assert_eq!(activation.title(), "Activation");
     assert_eq!(options(&activation), ["Hold", "Toggle", "Automatic"]);
-    entry.set_text("Ctrl+Alt+G");
-    entry.emit_by_name::<()>("apply", &[]);
-    let default = owner.core.platform.default_shortcut;
-    wait_for(|| {
-        super::super::hotkeys::trigger(&owner.core.settings.hotkey(default)).unwrap()
-            == "CTRL+ALT+G"
-    });
-    let reset = || {
-        widgets::<gtk::Button>(&owner.hotkey.widget)
-            .into_iter()
-            .find(|button| button.label().as_deref() == Some("Reset to Ctrl+Alt+Space"))
-    };
-    wait_for(|| reset().is_some_and(|button| button.is_sensitive()));
-    button(&owner.hotkey.widget, "Reset to Ctrl+Alt+Space").emit_clicked();
-    wait_for(|| owner.core.settings.hotkey(default) == *default);
-    wait_for(|| reset().is_some_and(|button| !button.is_sensitive()));
-    assert_eq!(entry.text(), "Ctrl+Alt+Space");
 
     owner.stack.set_visible_child_name("history");
     wait_for(|| text_visible(&owner.history.widget, "Troy Barnes"));

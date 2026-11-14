@@ -1077,7 +1077,7 @@ mod tests {
             ["Ctrl+Alt+Space", "Alt+Super+Space", "Ctrl+Super+Space"]
         );
         assert!(picked(&presets[0]));
-        let default = owner.core.platform.default_shortcut;
+        let default = onda_domain::platform::Platform::linux().default_shortcut;
         pick(&presets[1]);
         wait_for(|| owner.core.settings.hotkey(default) == Shortcut::ALT_SUPER_SPACE);
         wait_for(|| picked(&presets[1]) && !picked(&presets[0]));

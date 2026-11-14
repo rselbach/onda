@@ -2,6 +2,7 @@
 //! On X11 a session also claims Escape, which cancels it.
 
 mod escape;
+pub mod keys;
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -252,9 +253,23 @@ fn x11(
     events: &async_channel::Sender<Message>,
     held: &HeldKeys,
 ) -> anyhow::Result<()> {
-    use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState, hotkey::HotKey};
+    use x11rb::connection::Connection as _;
+    use x11rb::errors::ReplyError;
+    use x11rb::protocol::xkb::{self, ConnectionExt as _};
+    use x11rb::protocol::xproto::{ConnectionExt as _, GrabMode, ModMask};
+    use x11rb::protocol::{ErrorKind, Event};
+    use x11rb::wrapper::ConnectionExt as _;
+
+    anyhow::ensure!(
+        !shortcut.is_lone_modifier(),
+        "modifier-only shortcuts are unavailable"
+    );
     let key = shortcut.key().as_str();
-    let mut modifiers = Vec::new();
+    // the key is claimed by its place on the keyboard, which is how the
+    // shortcut names it, so the layout does not move the shortcut
+    let keycode =
+        keys::keycode(key).ok_or_else(|| anyhow::anyhow!("{key} is not a key Onda can claim"))?;
+    let mut label = Vec::new();
     for (modifier, name) in [
         (Modifier::Control, "Control"),
         (Modifier::Alt, "Alt"),
@@ -262,23 +277,62 @@ fn x11(
         (Modifier::Meta, "Super"),
     ] {
         if shortcut.modifiers().contains(modifier) {
-            modifiers.push(name);
+            label.push(name);
         }
     }
-    anyhow::ensure!(
-        !shortcut.is_lone_modifier(),
-        "modifier-only shortcuts are unavailable"
-    );
-    modifiers.push(key);
-    let hotkey: HotKey = modifiers.join("+").parse()?;
-    let manager = GlobalHotKeyManager::new()?;
-    manager.register(hotkey)?;
-    send(events, Message::ShortcutStatus(modifiers.join("+")));
+    label.push(key);
+    let (connection, screen) = x11rb::connect(None)?;
+    let root = connection.setup().roots[screen].root;
+    wait_for_release(&connection, keycode, changes)?;
+    if changes.has_changed().unwrap_or(true) {
+        return Ok(());
+    }
+    // a held key then repeats as presses alone, with no release between them
+    connection.xkb_use_extension(1, 0)?.reply()?;
+    connection
+        .xkb_per_client_flags(
+            xkb::ID::USE_CORE_KBD.into(),
+            xkb::PerClientFlag::DETECTABLE_AUTO_REPEAT,
+            xkb::PerClientFlag::DETECTABLE_AUTO_REPEAT,
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        )?
+        .reply()?;
+    let keyboard = escape::Keyboard::read(&connection)?;
+    let locks = keyboard.locks(&connection)?;
+    for mask in escape::masks(&[shortcut.modifiers()], locks) {
+        connection
+            .grab_key(
+                false,
+                root,
+                ModMask::from(mask),
+                keycode,
+                GrabMode::ASYNC,
+                GrabMode::ASYNC,
+            )?
+            .check()
+            .map_err(|error| match error {
+                ReplyError::X11Error(refusal) if refusal.error_kind == ErrorKind::Access => {
+                    anyhow::anyhow!("another application already uses it")
+                }
+                other => other.into(),
+            })?;
+    }
+    send(events, Message::ShortcutStatus(label.join("+")));
+    let mut down = false;
     while !changes.has_changed().unwrap_or(true) {
-        if let Ok(event) = GlobalHotKeyEvent::receiver().recv_timeout(Duration::from_millis(30))
-            && event.id == hotkey.id()
-        {
-            let pressed = event.state == HotKeyState::Pressed;
+        while let Some(event) = connection.poll_for_event()? {
+            // while the key is down the grab also delivers every other key
+            let pressed = match event {
+                Event::KeyPress(press) if press.detail == keycode => true,
+                Event::KeyRelease(release) if release.detail == keycode => false,
+                _ => continue,
+            };
+            if pressed == down {
+                continue;
+            }
+            down = pressed;
             held.update(pressed);
             send(
                 events,
@@ -289,8 +343,31 @@ fn x11(
                 }),
             );
         }
+        std::thread::sleep(Duration::from_millis(30));
     }
-    manager.unregister(hotkey)?;
+    // closing the connection ends the grab too, but only once the server
+    // notices; the next shortcut may want the same key before that
+    connection.ungrab_key(keycode, root, ModMask::ANY)?;
+    connection.sync()?;
+    Ok(())
+}
+
+/// Returns once the key is up or the shortcut changed. The shortcut's key
+/// is still down when the user has just recorded it, and X11 would deliver
+/// its repeats to a new grab as presses, which start a dictation.
+fn wait_for_release(
+    connection: &x11rb::rust_connection::RustConnection,
+    keycode: u8,
+    changes: &watch::Receiver<Option<Shortcut>>,
+) -> anyhow::Result<()> {
+    use x11rb::protocol::xproto::ConnectionExt as _;
+    while !changes.has_changed().unwrap_or(true) {
+        let down = connection.query_keymap()?.reply()?.keys;
+        if down[usize::from(keycode / 8)] & (1 << (keycode % 8)) == 0 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(30));
+    }
     Ok(())
 }
 
