@@ -114,6 +114,29 @@ scripts/install-linux.sh
 onda
 ```
 
+### ARM64 virtual machines on Apple Silicon
+
+The speech library compiles for the host CPU with `-mcpu=native`. In an ARM64
+virtual machine on Apple Silicon the virtual CPU reports SME without SVE2, and
+GCC rejects the flag:
+
+```
+cc1: sorry, unimplemented: no support for 'sme' without 'sve2'
+```
+
+`scripts/build-linux.sh` detects this and builds the speech library for the
+ARMv8.0-A baseline. Cargo cannot set an environment variable for one kind of
+host, so `cargo build`, `cargo clippy`, and `cargo test` need the same value
+exported first:
+
+```sh
+export TRANSCRIBE_CMAKE_ARGS="-DGGML_NATIVE=OFF -DGGML_CPU_ARM_ARCH=armv8-a"
+```
+
+A host needs it when `cc -mcpu=native -E - < /dev/null` fails. The script
+leaves `TRANSCRIBE_CMAKE_ARGS` alone when it is already set, even to an empty
+value.
+
 The desktop entry is also the portal identity. Install it before testing global
 shortcuts or keyboard permission prompts. The launcher must find `onda` in PATH.
 The XDG desktop session bus must be available.
