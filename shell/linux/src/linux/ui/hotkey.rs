@@ -147,3 +147,103 @@ impl Page {
         self.updating.set(false);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use adw::prelude::*;
+    use onda_domain::hotkey::Shortcut;
+    use x11rb::{
+        connection::Connection,
+        protocol::xproto::{ConnectionExt, GrabMode, ModMask},
+        rust_connection::RustConnection,
+    };
+
+    use super::super::integration_tests::{Start, launch, text_visible, wait_for};
+
+    const SPACE_KEYSYM: u32 = 0x20;
+
+    /// Another application that wants Ctrl+Alt+Space, the default shortcut.
+    struct Rival {
+        connection: RustConnection,
+        root: u32,
+        space: u8,
+    }
+
+    impl Rival {
+        fn connect() -> Self {
+            let (connection, screen) = x11rb::connect(None).unwrap();
+            let setup = connection.setup();
+            let root = setup.roots[screen].root;
+            let first = setup.min_keycode;
+            let mapping = connection
+                .get_keyboard_mapping(first, setup.max_keycode - first + 1)
+                .unwrap()
+                .reply()
+                .unwrap();
+            let space = mapping
+                .keysyms
+                .chunks(mapping.keysyms_per_keycode as usize)
+                .position(|keysyms| keysyms.contains(&SPACE_KEYSYM))
+                .unwrap();
+            Self {
+                connection,
+                root,
+                space: first + space as u8,
+            }
+        }
+
+        // the X server grants a key to one application at a time
+        fn grab(&self) -> bool {
+            self.connection
+                .grab_key(
+                    false,
+                    self.root,
+                    ModMask::CONTROL | ModMask::M1,
+                    self.space,
+                    GrabMode::ASYNC,
+                    GrabMode::ASYNC,
+                )
+                .unwrap()
+                .check()
+                .is_ok()
+        }
+
+        fn release(&self) {
+            self.connection
+                .ungrab_key(self.space, self.root, ModMask::CONTROL | ModMask::M1)
+                .unwrap()
+                .check()
+                .unwrap();
+        }
+    }
+
+    #[test]
+    #[ignore = "requires an isolated GTK display, D-Bus session, and ONDA_DATA_DIR"]
+    fn real_gui_a_taken_shortcut_is_reported_until_it_registers() {
+        let rival = Rival::connect();
+        assert!(rival.grab(), "the shortcut must be free before the test");
+        let owner = launch(Start::Declined);
+        wait_for(|| {
+            text_visible(
+                &owner.window,
+                "Hotkey Registration Failed: Could not register the global hotkey \
+                 (Ctrl+Alt+Space). It may be in use by another application.",
+            )
+        });
+        let status = owner.hotkey.status.subtitle().unwrap_or_default();
+        assert!(
+            status.starts_with("Global shortcut unavailable:")
+                && status.ends_with("Bind onda --toggle in your desktop keyboard settings."),
+            "{status}"
+        );
+        assert_eq!(owner.shortcut.text(), status);
+
+        rival.release();
+        owner.core.app.set_hotkey(Shortcut::CONTROL_ALT_SPACE);
+        wait_for(|| owner.hotkey.status.subtitle().as_deref() == Some("Control+Alt+Space"));
+        assert_eq!(owner.shortcut.text(), "Control+Alt+Space");
+        assert!(!rival.grab(), "Onda must hold the shortcut now");
+        owner.core.runtime.block_on(owner.core.app.shutdown_async());
+        owner.window.close();
+    }
+}

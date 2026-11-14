@@ -47,6 +47,10 @@ impl HeldKeys {
     }
 }
 
+/// The status the core gets with a failed registration. The desktop gives
+/// no code for one, and the core's Linux copy shows none.
+pub const NO_STATUS: i32 = -1;
+
 pub struct Hotkeys {
     sender: watch::Sender<Option<Shortcut>>,
 }
@@ -69,15 +73,22 @@ impl Hotkeys {
                         x11(&shortcut, &mut changes, &events, &held)
                     };
                     held.update(false);
-                    if let Err(error) = result {
-                        send(
-                            &events,
-                            Message::ShortcutStatus(format!(
-                                "Global shortcut unavailable: {error}. Bind onda --toggle in your desktop keyboard settings."
-                            )),
-                        );
-                    } else {
-                        changes.mark_changed();
+                    match result {
+                        Ok(()) => changes.mark_changed(),
+                        // the core already asked for another shortcut, and
+                        // would read this failure as that one's
+                        Err(error) if changes.has_changed().unwrap_or(true) => {
+                            tracing::debug!(%error, "a replaced global shortcut failed");
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "the global shortcut is unavailable");
+                            send(
+                                &events,
+                                Message::ShortcutUnavailable(format!(
+                                    "Global shortcut unavailable: {error}. Bind onda --toggle in your desktop keyboard settings."
+                                )),
+                            );
+                        }
                     }
                 }
                 if runtime.block_on(changes.changed()).is_err() {
@@ -90,8 +101,13 @@ impl Hotkeys {
 }
 
 impl HotkeySource for Hotkeys {
+    // Hands the shortcut to the worker and returns before the desktop has
+    // answered, because the portal may wait on a dialog. A refusal reaches
+    // the core later as `Message::ShortcutUnavailable`.
     fn register(&self, shortcut: &Shortcut) -> Result<(), i32> {
-        self.sender.send(Some(shortcut.clone())).map_err(|_| -1)
+        self.sender
+            .send(Some(shortcut.clone()))
+            .map_err(|_| NO_STATUS)
     }
     fn unregister(&self) {
         self.sender.send_replace(None);

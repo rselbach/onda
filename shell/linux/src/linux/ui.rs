@@ -294,6 +294,11 @@ impl Window {
         self.status.text().to_string()
     }
 
+    fn set_shortcut_status(&self, status: &str) {
+        self.shortcut.set_text(status);
+        self.hotkey.set_status(status);
+    }
+
     /// The one place a tray choice becomes a core call.
     fn tray(&self, command: Command) {
         let app = &self.core.app;
@@ -332,9 +337,12 @@ impl Window {
             Message::Download(update) => self.core.app.download_event(update),
             Message::DevicesChanged => self.core.app.input_devices_changed(),
             Message::UpdaterChanged => self.core.app.updater_changed(),
-            Message::ShortcutStatus(status) => {
-                self.shortcut.set_text(&status);
-                self.hotkey.set_status(&status);
+            Message::ShortcutStatus(status) => self.set_shortcut_status(&status),
+            Message::ShortcutUnavailable(status) => {
+                self.set_shortcut_status(&status);
+                self.core
+                    .app
+                    .hotkey_registration_failed(super::hotkeys::NO_STATUS);
             }
             Message::Notice(title, body) => {
                 self.toast

@@ -31,6 +31,8 @@ enum Message {
     DevicesChanged,
     UpdaterChanged,
     ShortcutStatus(String),
+    /// The desktop refused the dictation shortcut; the text says why.
+    ShortcutUnavailable(String),
     Notice(String, String),
     Inhibit(Option<String>),
     Tray(tray::Command),

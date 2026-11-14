@@ -12,7 +12,6 @@ end_hotkey_capture               #13 shortcut recorder
 fix_permission                   never Linux has no privacy permission to fix
 flush_events                     never a barrier for the core's own tests
 hotkey_capture_failed            #13 shortcut recorder
-hotkey_registration_failed       #14 shortcut registration failures
 onboarding_back                  #15 onboarding wizard
 onboarding_choose_model          #15 onboarding wizard
 onboarding_closed                #15 onboarding wizard

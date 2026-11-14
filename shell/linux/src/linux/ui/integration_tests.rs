@@ -153,7 +153,7 @@ pub(super) fn widgets<T: IsA<gtk::Widget> + Clone + 'static>(
     result
 }
 
-fn text_visible(root: &impl IsA<gtk::Widget>, text: &str) -> bool {
+pub(super) fn text_visible(root: &impl IsA<gtk::Widget>, text: &str) -> bool {
     widgets::<gtk::Label>(root)
         .iter()
         .any(|label| label.text().contains(text))
