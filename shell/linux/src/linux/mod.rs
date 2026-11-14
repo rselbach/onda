@@ -11,6 +11,7 @@ mod process;
 mod sounds;
 mod speech;
 mod system;
+mod target;
 mod tray;
 mod ui;
 mod updates;

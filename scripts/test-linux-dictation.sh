@@ -8,6 +8,7 @@ cleanup() {
   local status=$?
   if [[ -n "${app_pid:-}" ]]; then kill "${app_pid}" 2>/dev/null || true; fi
   if [[ -n "${target_pid:-}" ]]; then kill "${target_pid}" 2>/dev/null || true; fi
+  if [[ -n "${other_pid:-}" ]]; then kill "${other_pid}" 2>/dev/null || true; fi
   if [[ -n "${music_pid:-}" ]]; then kill "${music_pid}" 2>/dev/null || true; fi
   if [[ -n "${player_pid:-}" ]]; then kill "${player_pid}" 2>/dev/null || true; fi
   if [[ -n "${toggle_pid:-}" ]]; then kill "${toggle_pid}" 2>/dev/null || true; fi
@@ -89,6 +90,17 @@ tray_watcher_ready() {
 
 target_is_empty() {
   [[ ! -s "${work}/transcript" ]]
+}
+
+# No window manager runs here, so the test names the active window as one
+# would.
+activate() {
+  xdotool windowfocus --sync "$1"
+  xprop -root -f _NET_ACTIVE_WINDOW 32x -set _NET_ACTIVE_WINDOW "$1"
+}
+
+transcript_copied() {
+  xclip -selection clipboard -out 2> /dev/null | rg -qi 'ask not|country'
 }
 
 onda_window_visible() {
@@ -189,6 +201,14 @@ main() {
   # an unpackaged binary finds its cue files in the user's data folder
   install -Dm644 -t "${XDG_DATA_HOME}/onda/sounds" \
     "${root}"/assets/sounds/*.wav
+  mkdir -p "${XDG_DATA_HOME}/applications"
+  cat > "${XDG_DATA_HOME}/applications/com.rselbach.onda.TestTarget.desktop" <<'ENTRY'
+[Desktop Entry]
+Type=Application
+Name=Greendale Dictation Target
+Exec=true
+Icon=accessories-text-editor
+ENTRY
   write_settings true
   Xvfb -displayfd 3 -screen 0 1024x768x24 3> "${work}/display" \
     > "${work}/xvfb.log" 2>&1 &
@@ -365,6 +385,10 @@ ${menu_tail}"
   rg -qi 'ask not|country' "${work}/transcript"
   wait_ready
   [[ "$(xclip -selection clipboard -out)" == 'Greendale clipboard' ]]
+  rg -q '"appName": "Greendale Dictation Target"' \
+    "${ONDA_DATA_DIR}"/History/*/metadata.json
+  rg -q '"appBundleID": "com.rselbach.onda.TestTarget"' \
+    "${ONDA_DATA_DIR}"/History/*/metadata.json
   wait_until 'the player to resume' player_is greendale Playing
   [[ "$(calls "${work}/greendale.log")" == 'Pause Play ' ]]
   sleep 9
@@ -381,6 +405,33 @@ ${menu_tail}"
   tray click 'Recent Transcripts' "${recent}"
   wait_until 'the recent transcript' rg -qi 'ask not|country' "${work}/transcript"
   xdotool key ctrl+a BackSpace
+  wait_until 'the cleared target' target_is_empty
+  "${work}/target" "${work}/elsewhere" > "${work}/elsewhere.log" 2>&1 &
+  other_pid=$!
+  local other_window
+  other_window="$(xdotool search --sync --all --pid "${other_pid}" \
+    --name 'Greendale dictation target' | head -1)"
+  activate "${target_window}"
+  "${binary}" --start
+  wait_until 'the mute' speakers_muted
+  sleep 0.5
+  paplay --device=onda-test "${sample}"
+  "${binary}" --stop
+  activate "${other_window}"
+  for ((attempt = 0; attempt < 600; attempt++)); do
+    if transcript_copied; then break; fi
+    sleep 0.2
+  done
+  transcript_copied
+  wait_ready
+  rg -q 'the focus left the target' "${work}/onda.log"
+  target_is_empty
+  [[ ! -s "${work}/elsewhere" ]]
+  kill "${other_pid}"
+  wait "${other_pid}" || true
+  other_pid=""
+  xprop -root -remove _NET_ACTIVE_WINDOW
+  xdotool windowfocus --sync "${target_window}"
   xdotool keydown ctrl+alt+space
   wait_until 'the mute' speakers_muted
   sleep 0.5
@@ -476,7 +527,7 @@ ${menu_tail}"
   "${binary}" --quit
   wait "${app_pid}"
   app_pid=""
-  echo "PASS: commands, cancellation, overlay cancel button, global shortcut, CPU transcription, GTK paste, clipboard restoration, tray menu, media pause, output mute, mute recovery, sound cues."
+  echo "PASS: commands, cancellation, overlay cancel button, global shortcut, CPU transcription, GTK paste, clipboard restoration, target application, target left, tray menu, media pause, output mute, mute recovery, sound cues."
 }
 
 main "$@"

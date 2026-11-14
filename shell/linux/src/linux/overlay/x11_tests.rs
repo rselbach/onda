@@ -213,7 +213,7 @@ impl Screen {
 fn drawn(view: &OverlayView) -> Vec<u8> {
     let mut surface =
         cairo::ImageSurface::create(cairo::Format::ARgb32, draw::SIZE.0, draw::SIZE.1).unwrap();
-    draw::recording(&cairo::Context::new(&surface).unwrap(), view, None).unwrap();
+    draw::recording(&cairo::Context::new(&surface).unwrap(), view, None, None).unwrap();
     surface.data().unwrap().to_vec()
 }
 

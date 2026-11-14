@@ -1,4 +1,5 @@
 use super::{Window, clear, label, page};
+use crate::linux::target;
 use adw::prelude::*;
 use gtk::{gio, glib};
 use onda_app::{
@@ -193,6 +194,11 @@ impl Page {
                             })
                             .and_then(|time| time.format("%H:%M").ok())
                             .unwrap_or_default();
+                        if let Some(icon) = entry.app_id.as_deref().and_then(target::icon) {
+                            let icon = gtk::Image::from_gicon(&icon);
+                            icon.set_pixel_size(16);
+                            top.append(&icon);
+                        }
                         let metadata = label(&format!("{time} · {}", entry.details));
                         metadata.set_xalign(0.0);
                         metadata.set_hexpand(true);

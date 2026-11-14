@@ -15,6 +15,9 @@ pub const SIZE: (i32, i32) = (400, 104);
 /// Corner radius of a panel's background.
 pub const RADIUS: f64 = 12.0;
 
+/// Side of the target application's icon in pixels, as on macOS.
+pub const ICON: f64 = 20.0;
+
 #[derive(Clone, Copy)]
 pub struct Color(f64, f64, f64, f64);
 
@@ -264,10 +267,12 @@ pub fn cancel_area(view: &OverlayView) -> Option<cairo::RectangleInt> {
 }
 
 /// Draws the recording overlay as the macOS shell lays it out (OVL-5 to
-/// OVL-10). `sweep`, from 0 to 1, animates the processing state.
+/// OVL-10). `icon` is the target application's, a square picture of any
+/// size. `sweep`, from 0 to 1, animates the processing state.
 pub fn recording(
     cr: &cairo::Context,
     view: &OverlayView,
+    icon: Option<&cairo::ImageSurface>,
     sweep: Option<f64>,
 ) -> Result<(), cairo::Error> {
     let (width, height) = (f64::from(SIZE.0), f64::from(SIZE.1));
@@ -295,6 +300,26 @@ pub fn recording(
             show(cr, &layout, left, top, color);
         }
         content.width = left - 10.0;
+    }
+    if let Some(icon) = icon {
+        let square = Area {
+            x: 10.0,
+            y: (height - ICON) / 2.0,
+            width: ICON,
+            height: ICON,
+        };
+        cr.save()?;
+        rounded(cr, square, 4.0);
+        cr.clip();
+        cr.translate(square.x, square.y);
+        let scale = ICON / f64::from(icon.width().max(1));
+        cr.scale(scale, scale);
+        cr.set_source_surface(icon, 0.0, 0.0)?;
+        cr.paint()?;
+        cr.restore()?;
+        let taken = square.x + ICON + 10.0;
+        content.x = taken;
+        content.width -= taken;
     }
     match &view.content {
         OverlayContent::Notice(notice) => {
@@ -360,9 +385,17 @@ mod tests {
     type Pixel = (u8, u8, u8);
 
     fn render(view: &OverlayView, sweep: Option<f64>) -> Vec<u8> {
+        render_with(view, None, sweep)
+    }
+
+    fn render_with(
+        view: &OverlayView,
+        icon: Option<&cairo::ImageSurface>,
+        sweep: Option<f64>,
+    ) -> Vec<u8> {
         let mut surface =
             cairo::ImageSurface::create(cairo::Format::ARgb32, SIZE.0, SIZE.1).unwrap();
-        recording(&cairo::Context::new(&surface).unwrap(), view, sweep).unwrap();
+        recording(&cairo::Context::new(&surface).unwrap(), view, icon, sweep).unwrap();
         surface.data().unwrap().to_vec()
     }
 
@@ -458,6 +491,29 @@ mod tests {
             let want_orange = *name == "silent microphone";
             assert_eq!(count(picture, 0..SIZE.0, orange) > 0, want_orange, "{name}");
         }
+    }
+
+    #[test]
+    fn application_icon_stands_before_the_content() {
+        fn green((red, green, blue): Pixel) -> bool {
+            red < 20 && green > 230 && blue < 20
+        }
+        let icon = cairo::ImageSurface::create(cairo::Format::ARgb32, 40, 40).unwrap();
+        let cr = cairo::Context::new(&icon).unwrap();
+        cr.set_source_rgb(0.0, 1.0, 0.0);
+        cr.paint().unwrap();
+        let view = recording_overlay().view(None);
+        let without = render(&view, None);
+        let with = render_with(&view, Some(&icon), None);
+
+        let leading = 0..40;
+        assert_eq!(count(&without, 0..SIZE.0, green), 0);
+        assert!(count(&without, leading.clone(), accent) > 0);
+        let drawn = count(&with, 10..30, green);
+        assert!(drawn > 300, "a 40 pixel picture fills the 20 pixel square");
+        assert_eq!(count(&with, 0..SIZE.0, green), drawn);
+        assert_eq!(count(&with, leading, accent), 0, "the waveform moved over");
+        assert!(count(&with, 40..SIZE.0, accent) > 0);
     }
 
     #[test]

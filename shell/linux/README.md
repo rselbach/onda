@@ -210,8 +210,24 @@ removes your custom prompt. Onda does not accept a blank prompt.
   missing is logged at launch and stays silent.
 - **Cancellation:** the window, tray, or `onda --cancel`. Onda does not claim
   Escape globally on Linux.
-- **Target context:** Linux currently pastes into the focused application at
-  delivery time. Target-app identification and surrounding text are unavailable.
+- **Target application on X11:** Onda identifies the application that has the
+  keyboard focus when a dictation starts. It reads the window from
+  `_NET_ACTIVE_WINDOW`, or from the input focus when no window manager
+  publishes one, and the process from the X server. The name and icon come
+  from the desktop entry that matches the window's `_GTK_APPLICATION_ID`,
+  `StartupWMClass`, or `WM_CLASS`. A window without a desktop entry is named
+  by its `WM_CLASS`. History shows the name and icon, the recording indicator
+  shows the icon, and post-processing receives the name. If another
+  application has the focus when the transcript is ready, Onda copies the
+  transcript instead of pasting it and says so.
+- **Target application on Wayland:** none is identified. No Wayland protocol
+  tells an ordinary client which application has the focus, and AT-SPI does
+  not answer for every application (see
+  [Focused application on Wayland](#focused-application-on-wayland)). History
+  rows and the indicator carry no application, post-processing gets no
+  application name, and Onda pastes into whatever has the focus at delivery
+  time.
+- **Surrounding text:** unavailable in both session types.
 
 ## Desktop command bindings
 
@@ -307,7 +323,9 @@ desktop audio session stays running. Supply the v2 GGUF file above and
 whisper.cpp's `samples/jfk.wav` (the expected transcript contains “country”).
 It checks cancellation, the overlay's cancel button, command controls, global
 push-to-talk, CPU inference, paste, clipboard restoration, and single-instance
-activation. A stand-in tray host reads the tray's menu over D-Bus and clicks
+activation. It checks that history records the text field's application, and
+that a dictation whose window lost the focus before delivery is copied instead
+of pasted. A stand-in tray host reads the tray's menu over D-Bus and clicks
 its items. It never uses your normal Onda data or microphone. It also checks
 microphone release after
 standby and a fresh recording after capture has stopped. A stand-in MPRIS
@@ -319,7 +337,7 @@ stop cues play in full and that the start cue alone does not mute the output.
 ```sh
 sudo dnf install xorg-x11-server-Xvfb pipewire pipewire-pulseaudio \
   pipewire-alsa wireplumber pulseaudio-utils dbus-daemon gcc ripgrep \
-  xclip xdotool python3 python3-dbus python3-gobject
+  xclip xdotool xprop python3 python3-dbus python3-gobject
 scripts/test-linux-dictation.sh \
   target/debug/onda /path/to/parakeet-tdt-0.6b-v2-Q8_0.gguf /path/to/jfk.wav
 ```
@@ -331,6 +349,47 @@ scripts/test-linux-dictation.sh \
 Desktop testing must include physical portal shortcuts and permission dialogs
 on the supported GNOME/KDE versions. Headless X11 tests do not establish that
 Wayland grants, focus, or paste work on every compositor.
+
+## Focused application on Wayland
+
+Onda identifies no target application in a Wayland session. AT-SPI was
+evaluated as the route and rejected for now. It names the focused application
+only when that application is on the accessibility bus and keeps its window
+states there, and "no window is active" reads the same whether an unlisted
+application has the focus or nothing has.
+
+Measured on GNOME Shell 50.1 with `org.a11y.Status IsEnabled` false, the
+default. Each row is what AT-SPI reported while that window had the focus:
+
+| Application | Toolkit | Active window | Focused accessible |
+| --- | --- | --- | --- |
+| Python text view | GTK 4.22 | found | `text`, with `Text` and `EditableText` |
+| Python text view | GTK 3.24 | found | `text`, with `Text` and `EditableText` |
+| GNOME Terminal | GTK 3.24, VTE | found | `terminal`, with `Text` only |
+| Ptyxis | GTK 4.22, VTE | found | a `button`, without `Text` |
+| GTK 4 window started with `GTK_A11Y=none` | none | not listed | none |
+| T3 Code (Electron) | Chromium | listed without any state, not even `showing` | none |
+
+The GTK and terminal rows come from a private headless GNOME Shell session,
+where opening and closing windows moved the focus. The Electron row is a
+read-only query of a desktop session. Qt applications, Firefox, and KDE Plasma
+were not available on the test machine and are not measured. A report took 21
+to 59 ms with four applications on the bus.
+
+`scripts/report-linux-focus.py` prints the same report for the session it runs
+in, without changing it. It needs `python3-gobject` and the AT-SPI
+introspection data (`at-spi2-core`). To measure another desktop or toolkit,
+run it after a delay and focus the application meanwhile:
+
+```sh
+sleep 3; scripts/report-linux-focus.py
+```
+
+The route to the focused text field is the application's window in the
+`active` state, then its descendant in the `focused` state, then that
+accessible's `Text` interface for the text and the caret. The report's `pid`
+is the process the accessibility bus saw, which is the process id Onda records
+for an X11 target.
 
 ## Blank GNOME shortcut dialog
 

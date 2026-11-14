@@ -39,12 +39,13 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 transcribe-cpp = "=0.4.1"
 uuid = "1"
-x11rb = { version = "0.13", features = ["shape", "xtest", "randr"] }
+x11rb = { version = "0.13", features = ["shape", "xtest", "randr", "res"] }
 wayland-client = "0.31"
 wl-clipboard-rs = "0.9"
 ksni = { version = "0.3", features = ["blocking"] }
 gio = { version = "0.22", features = ["v2_80"] }
 pangocairo = "0.22"
+gio-unix = "0.22"
 
 [dev-dependencies]
 tempfile = "3"

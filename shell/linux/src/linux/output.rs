@@ -14,7 +14,7 @@ use ashpd::desktop::{
 use onda_app::ports::{CopyOutcome, Delivery, FieldText, InsertOutcome, Target, TextOutput};
 use tokio::sync::OwnedMutexGuard;
 
-use super::{hotkeys::HeldKeys, process};
+use super::{hotkeys::HeldKeys, process, target};
 
 pub struct Output {
     runtime: tokio::runtime::Handle,
@@ -285,12 +285,18 @@ async fn open_grant(path: &Path) -> anyhow::Result<Grant> {
 
 impl TextOutput for Output {
     fn focused_target(&self) -> Option<Target> {
-        None
+        if process::wayland() {
+            return None;
+        }
+        target::focused().unwrap_or_else(|error| {
+            tracing::debug!(%error, "focused application unreadable");
+            None
+        })
     }
     fn field_text(&self, _: Option<&Target>) -> Option<FieldText> {
         None
     }
-    fn insert(&self, text: &str, _: Option<&Target>, delivery: &Delivery) -> InsertOutcome {
+    fn insert(&self, text: &str, target: Option<&Target>, delivery: &Delivery) -> InsertOutcome {
         let _serial = self.serial.lock().unwrap_or_else(|e| e.into_inner());
         let Some(keyboard) = self.keyboard(delivery) else {
             return InsertOutcome::Cancelled;
@@ -308,6 +314,11 @@ impl TextOutput for Output {
         if let Err(error) = self.copy_text(text) {
             tracing::warn!(%error, "clipboard write failed");
             return InsertOutcome::CopyFailed;
+        }
+        // the paste lands in whatever has the focus now, and the transcript
+        // is already on the clipboard for the user to paste where they went
+        if target.is_some_and(target::left) {
+            return InsertOutcome::TargetLeft;
         }
         match keyboard
             .and_then(|keyboard| self.press(keyboard, self.terminal.load(Ordering::Relaxed)))
