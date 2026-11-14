@@ -147,14 +147,15 @@ async fn test_key(
     provider: CleanupProvider,
     transport: &Arc<dyn CleanupTransport>,
     stored: Option<oneshot::Receiver<Result<Option<String>, String>>>,
+    computer_term: &str,
 ) -> Result<Option<ApiKey>, String> {
     if provider.on_device() {
         let transport = transport.clone();
         let status = spawn_blocking(move || transport.on_device_status())
             .await
             .unwrap_or(OnDeviceStatus::DeviceNotEligible);
-        if let Some(message) = status.message() {
-            return Err(message.to_owned());
+        if let Some(message) = status.message(computer_term) {
+            return Err(message);
         }
     }
     let Some(stored) = stored else {
@@ -595,6 +596,7 @@ impl Actor {
         // the saved prompt as of now; a save during the test is not picked up
         let prompt = self.settings.cleanup_prompt.clone();
         let messages = self.messages.clone();
+        let computer_term = self.ports.platform.computer_term;
         let queue = self.key_queue();
         let saved = write.map(|(saved_for, value)| {
             let saver = secrets.clone();
@@ -614,7 +616,7 @@ impl Actor {
                     result,
                 }));
             }
-            let result = match test_key(provider, &transport, stored).await {
+            let result = match test_key(provider, &transport, stored, computer_term).await {
                 Ok(key) => {
                     let request =
                         build_request(provider, key.as_ref(), &model, &prompt, TEST_SAMPLE, None);
@@ -661,7 +663,7 @@ impl Actor {
         let listed = |provider| page.listed.get(&provider).map_or(&[][..], Vec::as_slice);
         let key = page
             .dialog
-            .and_then(ApiKeyFieldView::for_provider)
+            .and_then(|shown| ApiKeyFieldView::for_provider(shown, self.ports.platform))
             .map(|field| ApiKeyFieldView {
                 text: page.text.clone(),
                 revision: page.revision,
@@ -680,13 +682,11 @@ impl Actor {
                     || *p == provider
             })
             .collect();
+        let status_message = page.on_device.message(self.ports.platform.computer_term);
         let dialog = page.dialog.map(|shown| ProvidersDialogInputs {
             provider: shown,
             offered: &offered,
-            status_message: shown
-                .on_device()
-                .then(|| page.on_device.message())
-                .flatten(),
+            status_message: status_message.as_deref().filter(|_| shown.on_device()),
             listed_models: listed(shown),
             models_loading: page.listing.as_ref().is_some_and(|(p, _)| *p == shown),
             models_notice: page
@@ -712,6 +712,7 @@ impl Actor {
             test_running: page.test.is_some(),
             test_result: page.test_result.as_ref(),
             test_error: page.test_error.as_deref(),
+            platform: self.ports.platform,
         })
     }
 }

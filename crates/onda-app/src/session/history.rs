@@ -333,6 +333,7 @@ impl Actor {
             dialog: history.dialog.as_ref().map(HistoryDialog::confirmation),
             error: history.error.as_deref(),
             copied: history.copied,
+            platform: self.ports.platform,
         });
         self.ui.history.built = Some((key, view.clone()));
         Some(view)

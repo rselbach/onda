@@ -1,6 +1,7 @@
 //! User-facing History copy (HIS-17, HIS-18, HIS-20, HIS-22, HIS-24,
 //! HIS-27, HIS-28) and retention option labels.
 
+use crate::platform::Platform;
 use crate::types::HistoryRetention;
 
 /// Retention picker options, in display order (HIS-13).
@@ -28,17 +29,22 @@ pub const KEEP_FOR_PICKER: &str = "Keep for";
 /// Audio toggle label; disabled when history is off (HIS-18).
 pub const KEEP_AUDIO_TOGGLE: &str = "Keep audio recordings";
 
-/// Caption under the History settings bar (HIS-18).
-pub fn settings_caption(history_enabled: bool, keeps_audio: bool) -> &'static str {
-    match (history_enabled, keeps_audio) {
-        (false, _) => {
-            "New dictations aren't saved. Saved transcripts stay until they expire or you delete them."
-        }
-        (true, false) => "Saved only on this Mac and left out of backups.",
-        (true, true) => {
-            "Saved only on this Mac and left out of backups. Audio keeps the newest 50 recordings, up to 500 MB."
-        }
+/// Caption under the History settings bar (HIS-18). It promises backup
+/// exclusion only where the platform provides it.
+pub fn settings_caption(history_enabled: bool, keeps_audio: bool, platform: Platform) -> String {
+    if !history_enabled {
+        return "New dictations aren't saved. Saved transcripts stay until they expire or you delete them.".to_owned();
     }
+    let computer = platform.computer_term;
+    let backups = match platform.excludes_from_backups {
+        true => " and left out of backups",
+        false => "",
+    };
+    let audio = match keeps_audio {
+        true => " Audio keeps the newest 50 recordings, up to 500 MB.",
+        false => "",
+    };
+    format!("Saved only on this {computer}{backups}.{audio}")
 }
 
 /// Search field prompt (HIS-19).
@@ -102,6 +108,7 @@ pub fn clear_history_confirmation(entry_count: usize) -> Confirmation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::privacy_naming::PrivacyNaming;
 
     #[test]
     fn retention_labels() {
@@ -140,38 +147,65 @@ mod tests {
             name: &'static str,
             enabled: bool,
             keeps_audio: bool,
+            platform: Platform,
             want: &'static str,
         }
+        let macos = Platform::macos(PrivacyNaming::Accessibility);
         let off = "New dictations aren't saved. Saved transcripts stay until they expire or you delete them.";
         let cases = [
             Case {
                 name: "history off",
                 enabled: false,
                 keeps_audio: false,
+                platform: macos,
                 want: off,
             },
             Case {
                 name: "history off ignores audio",
                 enabled: false,
                 keeps_audio: true,
+                platform: macos,
+                want: off,
+            },
+            Case {
+                name: "history off on Linux",
+                enabled: false,
+                keeps_audio: true,
+                platform: Platform::linux(),
                 want: off,
             },
             Case {
                 name: "on without audio",
                 enabled: true,
                 keeps_audio: false,
+                platform: macos,
                 want: "Saved only on this Mac and left out of backups.",
             },
             Case {
                 name: "on with audio uses decimal 500 MB",
                 enabled: true,
                 keeps_audio: true,
+                platform: macos,
                 want: "Saved only on this Mac and left out of backups. Audio keeps the newest 50 recordings, up to 500 MB.",
+            },
+            Case {
+                name: "Linux promises no backup exclusion",
+                enabled: true,
+                keeps_audio: false,
+                platform: Platform::linux(),
+                want: "Saved only on this computer.",
+            },
+            Case {
+                name: "Linux with audio",
+                enabled: true,
+                keeps_audio: true,
+                platform: Platform::linux(),
+                want: "Saved only on this computer. Audio keeps the newest 50 recordings, up to 500 MB.",
             },
         ];
         for tc in cases {
             assert_eq!(
-                settings_caption(tc.enabled, tc.keeps_audio),
+                settings_caption(tc.enabled, tc.keeps_audio, tc.platform),
                 tc.want,
                 "{}",
                 tc.name

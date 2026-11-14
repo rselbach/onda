@@ -5,7 +5,7 @@
 use std::time::Duration;
 
 use super::shortcut::{ModifierSet, Shortcut};
-use crate::privacy_naming::PrivacyNaming;
+use crate::platform::Platform;
 use crate::types::MonoTime;
 
 /// Most re-enables tolerated within [`REENABLE_WINDOW`] (HOT-17).
@@ -79,24 +79,29 @@ pub const REGISTRATION_FAILURE_TITLE: &str = "Hotkey Registration Failed";
 pub struct RegistrationFailureNotice {
     /// Always [`REGISTRATION_FAILURE_TITLE`].
     pub title: &'static str,
-    /// Names the shortcut and the OS status code.
+    /// Names the shortcut and, where the platform has a name for it, the
+    /// OS status code.
     pub message: String,
 }
 
 impl RegistrationFailureNotice {
     /// The notice for `shortcut` failing with OS status `status` (HOT-19).
-    /// `naming` is the OS's name for the Accessibility permission.
-    pub fn new(shortcut: &Shortcut, status: i32, naming: PrivacyNaming) -> Self {
+    /// A lone modifier is explained by the typing permission only where
+    /// the platform has one.
+    pub fn new(shortcut: &Shortcut, status: i32, platform: Platform) -> Self {
         let display = shortcut.display();
-        let message = if shortcut.is_lone_modifier() {
-            format!(
-                "Could not register {display} as a global hotkey. {} OSStatus: {status}",
+        let reason = match platform.typing_permission {
+            Some(naming) if shortcut.is_lone_modifier() => format!(
+                "Could not register {display} as a global hotkey. {}",
                 naming.lone_modifier_requirement()
-            )
-        } else {
-            format!(
-                "Could not register the global hotkey ({display}). It may be in use by another application. OSStatus: {status}"
-            )
+            ),
+            _ => format!(
+                "Could not register the global hotkey ({display}). It may be in use by another application."
+            ),
+        };
+        let message = match platform.error_code_term {
+            Some(term) => format!("{reason} {term}: {status}"),
+            None => reason,
         };
         Self {
             title: REGISTRATION_FAILURE_TITLE,
@@ -133,17 +138,17 @@ impl RegistrationRetry {
     /// Records that registering `shortcut` failed with `status` while
     /// Accessibility trust was `trusted`. Returns the notice to post, if
     /// any: always for a combo (which also ends any lone-modifier episode),
-    /// and only for the first failure of a lone-modifier episode. `naming`
-    /// is the OS's name for the Accessibility permission.
+    /// and only for the first failure of a lone-modifier episode.
+    /// `platform` words the notice.
     pub fn record_failure(
         &mut self,
         shortcut: &Shortcut,
         status: i32,
         trusted: bool,
-        naming: PrivacyNaming,
+        platform: Platform,
     ) -> Option<RegistrationFailureNotice> {
         let notify = self.record(shortcut.is_lone_modifier(), trusted);
-        notify.then(|| RegistrationFailureNotice::new(shortcut, status, naming))
+        notify.then(|| RegistrationFailureNotice::new(shortcut, status, platform))
     }
 
     /// Records a trust check. Returns true when the caller should register
@@ -262,6 +267,7 @@ impl HotkeyRoute {
 mod tests {
     use super::*;
     use crate::hotkey::shortcut::{KeyCode, Modifier, ModifierKey};
+    use crate::privacy_naming::PrivacyNaming;
 
     fn secs(s: f64) -> MonoTime {
         Duration::from_secs_f64(s)
@@ -587,7 +593,7 @@ mod tests {
                                     shortcut,
                                     -9874,
                                     trusted,
-                                    PrivacyNaming::Accessibility,
+                                    Platform::macos(PrivacyNaming::Accessibility),
                                 )
                                 .is_some(),
                         );
@@ -606,45 +612,61 @@ mod tests {
 
     #[test]
     fn failure_notice_copy_hot_19() {
+        let macos_26 = Platform::macos(PrivacyNaming::Accessibility);
+        let macos_27 = Platform::macos(PrivacyNaming::DeviceControlAndDataAccess);
         let cases = [
             (
                 "combo",
                 Shortcut::default(),
                 -9878,
-                PrivacyNaming::Accessibility,
+                macos_26,
                 "Could not register the global hotkey (⌥ Space). It may be in use by another application. OSStatus: -9878",
             ),
             (
                 "lone modifier",
                 Shortcut::lone(ModifierKey::AltRight),
                 -9874,
-                PrivacyNaming::Accessibility,
+                macos_26,
                 "Could not register Right Option as a global hotkey. Lone modifier keys require Accessibility permission in System Settings. OSStatus: -9874",
             ),
             (
                 "fn",
                 Shortcut::lone(ModifierKey::Fn),
                 0,
-                PrivacyNaming::Accessibility,
+                macos_26,
                 "Could not register Fn as a global hotkey. Lone modifier keys require Accessibility permission in System Settings. OSStatus: 0",
             ),
             (
                 "combo on macOS 27",
                 Shortcut::default(),
                 -9878,
-                PrivacyNaming::DeviceControlAndDataAccess,
+                macos_27,
                 "Could not register the global hotkey (⌥ Space). It may be in use by another application. OSStatus: -9878",
             ),
             (
                 "lone modifier on macOS 27",
                 Shortcut::lone(ModifierKey::AltRight),
                 -9874,
-                PrivacyNaming::DeviceControlAndDataAccess,
+                macos_27,
                 "Could not register Right Option as a global hotkey. Lone modifier keys require Device Control and Data Access in System Settings. OSStatus: -9874",
             ),
+            (
+                "combo on Linux has no status name",
+                Shortcut::default(),
+                1,
+                Platform::linux(),
+                "Could not register the global hotkey (⌥ Space). It may be in use by another application.",
+            ),
+            (
+                "lone modifier on Linux has no typing permission to name",
+                Shortcut::lone(ModifierKey::AltRight),
+                1,
+                Platform::linux(),
+                "Could not register the global hotkey (Right Option). It may be in use by another application.",
+            ),
         ];
-        for (name, shortcut, status, naming, want) in cases {
-            let got = RegistrationFailureNotice::new(&shortcut, status, naming);
+        for (name, shortcut, status, platform, want) in cases {
+            let got = RegistrationFailureNotice::new(&shortcut, status, platform);
             assert_eq!(got.title, "Hotkey Registration Failed", "{name}");
             assert_eq!(got.message, want, "{name}");
         }

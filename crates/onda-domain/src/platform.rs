@@ -15,6 +15,20 @@ pub struct Platform {
     /// What copy calls the place Onda's menu lives: "menu bar icon",
     /// "application".
     pub tray_term: &'static str,
+    /// What copy calls the computer Onda runs on, after "this": "Mac",
+    /// "computer".
+    pub computer_term: &'static str,
+    /// What copy calls the place the system keeps API keys: "system
+    /// keychain", "desktop keyring".
+    pub secret_store_term: &'static str,
+    /// Where copy says a revealed file shows: "Finder", "Folder".
+    pub file_manager_term: &'static str,
+    /// What copy calls the code the OS gives a failure: "OSStatus". `None`
+    /// when the system's code tells the user nothing, so copy leaves it out.
+    pub error_code_term: Option<&'static str>,
+    /// Whether the system keeps what Onda saves out of its backups, which
+    /// copy then says.
+    pub excludes_from_backups: bool,
     /// What the OS calls the permission that lets Onda type into other
     /// apps. `None` when the system has no such permission.
     pub typing_permission: Option<PrivacyNaming>,
@@ -28,6 +42,11 @@ impl Platform {
         Self {
             os_name: "macOS",
             tray_term: "menu bar icon",
+            computer_term: "Mac",
+            secret_store_term: "system keychain",
+            file_manager_term: "Finder",
+            error_code_term: Some("OSStatus"),
+            excludes_from_backups: true,
             typing_permission: Some(typing_permission),
             microphone_permission: true,
         }
@@ -39,6 +58,11 @@ impl Platform {
         Self {
             os_name: "Linux",
             tray_term: "application",
+            computer_term: "computer",
+            secret_store_term: "desktop keyring",
+            file_manager_term: "Folder",
+            error_code_term: None,
+            excludes_from_backups: false,
             typing_permission: None,
             microphone_permission: false,
         }

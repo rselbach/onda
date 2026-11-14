@@ -61,7 +61,7 @@ impl Window {
             .build();
         let toolbar = adw::ToolbarView::new();
         let header = adw::HeaderBar::new();
-        let title = adw::WindowTitle::new("Getting Started", "Onda");
+        let title = adw::WindowTitle::new(MainWindowSection::GettingStarted.title(), "Onda");
         header.set_title_widget(Some(&title));
         let quit = gtk::Button::with_label("Quit");
         let app = application.clone();
@@ -108,29 +108,53 @@ impl Window {
         let shortcut = label("Preparing the global shortcut…");
         home.append(&shortcut);
         home.append(&label("Close this window to keep Onda running. Reopen it from your application launcher. Use Quit to stop Onda."));
-        stack.add_titled(&scrolled(&home), Some("dictation"), "Getting Started");
+        stack.add_titled(
+            &scrolled(&home),
+            Some("dictation"),
+            MainWindowSection::GettingStarted.title(),
+        );
         let models = page();
-        stack.add_titled(&scrolled(&models), Some("speech"), "Speech");
+        stack.add_titled(
+            &scrolled(&models),
+            Some("speech"),
+            MainWindowSection::Speech.title(),
+        );
         let post_processing = post_processing::Page::new();
         stack.add_titled(
             &scrolled(&post_processing.widget),
             Some("post-processing"),
-            "Post-processing",
+            MainWindowSection::PostProcessing.title(),
         );
         let history = history::Page::new();
-        stack.add_titled(&scrolled(&history.widget), Some("history"), "History");
+        stack.add_titled(
+            &scrolled(&history.widget),
+            Some("history"),
+            MainWindowSection::History.title(),
+        );
         let general = page();
-        stack.add_titled(&scrolled(&general), Some("general"), "General");
+        stack.add_titled(
+            &scrolled(&general),
+            Some("general"),
+            MainWindowSection::General.title(),
+        );
         let hotkey = hotkey::Page::new();
-        stack.add_titled(&scrolled(&hotkey.widget), Some("hotkey"), "Hotkey");
+        stack.add_titled(
+            &scrolled(&hotkey.widget),
+            Some("hotkey"),
+            MainWindowSection::Hotkey.title(),
+        );
         let replacements = replacements::Page::new();
         stack.add_titled(
             &scrolled(&replacements.widget),
             Some("replacements"),
-            "Replacements",
+            MainWindowSection::Replacements.title(),
         );
         let about = page();
-        stack.add_titled(&scrolled(&about), Some("about"), "About");
+        stack.add_titled(
+            &scrolled(&about),
+            Some("about"),
+            MainWindowSection::About.title(),
+        );
         let setup = adw::PreferencesGroup::builder()
             .title("Set up dictation")
             .build();

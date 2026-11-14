@@ -169,11 +169,7 @@ impl Page {
                 "{} · {}",
                 details.model_name, details.provider_name
             ));
-            self.caption.set_text(
-                &details
-                    .caption
-                    .replace("system keychain", "desktop keyring"),
-            );
+            self.caption.set_text(&details.caption);
             self.caption.add_css_class("dim-label");
             self.test.set_sensitive(details.test_button.enabled);
             self.busy.set_spinning(details.test_running);

@@ -37,17 +37,23 @@ pub enum OnDeviceStatus {
 
 impl OnDeviceStatus {
     /// What the model sheet says when the model cannot run; `None` when it
-    /// can.
-    pub fn message(self) -> Option<&'static str> {
+    /// can. `computer_term` is what the platform calls the computer. Every
+    /// system can show it, because a settings file brought from a Mac
+    /// keeps this provider selected.
+    pub fn message(self, computer_term: &str) -> Option<String> {
         match self {
             Self::Available => None,
-            Self::DeviceNotEligible => Some("This Mac doesn't support Apple Intelligence."),
-            Self::NotEnabled => {
-                Some("Turn on Apple Intelligence in System Settings to use it for post-processing.")
-            }
-            Self::NotReady => {
-                Some("Apple Intelligence is still getting ready. Try again in a few minutes.")
-            }
+            Self::DeviceNotEligible => Some(format!(
+                "This {computer_term} doesn't support Apple Intelligence."
+            )),
+            // only a system with Apple Intelligence reports it switched off
+            Self::NotEnabled => Some(
+                "Turn on Apple Intelligence in System Settings to use it for post-processing."
+                    .to_owned(),
+            ),
+            Self::NotReady => Some(
+                "Apple Intelligence is still getting ready. Try again in a few minutes.".to_owned(),
+            ),
         }
     }
 }
@@ -179,6 +185,43 @@ impl CleanupProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unavailable_on_device_model_says_why() {
+        use OnDeviceStatus::*;
+        let cases = [
+            ("available", Available, "Mac", None),
+            (
+                "not eligible on a Mac",
+                DeviceNotEligible,
+                "Mac",
+                Some("This Mac doesn't support Apple Intelligence."),
+            ),
+            (
+                "not eligible on Linux",
+                DeviceNotEligible,
+                "computer",
+                Some("This computer doesn't support Apple Intelligence."),
+            ),
+            (
+                "not enabled",
+                NotEnabled,
+                "Mac",
+                Some(
+                    "Turn on Apple Intelligence in System Settings to use it for post-processing.",
+                ),
+            ),
+            (
+                "not ready",
+                NotReady,
+                "Mac",
+                Some("Apple Intelligence is still getting ready. Try again in a few minutes."),
+            ),
+        ];
+        for (name, status, computer_term, want) in cases {
+            assert_eq!(status.message(computer_term).as_deref(), want, "{name}");
+        }
+    }
 
     #[test]
     fn ids_round_trip() {

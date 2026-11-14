@@ -149,8 +149,13 @@ pub struct UpdateCaption {
     pub tone: CaptionTone,
 }
 
-/// The caption for `status`; `None` shows nothing.
-pub fn update_caption(status: &UpdateStatus, dictating: bool) -> Option<UpdateCaption> {
+/// The caption for `status`; `None` shows nothing. `os_name` is the system
+/// a release can require a newer version of.
+pub fn update_caption(
+    status: &UpdateStatus,
+    dictating: bool,
+    os_name: &str,
+) -> Option<UpdateCaption> {
     let text = match status {
         UpdateStatus::Disabled => "Updates are off in development builds.".to_owned(),
         UpdateStatus::Idle => return None,
@@ -170,7 +175,7 @@ pub fn update_caption(status: &UpdateStatus, dictating: bool) -> Option<UpdateCa
             "Onda {version} is available. This copy of Onda can't replace itself, so download \
              the new version and move it to Applications."
         ),
-        UpdateStatus::Failed(failure) => failure_text(failure),
+        UpdateStatus::Failed(failure) => failure_text(failure, os_name),
     };
     let tone = match status {
         UpdateStatus::Failed(_) => CaptionTone::Warning,
@@ -179,7 +184,7 @@ pub fn update_caption(status: &UpdateStatus, dictating: bool) -> Option<UpdateCa
     Some(UpdateCaption { text, tone })
 }
 
-fn failure_text(failure: &UpdateFailure) -> String {
+fn failure_text(failure: &UpdateFailure, os_name: &str) -> String {
     match failure {
         UpdateFailure::Check => {
             "Couldn't check for updates. Check your internet connection and try again.".to_owned()
@@ -203,7 +208,7 @@ fn failure_text(failure: &UpdateFailure) -> String {
         UpdateFailure::RequiresNewerOs {
             version,
             minimum_os,
-        } => format!("Onda {version} requires macOS {minimum_os} or later."),
+        } => format!("Onda {version} requires {os_name} {minimum_os} or later."),
     }
 }
 
@@ -305,14 +310,21 @@ mod tests {
 
     #[test]
     fn upd_captions() {
+        let newer_os = || {
+            UpdateStatus::Failed(UpdateFailure::RequiresNewerOs {
+                version: "2.0.0".to_owned(),
+                minimum_os: "27.0".to_owned(),
+            })
+        };
         let cases = [
-            (UpdateStatus::Idle, false, None),
+            (UpdateStatus::Idle, false, "macOS", None),
             (
                 UpdateStatus::Downloading {
                     version: "2.0.0".to_owned(),
                     percent: 42,
                 },
                 false,
+                "macOS",
                 Some("Downloading Onda 2.0.0… 42%"),
             ),
             (
@@ -320,29 +332,35 @@ mod tests {
                     version: "2.0.0".to_owned(),
                 },
                 true,
+                "macOS",
                 Some("Onda 2.0.0 is ready. Restart when dictation finishes."),
             ),
             (
-                UpdateStatus::Failed(UpdateFailure::RequiresNewerOs {
-                    version: "2.0.0".to_owned(),
-                    minimum_os: "27.0".to_owned(),
-                }),
+                newer_os(),
                 false,
+                "macOS",
                 Some("Onda 2.0.0 requires macOS 27.0 or later."),
+            ),
+            (
+                newer_os(),
+                false,
+                "Linux",
+                Some("Onda 2.0.0 requires Linux 27.0 or later."),
             ),
             (
                 UpdateStatus::Failed(UpdateFailure::Relaunch {
                     version: "2.0.0".to_owned(),
                 }),
                 false,
+                "macOS",
                 Some(
                     "Onda 2.0.0 is installed, but Onda couldn't restart itself. Quit Onda and \
                      open it again.",
                 ),
             ),
         ];
-        for (status, dictating, want) in cases {
-            let got = update_caption(&status, dictating);
+        for (status, dictating, os_name, want) in cases {
+            let got = update_caption(&status, dictating, os_name);
             assert_eq!(
                 got.as_ref().map(|caption| caption.text.as_str()),
                 want,

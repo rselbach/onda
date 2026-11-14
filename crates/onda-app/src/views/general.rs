@@ -220,7 +220,11 @@ pub fn general_page(inputs: GeneralInputs<'_>) -> GeneralPage {
             &inputs.updater.status,
             inputs.dictating || inputs.restarting,
         ),
-        update_caption: update_caption(&inputs.updater.status, inputs.dictating),
+        update_caption: update_caption(
+            &inputs.updater.status,
+            inputs.dictating,
+            inputs.platform.os_name,
+        ),
         version_footer: format!("Current version: {}", inputs.version),
         last_update_check: inputs.updater.last_check,
     }

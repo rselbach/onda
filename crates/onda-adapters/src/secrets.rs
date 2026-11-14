@@ -41,12 +41,23 @@ impl<S: SecretStore + Send + Sync> SecretSource for Keychain<S> {
 pub struct CloudCleanup {
     http: CleanupClient,
     on_device: Option<Arc<dyn OnDeviceModel>>,
+    computer_term: &'static str,
 }
 
 impl CloudCleanup {
     /// Wraps `http`, with the on-device model when the shell has one.
-    pub fn new(http: CleanupClient, on_device: Option<Arc<dyn OnDeviceModel>>) -> Self {
-        Self { http, on_device }
+    /// `computer_term` is what the platform calls the computer, for the
+    /// error a request gets when there is no such model.
+    pub fn new(
+        http: CleanupClient,
+        on_device: Option<Arc<dyn OnDeviceModel>>,
+        computer_term: &'static str,
+    ) -> Self {
+        Self {
+            http,
+            on_device,
+            computer_term,
+        }
     }
 }
 
@@ -57,13 +68,13 @@ impl CleanupTransport for CloudCleanup {
             return Box::pin(async move { client.send(&request).await });
         };
         let model = self.on_device.clone();
+        let computer_term = self.computer_term;
         Box::pin(async move {
             let Some(model) = model else {
                 return Err(CleanupError::Transport(
                     OnDeviceStatus::DeviceNotEligible
-                        .message()
-                        .unwrap_or_default()
-                        .to_owned(),
+                        .message(computer_term)
+                        .unwrap_or_default(),
                 ));
             };
             // the model blocks its thread; a timed-out call finishes there
@@ -126,7 +137,7 @@ mod tests {
 
     fn transport(model: Option<Arc<FakeModel>>) -> CloudCleanup {
         let http = CleanupClient::new().expect("client");
-        CloudCleanup::new(http, model.map(|m| m as Arc<dyn OnDeviceModel>))
+        CloudCleanup::new(http, model.map(|m| m as Arc<dyn OnDeviceModel>), "Mac")
     }
 
     const CUSTOM_PROMPT: &str = "Fix punctuation only.";
@@ -178,7 +189,12 @@ mod tests {
         );
 
         let got = transport(None).send(on_device_request()).await;
-        assert!(matches!(got, Err(CleanupError::Transport(_))), "{got:?}");
+        assert_eq!(
+            got,
+            Err(CleanupError::Transport(
+                "This Mac doesn't support Apple Intelligence.".to_owned()
+            ))
+        );
     }
 
     #[test]

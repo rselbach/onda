@@ -125,6 +125,14 @@ pub(super) fn button(root: &impl IsA<gtk::Widget>, title: &str) -> gtk::Button {
         .unwrap()
 }
 
+fn options(row: &adw::ComboRow) -> Vec<String> {
+    let model = row.model().and_downcast::<gtk::StringList>().unwrap();
+    (0..model.n_items())
+        .filter_map(|index| model.string(index))
+        .map(String::from)
+        .collect()
+}
+
 fn settle() {
     let until = Instant::now() + Duration::from_millis(350);
     wait_for(|| Instant::now() >= until);
@@ -320,6 +328,10 @@ pub(super) fn exercise_pages(owner: &Rc<Window>) {
     owner.stack.set_visible_child_name("hotkey");
     wait_for(|| text_visible(&owner.hotkey.widget, "Activation"));
     let entry = widgets::<adw::EntryRow>(&owner.hotkey.widget).remove(0);
+    assert_eq!(entry.title(), "Press to talk");
+    let activation = widgets::<adw::ComboRow>(&owner.hotkey.widget).remove(0);
+    assert_eq!(activation.title(), "Activation");
+    assert_eq!(options(&activation), ["Hold", "Toggle", "Automatic"]);
     entry.set_text("Ctrl+Alt+G");
     entry.emit_by_name::<()>("apply", &[]);
     wait_for(|| {
@@ -330,6 +342,14 @@ pub(super) fn exercise_pages(owner: &Rc<Window>) {
 
     owner.stack.set_visible_child_name("history");
     wait_for(|| text_visible(&owner.history.widget, "Troy Barnes"));
+    assert!(text_visible(
+        &owner.history.widget,
+        "Saved only on this computer."
+    ));
+    assert!(!text_visible(&owner.history.widget, "backups"));
+    let retention = widgets::<adw::ComboRow>(&owner.history.widget).remove(0);
+    assert_eq!(retention.title(), "Keep for");
+    assert_eq!(options(&retention), ["1 Week", "1 Month", "Forever"]);
     capture(owner, "history");
     assert_eq!(menu_titles(owner, "Troy Barnes"), ["Copy", "-", "Delete"]);
     assert_eq!(

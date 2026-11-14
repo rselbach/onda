@@ -912,23 +912,29 @@ pub struct ReadyStepView {
     pub retention_note: Option<String>,
 }
 
-/// Builds the Ready step (ONB-9).
+/// Builds the Ready step (ONB-9). `computer_term` is what the platform
+/// calls the computer the transcripts are saved on.
 pub fn ready_step(
     history_enabled: bool,
     retention: HistoryRetention,
     output_mode: OutputMode,
+    computer_term: &str,
 ) -> ReadyStepView {
     ReadyStepView {
         title: "You're all set",
         prompt_prefix: "Press",
         prompt_suffix: "and start talking.",
         try_it_placeholder: try_it_placeholder(output_mode),
-        retention_note: retention_note(history_enabled, retention),
+        retention_note: retention_note(history_enabled, retention, computer_term),
     }
 }
 
 /// "Transcripts are saved on this Mac for 1 month." (ONB-9).
-pub fn retention_note(history_enabled: bool, retention: HistoryRetention) -> Option<String> {
+pub fn retention_note(
+    history_enabled: bool,
+    retention: HistoryRetention,
+    computer_term: &str,
+) -> Option<String> {
     if !history_enabled {
         return None;
     }
@@ -937,7 +943,9 @@ pub fn retention_note(history_enabled: bool, retention: HistoryRetention) -> Opt
         HistoryRetention::Month => " for 1 month",
         HistoryRetention::Forever => "",
     };
-    Some(format!("Transcripts are saved on this Mac{period}."))
+    Some(format!(
+        "Transcripts are saved on this {computer_term}{period}."
+    ))
 }
 
 #[cfg(test)]
@@ -2404,6 +2412,7 @@ mod tests {
             name: &'static str,
             history: bool,
             retention: HistoryRetention,
+            computer_term: &'static str,
             want_note: Option<&'static str>,
         }
         let cases = [
@@ -2411,29 +2420,45 @@ mod tests {
                 name: "week",
                 history: true,
                 retention: HistoryRetention::Week,
+                computer_term: "Mac",
                 want_note: Some("Transcripts are saved on this Mac for 1 week."),
             },
             Case {
                 name: "month",
                 history: true,
                 retention: HistoryRetention::Month,
+                computer_term: "Mac",
                 want_note: Some("Transcripts are saved on this Mac for 1 month."),
             },
             Case {
                 name: "forever",
                 history: true,
                 retention: HistoryRetention::Forever,
+                computer_term: "Mac",
                 want_note: Some("Transcripts are saved on this Mac."),
+            },
+            Case {
+                name: "month on Linux",
+                history: true,
+                retention: HistoryRetention::Month,
+                computer_term: "computer",
+                want_note: Some("Transcripts are saved on this computer for 1 month."),
             },
             Case {
                 name: "history off",
                 history: false,
                 retention: HistoryRetention::Month,
+                computer_term: "Mac",
                 want_note: None,
             },
         ];
         for tc in cases {
-            let got = ready_step(tc.history, tc.retention, OutputMode::Clipboard);
+            let got = ready_step(
+                tc.history,
+                tc.retention,
+                OutputMode::Clipboard,
+                tc.computer_term,
+            );
             assert_eq!(got.retention_note.as_deref(), tc.want_note, "{}", tc.name);
             assert_eq!(got.title, "You're all set", "{}", tc.name);
             assert_eq!(

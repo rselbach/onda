@@ -84,6 +84,13 @@ fn real_gui_preserves_provider_keys_and_model_selection() {
     let page = &owner.post_processing;
     page.enabled.set_active(true);
     wait_for("post-processing enabled", || page.details.is_visible());
+    assert!(
+        page.caption
+            .text()
+            .contains("The API key is stored in your desktop keyring"),
+        "{}",
+        page.caption.text()
+    );
     page.model.emit_by_name::<()>("activated", &[]);
     wait_for("model chooser", || page.chooser.borrow().is_some());
     let chooser = page.chooser.borrow().as_ref().unwrap().clone();

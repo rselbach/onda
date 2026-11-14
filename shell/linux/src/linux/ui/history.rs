@@ -15,8 +15,11 @@ use uuid::Uuid;
 
 pub(super) struct Page {
     pub widget: gtk::Box,
+    settings: adw::PreferencesGroup,
     save: adw::SwitchRow,
     retention: adw::ComboRow,
+    // the picker's options in row order, as the core last sent them
+    retention_options: RefCell<Vec<HistoryRetention>>,
     audio: adw::SwitchRow,
     search: gtk::SearchEntry,
     clear: gtk::Button,
@@ -30,50 +33,33 @@ pub(super) struct Page {
     deferred: RefCell<Option<HistoryPage>>,
 }
 
-// the core's title names the macOS file manager
-const SHOW_RECORDING: &str = "Show Recording in Folder";
-
-const RETENTION: [HistoryRetention; 3] = [
-    HistoryRetention::Week,
-    HistoryRetention::Month,
-    HistoryRetention::Forever,
-];
-
 impl Page {
     pub fn new() -> Self {
         let widget = page();
-        let group = adw::PreferencesGroup::builder()
+        let settings = adw::PreferencesGroup::builder()
             .title("History settings")
-            .description("Saved only on this computer.")
             .build();
-        let save = adw::SwitchRow::builder().title("Save transcripts").build();
-        let retention = adw::ComboRow::builder()
-            .title("Keep for")
-            .model(&gtk::StringList::new(&["1 Week", "1 Month", "Forever"]))
-            .build();
-        let audio = adw::SwitchRow::builder()
-            .title("Keep audio recordings")
-            .build();
-        group.add(&save);
-        group.add(&retention);
-        group.add(&audio);
-        widget.append(&group);
+        let save = adw::SwitchRow::new();
+        let retention = adw::ComboRow::new();
+        let audio = adw::SwitchRow::new();
+        settings.add(&save);
+        settings.add(&retention);
+        settings.add(&audio);
+        widget.append(&settings);
         let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-        let search = gtk::SearchEntry::builder()
-            .placeholder_text("Search transcripts")
-            .hexpand(true)
-            .build();
+        let search = gtk::SearchEntry::builder().hexpand(true).build();
         toolbar.append(&search);
         let clear = gtk::Button::from_icon_name("user-trash-symbolic");
-        clear.set_tooltip_text(Some("Clear History…"));
         toolbar.append(&clear);
         widget.append(&toolbar);
         let entries = gtk::Box::new(gtk::Orientation::Vertical, 24);
         widget.append(&entries);
         Self {
             widget,
+            settings,
             save,
             retention,
+            retention_options: RefCell::default(),
             audio,
             search,
             clear,
@@ -107,9 +93,14 @@ impl Page {
         self.retention.connect_selected_notify(move |row| {
             if let Some(owner) = weak.upgrade()
                 && !owner.history.updating.get()
-                && let Some(retention) = RETENTION.get(row.selected() as usize)
+                && let Some(retention) = owner
+                    .history
+                    .retention_options
+                    .borrow()
+                    .get(row.selected() as usize)
+                    .copied()
             {
-                owner.core.app.set_history_retention(*retention);
+                owner.core.app.set_history_retention(retention);
             }
         });
         let weak = Rc::downgrade(owner);
@@ -135,16 +126,41 @@ impl Page {
         }
         self.deferred.take();
         self.updating.set(true);
+        // a group's description is Pango markup
+        self.settings
+            .set_description(Some(&glib::markup_escape_text(&view.caption)));
+        self.save.set_title(&view.save_transcripts.label);
         self.save.set_active(view.save_transcripts.on);
+        self.audio.set_title(&view.keep_audio.label);
         self.audio.set_active(view.keep_audio.on);
         self.audio.set_sensitive(view.keep_audio.enabled);
-        self.retention.set_sensitive(view.retention_enabled);
-        self.retention.set_selected(
-            RETENTION
+        self.retention.set_title(&view.retention_label);
+        let options: Vec<HistoryRetention> = view
+            .retention_options
+            .iter()
+            .map(|option| option.retention)
+            .collect();
+        if *self.retention_options.borrow() != options {
+            let titles: Vec<&str> = view
+                .retention_options
                 .iter()
-                .position(|value| *value == view.retention)
-                .unwrap_or(1) as u32,
-        );
+                .map(|option| option.title.as_str())
+                .collect();
+            self.retention
+                .set_model(Some(&gtk::StringList::new(&titles)));
+            *self.retention_options.borrow_mut() = options;
+        }
+        self.retention.set_sensitive(view.retention_enabled);
+        if let Some(selected) = self
+            .retention_options
+            .borrow()
+            .iter()
+            .position(|value| *value == view.retention)
+        {
+            self.retention.set_selected(selected as u32);
+        }
+        self.search.set_placeholder_text(Some(&view.search_prompt));
+        self.clear.set_tooltip_text(Some(&view.clear_button.title));
         self.clear.set_sensitive(view.clear_button.enabled);
         self.updating.set(false);
         clear(&self.entries);
@@ -326,11 +342,7 @@ fn row_menu(owner: &Rc<Window>, id: Uuid, items: Vec<HistoryMenuItem>) -> gtk::M
             section = gio::Menu::new();
             continue;
         };
-        let title = match entry.item {
-            ContextMenuItem::ShowRecording => SHOW_RECORDING,
-            _ => &entry.title,
-        };
-        section.append(Some(title), Some(&format!("row.{name}")));
+        section.append(Some(&entry.title), Some(&format!("row.{name}")));
         let action = gio::SimpleAction::new(name, None);
         let weak = Rc::downgrade(owner);
         action.connect_activate(move |_, _| {

@@ -143,6 +143,9 @@ pub fn run(args: &Args, paths: &DataPaths, models_dir: &Path) -> Result<()> {
     let terminal = Arc::new(Terminal {
         console: console.clone(),
     });
+    // the terminal always reports Accessibility as trusted, so no copy
+    // names the permission
+    let platform = Platform::macos(PrivacyNaming::Accessibility);
     let ports = Ports {
         text_output: terminal.clone(),
         permissions: terminal.clone(),
@@ -158,12 +161,14 @@ pub fn run(args: &Args, paths: &DataPaths, models_dir: &Path) -> Result<()> {
         models: Arc::new(models),
         catalog,
         history: Arc::new(History::new(Arc::new(history), settings.clone())),
-        cleanup: Arc::new(CloudCleanup::new(CleanupClient::new()?, None)),
+        cleanup: Arc::new(CloudCleanup::new(
+            CleanupClient::new()?,
+            None,
+            platform.computer_term,
+        )),
         secrets: secrets(),
         settings: Arc::new(settings_source),
-        // the terminal always reports Accessibility as trusted, so no copy
-        // names the permission
-        platform: Platform::macos(PrivacyNaming::Accessibility),
+        platform,
         app_version: env!("CARGO_PKG_VERSION").to_owned(),
     };
     let app = App::start_on(runtime.handle(), ports, console.clone());

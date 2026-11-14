@@ -497,6 +497,7 @@ pub fn login_item_caption(
 mod tests {
     use super::*;
     use crate::hotkey::{ModifierKey, Shortcut};
+    use crate::platform::Platform;
     use NotificationAuthorization::{
         Authorized, Denied, Ephemeral, NotDetermined, Provisional, Unsupported,
     };
@@ -942,7 +943,7 @@ mod tests {
                 message: UserMessage::HotkeyRegistrationFailed(RegistrationFailureNotice::new(
                     &Shortcut::default(),
                     -9878,
-                    PrivacyNaming::Accessibility,
+                    Platform::macos(PrivacyNaming::Accessibility),
                 )),
                 term: "menu bar icon",
                 want_title: "Hotkey Registration Failed",
@@ -954,7 +955,7 @@ mod tests {
                 message: UserMessage::HotkeyRegistrationFailed(RegistrationFailureNotice::new(
                     &Shortcut::lone(ModifierKey::AltRight),
                     -1,
-                    PrivacyNaming::Accessibility,
+                    Platform::macos(PrivacyNaming::Accessibility),
                 )),
                 term: "menu bar icon",
                 want_title: "Hotkey Registration Failed",
@@ -1028,7 +1029,7 @@ mod tests {
                 message: UserMessage::HotkeyRegistrationFailed(RegistrationFailureNotice::new(
                     &Shortcut::lone(ModifierKey::AltRight),
                     -1,
-                    PrivacyNaming::DeviceControlAndDataAccess,
+                    Platform::macos(PrivacyNaming::DeviceControlAndDataAccess),
                 )),
                 naming: PrivacyNaming::DeviceControlAndDataAccess,
                 want_title: "Hotkey Registration Failed",

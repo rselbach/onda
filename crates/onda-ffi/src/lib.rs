@@ -309,6 +309,7 @@ impl OndaCore {
                 ports.on_device.map(|port| {
                     Arc::new(ShellOnDevice(port)) as Arc<dyn onda_app::ports::OnDeviceModel>
                 }),
+                platform.computer_term,
             )),
             secrets: Arc::new(Keychain::new(KeychainSecretStore::new())),
             settings: settings_source,

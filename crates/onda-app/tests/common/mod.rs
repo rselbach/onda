@@ -1219,7 +1219,8 @@ impl Harness {
         harness
     }
 
-    fn build_on(
+    /// A core running on `platform` whose `ui_ready` has not been called.
+    pub fn build_on(
         system_speech: Option<Arc<dyn SystemSpeech>>,
         platform: Platform,
         adjust: impl FnOnce(&mut Settings),

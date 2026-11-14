@@ -410,7 +410,12 @@ fn content(inputs: &OnboardingInputs<'_>) -> OnboardingContent {
             }
         }
         OnboardingStep::Ready => {
-            let step = ready_step(inputs.history_enabled, inputs.retention, inputs.output_mode);
+            let step = ready_step(
+                inputs.history_enabled,
+                inputs.retention,
+                inputs.output_mode,
+                inputs.platform.computer_term,
+            );
             OnboardingContent::Ready {
                 title: step.title.to_owned(),
                 prompt_prefix: step.prompt_prefix.to_owned(),

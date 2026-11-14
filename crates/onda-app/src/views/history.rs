@@ -11,6 +11,7 @@ use onda_domain::history::{
     SAVE_TRANSCRIPTS_TOGGLE, SEARCH_PROMPT, context_menu, format_duration, original_transcript,
     page_content, retention_label, row_transcript, settings_caption,
 };
+use onda_domain::platform::Platform;
 use onda_domain::types::HistoryRetention;
 use uuid::Uuid;
 
@@ -205,6 +206,8 @@ pub struct HistoryInputs<'a> {
     pub error: Option<&'a str>,
     /// The entry just copied.
     pub copied: Option<Uuid>,
+    /// The system Onda runs on, for the copy that names it.
+    pub platform: Platform,
 }
 
 /// Builds the History page.
@@ -232,7 +235,11 @@ pub fn history_page(inputs: HistoryInputs<'_>) -> HistoryPage {
                 .into_iter()
                 .map(|section| HistorySection {
                     heading: heading(section.title),
-                    rows: section.entries.into_iter().map(row).collect(),
+                    rows: section
+                        .entries
+                        .into_iter()
+                        .map(|entry| row(entry, inputs.platform))
+                        .collect(),
                 })
                 .collect(),
         },
@@ -250,7 +257,7 @@ pub fn history_page(inputs: HistoryInputs<'_>) -> HistoryPage {
         retention: inputs.retention,
         retention_enabled: inputs.history_enabled,
         keep_audio: ToggleView::new(KEEP_AUDIO_TOGGLE, inputs.keep_audio, inputs.history_enabled),
-        caption: settings_caption(inputs.history_enabled, inputs.keep_audio).to_owned(),
+        caption: settings_caption(inputs.history_enabled, inputs.keep_audio, inputs.platform),
         search_prompt: SEARCH_PROMPT.to_owned(),
         query: inputs.query.to_owned(),
         clear_button: ButtonView::new(CLEAR_HISTORY_BUTTON, !inputs.entries.is_empty()),
@@ -289,7 +296,7 @@ fn heading(title: DayTitle) -> DayHeading {
     }
 }
 
-fn row(entry: &HistoryEntry) -> HistoryRow {
+fn row(entry: &HistoryEntry, platform: Platform) -> HistoryRow {
     let duration = format_duration(entry.duration);
     let mut details: Vec<&str> = Vec::new();
     if let Some(app) = entry.app_name.as_deref() {
@@ -311,7 +318,7 @@ fn row(entry: &HistoryEntry) -> HistoryRow {
             .into_iter()
             .map(|item| HistoryMenuItem {
                 item,
-                title: item.label().unwrap_or_default().to_owned(),
+                title: item.label(platform).unwrap_or_default(),
             })
             .collect(),
     }

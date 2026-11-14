@@ -10,6 +10,7 @@ use unicode_normalization::char::is_combining_mark;
 
 use super::HistoryEntry;
 use super::copy::{COPY_LABEL, RECORDING_DETAIL};
+use crate::platform::Platform;
 
 /// Entries matching `query`, in their original order (HIS-19). An entry
 /// matches when every whitespace-separated word of the query appears in its
@@ -191,17 +192,17 @@ pub enum ContextMenuItem {
 
 impl ContextMenuItem {
     /// The item's title, or `None` for [`ContextMenuItem::Divider`].
-    /// "Show Recording in Finder" names the macOS file manager; other
-    /// shells substitute theirs.
-    pub fn label(self) -> Option<&'static str> {
-        match self {
-            Self::Copy => Some(COPY_LABEL),
-            Self::CopyOriginal => Some("Copy Original"),
-            Self::PlayRecording => Some("Play Recording"),
-            Self::ShowRecording => Some("Show Recording in Finder"),
-            Self::Divider => None,
-            Self::Delete => Some("Delete"),
-        }
+    /// "Show Recording in Finder" names the platform's file manager.
+    pub fn label(self, platform: Platform) -> Option<String> {
+        let label = match self {
+            Self::Copy => COPY_LABEL.to_owned(),
+            Self::CopyOriginal => "Copy Original".to_owned(),
+            Self::PlayRecording => "Play Recording".to_owned(),
+            Self::ShowRecording => format!("Show Recording in {}", platform.file_manager_term),
+            Self::Divider => return None,
+            Self::Delete => "Delete".to_owned(),
+        };
+        Some(label)
     }
 }
 
@@ -301,6 +302,7 @@ pub fn page_content<'a>(
 mod tests {
     use super::*;
     use crate::history::test_support::{at, entry, with_audio};
+    use crate::privacy_naming::PrivacyNaming;
     use jiff::civil::date;
 
     fn transcripts<'a>(entries: impl IntoIterator<Item = &'a HistoryEntry>) -> Vec<&'a str> {
@@ -713,28 +715,39 @@ mod tests {
         for tc in cases {
             assert_eq!(context_menu(&tc.entry), tc.want, "{}", tc.name);
         }
-        let labels: Vec<Option<&str>> = [
-            Copy,
-            CopyOriginal,
-            PlayRecording,
-            ShowRecording,
-            Divider,
-            Delete,
-        ]
-        .into_iter()
-        .map(ContextMenuItem::label)
-        .collect();
-        assert_eq!(
-            labels,
+        let labels = |platform| -> Vec<Option<String>> {
+            [
+                Copy,
+                CopyOriginal,
+                PlayRecording,
+                ShowRecording,
+                Divider,
+                Delete,
+            ]
+            .into_iter()
+            .map(|item| item.label(platform))
+            .collect()
+        };
+        let want = |show_recording: &str| {
             [
                 Some("Copy"),
                 Some("Copy Original"),
                 Some("Play Recording"),
-                Some("Show Recording in Finder"),
+                Some(show_recording),
                 None,
                 Some("Delete"),
-            ],
-            "labels"
+            ]
+            .map(|label| label.map(str::to_owned))
+        };
+        assert_eq!(
+            labels(Platform::macos(PrivacyNaming::Accessibility)),
+            want("Show Recording in Finder"),
+            "macOS labels"
+        );
+        assert_eq!(
+            labels(Platform::linux()),
+            want("Show Recording in Folder"),
+            "Linux labels"
         );
     }
 

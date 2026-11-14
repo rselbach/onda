@@ -6,48 +6,53 @@ use onda_domain::cleanup::{
     CleanupError, CleanupModel, CleanupPrompt, CleanupProvider, ModelListing, SYSTEM_PROMPT,
     TEST_FAILED_TITLE,
 };
+use onda_domain::platform::Platform;
 
 use super::{AlertView, ButtonView, ToggleView};
 
 /// The caption under the model picker (CLN-26).
-fn caption(provider: CleanupProvider) -> String {
+fn caption(provider: CleanupProvider, platform: Platform) -> String {
+    let store = platform.secret_store_term;
+    let computer = platform.computer_term;
     match provider {
-        CleanupProvider::OpenRouter => "Cloud post-processing sends your transcript to OpenRouter \
-                                        and the selected model provider for processing. Onda asks \
-                                        OpenRouter to use only providers that don't retain your \
-                                        transcript. The API key is stored in your system keychain, \
-                                        not in preferences. Falls back to the raw transcript if the \
-                                        request fails."
-            .to_owned(),
-        CleanupProvider::AppleIntelligence => "Post-processing runs on this Mac with Apple \
-                                               Intelligence; your transcript never leaves it. \
-                                               Falls back to the raw transcript if the model \
-                                               is unavailable or the request fails."
-            .to_owned(),
-        CleanupProvider::Fireworks => "Cloud post-processing sends your transcript to Fireworks AI \
-                                       for processing. Fireworks says it doesn't retain prompts or \
-                                       outputs from its serverless models. The API key is stored \
-                                       in your system keychain, not in preferences. Falls back to \
-                                       the raw transcript if the request fails."
-            .to_owned(),
+        CleanupProvider::OpenRouter => format!(
+            "Cloud post-processing sends your transcript to OpenRouter and the selected model \
+             provider for processing. Onda asks OpenRouter to use only providers that don't \
+             retain your transcript. The API key is stored in your {store}, not in \
+             preferences. Falls back to the raw transcript if the request fails."
+        ),
+        CleanupProvider::AppleIntelligence => format!(
+            "Post-processing runs on this {computer} with Apple Intelligence; your transcript \
+             never leaves it. Falls back to the raw transcript if the model is unavailable or \
+             the request fails."
+        ),
+        CleanupProvider::Fireworks => format!(
+            "Cloud post-processing sends your transcript to Fireworks AI for processing. \
+             Fireworks says it doesn't retain prompts or outputs from its serverless models. \
+             The API key is stored in your {store}, not in preferences. Falls back to the raw \
+             transcript if the request fails."
+        ),
     }
 }
 
 /// The line under the provider's name in the sheet: where the transcript
 /// goes.
-fn privacy_note(provider: CleanupProvider) -> &'static str {
+fn privacy_note(provider: CleanupProvider, platform: Platform) -> String {
     match provider {
         CleanupProvider::OpenRouter => {
             "Your transcript goes to OpenRouter and the model's provider. Onda asks for \
              providers that don't retain it."
+                .to_owned()
         }
         CleanupProvider::Fireworks => {
             "Your transcript goes to Fireworks AI, which says it doesn't retain prompts or \
              outputs."
+                .to_owned()
         }
-        CleanupProvider::AppleIntelligence => {
-            "Runs on this Mac with Apple Intelligence. Your transcript never leaves it."
-        }
+        CleanupProvider::AppleIntelligence => format!(
+            "Runs on this {} with Apple Intelligence. Your transcript never leaves it.",
+            platform.computer_term
+        ),
     }
 }
 
@@ -109,8 +114,8 @@ pub struct ApiKeyFieldView {
 
 impl ApiKeyFieldView {
     /// `provider`'s key field, empty and idle; `None` for a provider that
-    /// uses no key.
-    pub fn for_provider(provider: CleanupProvider) -> Option<Self> {
+    /// uses no key. The note names `platform`'s secret store.
+    pub fn for_provider(provider: CleanupProvider, platform: Platform) -> Option<Self> {
         let url = provider.key_url()?;
         Some(Self {
             label: "API key".to_owned(),
@@ -119,7 +124,7 @@ impl ApiKeyFieldView {
             revision: 0,
             loading: false,
             error: None,
-            note: "Stored in your system keychain.".to_owned(),
+            note: format!("Stored in your {}.", platform.secret_store_term),
             get_key_title: "Get a key".to_owned(),
             get_key_url: url.to_owned(),
         })
@@ -355,6 +360,8 @@ pub struct PostProcessingInputs<'a> {
     pub test_result: Option<&'a CleanupTestResult>,
     /// The last test error message.
     pub test_error: Option<&'a str>,
+    /// The system Onda runs on, for the copy that names it.
+    pub platform: Platform,
 }
 
 /// What the prompt sheet is built from.
@@ -464,7 +471,7 @@ fn providers_dialog(
             .collect(),
         selected_provider: provider.id().to_owned(),
         provider_name: provider.display_name().to_owned(),
-        privacy_note: privacy_note(provider).to_owned(),
+        privacy_note: privacy_note(provider, page.platform),
         key: inputs.key.cloned(),
         status_message: inputs.status_message.map(str::to_owned),
         model_groups: model_groups(inputs, selected),
@@ -586,7 +593,7 @@ pub fn post_processing_page(inputs: PostProcessingInputs<'_>) -> PostProcessingP
                 .dialog
                 .as_ref()
                 .map(|dialog| providers_dialog(&inputs, dialog)),
-            caption: caption(provider),
+            caption: caption(provider, inputs.platform),
             prompt: prompt_summary(&inputs),
             test_button: ButtonView::new("Test with Sample Text", !inputs.test_running),
             test_running: inputs.test_running,
@@ -602,8 +609,13 @@ pub fn post_processing_page(inputs: PostProcessingInputs<'_>) -> PostProcessingP
 #[cfg(test)]
 mod tests {
     use onda_domain::cleanup::CLEANUP_MODELS;
+    use onda_domain::privacy_naming::PrivacyNaming;
 
     use super::*;
+
+    fn macos() -> Platform {
+        Platform::macos(PrivacyNaming::Accessibility)
+    }
 
     static DEFAULT_PROMPT: std::sync::LazyLock<CleanupPrompt> =
         std::sync::LazyLock::new(CleanupPrompt::default);
@@ -613,7 +625,8 @@ mod tests {
     }
 
     fn key() -> ApiKeyFieldView {
-        ApiKeyFieldView::for_provider(CleanupProvider::OpenRouter).expect("OpenRouter uses a key")
+        ApiKeyFieldView::for_provider(CleanupProvider::OpenRouter, macos())
+            .expect("OpenRouter uses a key")
     }
 
     fn inputs<'a>(model: &'a CleanupModel, listed: &'a [CleanupModel]) -> PostProcessingInputs<'a> {
@@ -629,6 +642,7 @@ mod tests {
             test_running: false,
             test_result: None,
             test_error: None,
+            platform: macos(),
         }
     }
 
@@ -677,13 +691,131 @@ mod tests {
         assert_eq!(details.model_name, "GPT Luna (latest)");
         assert_eq!(details.dialog, None, "the sheet starts closed");
         assert_eq!(details.test_button.title, "Test with Sample Text");
-        assert_eq!(
-            details.caption,
-            "Cloud post-processing sends your transcript to OpenRouter and the selected model \
-             provider for processing. Onda asks OpenRouter to use only providers that don't \
-             retain your transcript. The API key is stored in your system keychain, not in \
-             preferences. Falls back to the raw transcript if the request fails."
-        );
+    }
+
+    #[test]
+    fn cln_26_the_caption_names_the_platforms_key_store_and_computer() {
+        struct Case {
+            name: &'static str,
+            provider: CleanupProvider,
+            platform: Platform,
+            want: &'static str,
+        }
+        let cases = [
+            Case {
+                name: "OpenRouter on macOS",
+                provider: CleanupProvider::OpenRouter,
+                platform: macos(),
+                want: "Cloud post-processing sends your transcript to OpenRouter and the \
+                       selected model provider for processing. Onda asks OpenRouter to use only \
+                       providers that don't retain your transcript. The API key is stored in \
+                       your system keychain, not in preferences. Falls back to the raw \
+                       transcript if the request fails.",
+            },
+            Case {
+                name: "OpenRouter on Linux",
+                provider: CleanupProvider::OpenRouter,
+                platform: Platform::linux(),
+                want: "Cloud post-processing sends your transcript to OpenRouter and the \
+                       selected model provider for processing. Onda asks OpenRouter to use only \
+                       providers that don't retain your transcript. The API key is stored in \
+                       your desktop keyring, not in preferences. Falls back to the raw \
+                       transcript if the request fails.",
+            },
+            Case {
+                name: "Fireworks on macOS",
+                provider: CleanupProvider::Fireworks,
+                platform: macos(),
+                want: "Cloud post-processing sends your transcript to Fireworks AI for \
+                       processing. Fireworks says it doesn't retain prompts or outputs from its \
+                       serverless models. The API key is stored in your system keychain, not in \
+                       preferences. Falls back to the raw transcript if the request fails.",
+            },
+            Case {
+                name: "Fireworks on Linux",
+                provider: CleanupProvider::Fireworks,
+                platform: Platform::linux(),
+                want: "Cloud post-processing sends your transcript to Fireworks AI for \
+                       processing. Fireworks says it doesn't retain prompts or outputs from its \
+                       serverless models. The API key is stored in your desktop keyring, not in \
+                       preferences. Falls back to the raw transcript if the request fails.",
+            },
+            Case {
+                name: "Apple Intelligence on macOS",
+                provider: CleanupProvider::AppleIntelligence,
+                platform: macos(),
+                want: "Post-processing runs on this Mac with Apple Intelligence; your \
+                       transcript never leaves it. Falls back to the raw transcript if the \
+                       model is unavailable or the request fails.",
+            },
+            Case {
+                name: "Apple Intelligence carried over to Linux",
+                provider: CleanupProvider::AppleIntelligence,
+                platform: Platform::linux(),
+                want: "Post-processing runs on this computer with Apple Intelligence; your \
+                       transcript never leaves it. Falls back to the raw transcript if the \
+                       model is unavailable or the request fails.",
+            },
+        ];
+        for tc in cases {
+            let model = tc.provider.default_model();
+            let details = post_processing_page(PostProcessingInputs {
+                provider: tc.provider,
+                platform: tc.platform,
+                ..inputs(model, &[])
+            })
+            .details
+            .expect("details when on");
+            assert_eq!(details.caption, tc.want, "{}", tc.name);
+        }
+    }
+
+    #[test]
+    fn the_sheet_says_where_the_transcript_goes() {
+        struct Case {
+            name: &'static str,
+            provider: CleanupProvider,
+            platform: Platform,
+            want: &'static str,
+        }
+        let cases = [
+            Case {
+                name: "Fireworks",
+                provider: CleanupProvider::Fireworks,
+                platform: macos(),
+                want: "Your transcript goes to Fireworks AI, which says it doesn't retain \
+                       prompts or outputs.",
+            },
+            Case {
+                name: "Apple Intelligence on macOS",
+                provider: CleanupProvider::AppleIntelligence,
+                platform: macos(),
+                want: "Runs on this Mac with Apple Intelligence. Your transcript never leaves it.",
+            },
+            Case {
+                name: "Apple Intelligence carried over to Linux",
+                provider: CleanupProvider::AppleIntelligence,
+                platform: Platform::linux(),
+                want: "Runs on this computer with Apple Intelligence. Your transcript never \
+                       leaves it.",
+            },
+        ];
+        for tc in cases {
+            let model = tc.provider.default_model();
+            let dialog = providers_dialog(
+                &PostProcessingInputs {
+                    provider: tc.provider,
+                    platform: tc.platform,
+                    ..inputs(model, &[])
+                },
+                &ProvidersDialogInputs {
+                    provider: tc.provider,
+                    key: None,
+                    ..dialog_inputs(&[], &key())
+                },
+            );
+            assert_eq!(dialog.privacy_note, tc.want, "{}", tc.name);
+        }
     }
 
     #[test]
@@ -691,26 +823,37 @@ mod tests {
         let cases = [
             (
                 CleanupProvider::OpenRouter,
+                macos(),
                 "OpenRouter API key",
+                "Stored in your system keychain.",
                 "https://openrouter.ai/workspaces/default/keys",
             ),
             (
                 CleanupProvider::Fireworks,
+                macos(),
                 "Fireworks AI API key",
+                "Stored in your system keychain.",
                 "https://app.fireworks.ai/settings/users/api-keys",
             ),
+            (
+                CleanupProvider::OpenRouter,
+                Platform::linux(),
+                "OpenRouter API key",
+                "Stored in your desktop keyring.",
+                "https://openrouter.ai/workspaces/default/keys",
+            ),
         ];
-        for (provider, want_placeholder, want_url) in cases {
-            let field = ApiKeyFieldView::for_provider(provider).expect(want_placeholder);
+        for (provider, platform, want_placeholder, want_note, want_url) in cases {
+            let field = ApiKeyFieldView::for_provider(provider, platform).expect(want_placeholder);
             assert_eq!(field.label, "API key");
             assert_eq!(field.placeholder, want_placeholder);
-            assert_eq!(field.note, "Stored in your system keychain.");
+            assert_eq!(field.note, want_note);
             assert_eq!(field.get_key_title, "Get a key");
             assert_eq!(field.get_key_url, want_url);
             assert_eq!(field.text, "", "empty until the stored key loads");
         }
         assert_eq!(
-            ApiKeyFieldView::for_provider(CleanupProvider::AppleIntelligence),
+            ApiKeyFieldView::for_provider(CleanupProvider::AppleIntelligence, macos()),
             None,
             "no key to enter"
         );

@@ -106,6 +106,7 @@ impl Core {
             events: events.clone(),
         });
         let updater = super::updates::Updates::new(paths.root(), events.clone(), runtime.handle())?;
+        let platform = Platform::linux();
         let app = App::start_on(
             runtime.handle(),
             Ports {
@@ -129,12 +130,16 @@ impl Core {
                     )),
                     settings.clone(),
                 )),
-                cleanup: Arc::new(CloudCleanup::new(onda_cleanup::CleanupClient::new()?, None)),
+                cleanup: Arc::new(CloudCleanup::new(
+                    onda_cleanup::CleanupClient::new()?,
+                    None,
+                    platform.computer_term,
+                )),
                 secrets: Arc::new(Secrets {
                     application: super::application_id(),
                 }),
                 settings: source,
-                platform: Platform::linux(),
+                platform,
                 app_version: env!("ONDA_VERSION").into(),
             },
             Arc::new(Sink(events)),

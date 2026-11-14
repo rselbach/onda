@@ -2,14 +2,20 @@ use super::{Window, page, parse_shortcut};
 use adw::prelude::*;
 use onda_app::views::HotkeyPage;
 use onda_domain::types::ActivationMode;
-use std::{cell::Cell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 
 pub(super) struct Page {
     pub widget: gtk::Box,
     entry: adw::EntryRow,
     status: adw::ActionRow,
     reset: gtk::Button,
+    activation_group: adw::PreferencesGroup,
     activation: adw::ComboRow,
+    // the picker's modes in row order, as the core last sent them
+    activation_modes: RefCell<Vec<ActivationMode>>,
     updating: Cell<bool>,
     initialized: Cell<bool>,
 }
@@ -23,10 +29,7 @@ impl Page {
                 "Use a key with Ctrl, Alt, or Super. Your desktop may assign a different shortcut.",
             )
             .build();
-        let entry = adw::EntryRow::builder()
-            .title("Press to talk")
-            .show_apply_button(true)
-            .build();
+        let entry = adw::EntryRow::builder().show_apply_button(true).build();
         group.add(&entry);
         let status = adw::ActionRow::builder()
             .title("Desktop shortcut")
@@ -38,17 +41,10 @@ impl Page {
         reset.set_margin_top(8);
         group.add(&reset);
         widget.append(&group);
-        let group = adw::PreferencesGroup::builder().title("Activation").build();
-        let names: Vec<_> = ActivationMode::ALL
-            .iter()
-            .map(|mode| mode.display_name())
-            .collect();
-        let activation = adw::ComboRow::builder()
-            .title("Activation")
-            .model(&gtk::StringList::new(&names))
-            .build();
-        group.add(&activation);
-        widget.append(&group);
+        let activation_group = adw::PreferencesGroup::new();
+        let activation = adw::ComboRow::new();
+        activation_group.add(&activation);
+        widget.append(&activation_group);
         let group = adw::PreferencesGroup::builder()
             .title("Desktop integration")
             .build();
@@ -60,7 +56,9 @@ impl Page {
             entry,
             status,
             reset,
+            activation_group,
             activation,
+            activation_modes: RefCell::default(),
             updating: Cell::new(false),
             initialized: Cell::new(false),
         }
@@ -90,9 +88,14 @@ impl Page {
         self.activation.connect_selected_notify(move |row| {
             if let Some(owner) = weak.upgrade()
                 && !owner.hotkey.updating.get()
-                && let Some(mode) = ActivationMode::ALL.get(row.selected() as usize)
+                && let Some(mode) = owner
+                    .hotkey
+                    .activation_modes
+                    .borrow()
+                    .get(row.selected() as usize)
+                    .copied()
             {
-                owner.core.app.set_activation_mode(*mode);
+                owner.core.app.set_activation_mode(mode);
             }
         });
     }
@@ -108,12 +111,32 @@ impl Page {
                 &super::super::hotkeys::trigger(&owner.core.settings.hotkey()).unwrap_or_default(),
             );
         }
-        self.activation.set_selected(
-            ActivationMode::ALL
+        self.entry.set_title(&view.press_to_talk_label);
+        self.activation_group.set_title(&view.activation_label);
+        self.activation.set_title(&view.activation_label);
+        let modes: Vec<ActivationMode> = view
+            .activation_options
+            .iter()
+            .map(|option| option.mode)
+            .collect();
+        if *self.activation_modes.borrow() != modes {
+            let titles: Vec<&str> = view
+                .activation_options
                 .iter()
-                .position(|mode| *mode == view.activation)
-                .unwrap_or(0) as u32,
-        );
+                .map(|option| option.title.as_str())
+                .collect();
+            self.activation
+                .set_model(Some(&gtk::StringList::new(&titles)));
+            *self.activation_modes.borrow_mut() = modes;
+        }
+        if let Some(selected) = self
+            .activation_modes
+            .borrow()
+            .iter()
+            .position(|mode| *mode == view.activation)
+        {
+            self.activation.set_selected(selected as u32);
+        }
         self.activation.set_subtitle(&view.activation_description);
         self.updating.set(false);
     }
