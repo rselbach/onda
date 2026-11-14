@@ -23,7 +23,11 @@ jobs:
 
   linux:
     runs-on: ubuntu-latest
-    container: fedora:44
+    container:
+      image: fedora:44
+      # The real-GUI tests start gnome-keyring-daemon. As root it keeps only
+      # CAP_IPC_LOCK and aborts without it, and Docker withholds it by default.
+      options: --cap-add IPC_LOCK
     steps:
       - name: Checkout
         uses: actions/checkout@v5

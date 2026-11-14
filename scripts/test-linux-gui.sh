@@ -14,7 +14,7 @@ cleanup() {
   if [[ -n "${keyring_pid:-}" ]]; then kill "${keyring_pid}" 2>/dev/null || true; fi
   if [[ -n "${display_pid:-}" ]]; then kill "${display_pid}" 2>/dev/null || true; fi
   if (( status != 0 )); then
-    cat "${work}/keyring.log" "${work}/requests" >&2 || true
+    cat "${work}/keyring.log" "${work}/requests" >&2 2> /dev/null || true
   fi
   rm -rf "${work}"
   exit "${status}"
