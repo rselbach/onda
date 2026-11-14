@@ -56,7 +56,7 @@ impl HotkeyView {
             cancel_button_title: RECORDER_CANCEL_TITLE,
             help_text: recorder.help_text(shortcut, names),
             message: recorder.message().map(|m| m.text(names)),
-            fn_warning: fn_key_warning(shortcut, globe),
+            fn_warning: fn_key_warning(shortcut, globe, platform),
             open_keyboard_settings_title: OPEN_KEYBOARD_SETTINGS_TITLE,
         }
     }
@@ -84,14 +84,16 @@ mod tests {
             want_warning: bool,
             want_accessibility: bool,
         }
-        let idle = ShortcutRecorder::new;
+        fn idle() -> ShortcutRecorder {
+            ShortcutRecorder::new(Platform::macos(PrivacyNaming::Accessibility))
+        }
         let recording = || {
-            let mut recorder = ShortcutRecorder::new();
+            let mut recorder = idle();
             recorder.start();
             recorder
         };
         let rejected = || {
-            let mut recorder = ShortcutRecorder::new();
+            let mut recorder = idle();
             recorder.start();
             recorder.handle(RecorderEvent::KeyDown {
                 key: KeyCode::SPACE,
@@ -100,7 +102,7 @@ mod tests {
             recorder
         };
         let failed = || {
-            let mut recorder = ShortcutRecorder::new();
+            let mut recorder = idle();
             recorder.start();
             recorder.start_failed();
             recorder
@@ -216,7 +218,7 @@ mod tests {
 
     #[test]
     fn the_view_uses_the_platforms_key_names() {
-        let mut recorder = ShortcutRecorder::new();
+        let mut recorder = ShortcutRecorder::new(Platform::linux());
         let idle = HotkeyView::resolve(
             &Shortcut::CONTROL_ALT_SPACE,
             &recorder,
@@ -249,10 +251,29 @@ mod tests {
     fn a_lone_modifier_needs_no_accessibility_without_the_permission() {
         let view = HotkeyView::resolve(
             &Shortcut::lone(ModifierKey::AltRight),
-            &ShortcutRecorder::new(),
+            &ShortcutRecorder::new(Platform::linux()),
             GlobeKeyAction::DoNothing,
             Platform::linux(),
         );
         assert!(!view.needs_accessibility);
+    }
+
+    #[test]
+    fn hot_35_no_fn_warning_where_fn_cannot_be_the_shortcut() {
+        let linux = Platform::linux();
+        for globe in [
+            GlobeKeyAction::Unknown,
+            GlobeKeyAction::ChangeInputSource,
+            GlobeKeyAction::ShowEmojiAndSymbols,
+            GlobeKeyAction::StartDictation,
+        ] {
+            let view = HotkeyView::resolve(
+                &Shortcut::lone(ModifierKey::Fn),
+                &ShortcutRecorder::new(linux),
+                globe,
+                linux,
+            );
+            assert_eq!(view.fn_warning, None, "{globe:?}");
+        }
     }
 }

@@ -5,7 +5,7 @@
 //! A new fact is a field here, set in [`Platform::macos`] and
 //! [`Platform::linux`].
 
-use crate::hotkey::{KeyNames, Shortcut};
+use crate::hotkey::{HotkeyPreset, KeyNames, Shortcut};
 use crate::privacy_naming::PrivacyNaming;
 
 /// What the core knows about the system it runs on.
@@ -41,6 +41,13 @@ pub struct Platform {
     /// The dictation shortcut until the user picks one, and what Reset
     /// restores (HOT-2).
     pub default_shortcut: &'static Shortcut,
+    /// A modifier key on its own, such as Right Option or Fn, can be the
+    /// dictation shortcut. Where it cannot, the recorder never commits one
+    /// (HOT-9) and the Fn warning never shows (HOT-35).
+    pub lone_modifier_hotkeys: bool,
+    /// The shortcuts onboarding offers as one click, in display order
+    /// (ONB-7).
+    pub hotkey_presets: &'static [HotkeyPreset],
 }
 
 impl Platform {
@@ -58,6 +65,8 @@ impl Platform {
             microphone_permission: true,
             key_names: &KeyNames::MACOS,
             default_shortcut: &Shortcut::OPTION_SPACE,
+            lone_modifier_hotkeys: true,
+            hotkey_presets: &HotkeyPreset::MACOS,
         }
     }
 
@@ -76,6 +85,8 @@ impl Platform {
             microphone_permission: false,
             key_names: &KeyNames::LINUX,
             default_shortcut: &Shortcut::CONTROL_ALT_SPACE,
+            lone_modifier_hotkeys: false,
+            hotkey_presets: &HotkeyPreset::LINUX,
         }
     }
 
@@ -105,6 +116,64 @@ mod tests {
         for (name, platform, want) in cases {
             let got = platform.default_shortcut.display(platform.key_names);
             assert_eq!(got, want, "{name}");
+        }
+    }
+
+    #[test]
+    fn presets_are_shortcuts_the_platform_registers_onb_7() {
+        let cases = [
+            (
+                Platform::macos(PrivacyNaming::Accessibility),
+                vec!["⌥ Space", "Right Option", "Fn"],
+            ),
+            (
+                Platform::linux(),
+                vec!["Ctrl+Alt+Space", "Alt+Super+Space", "Ctrl+Super+Space"],
+            ),
+        ];
+        for (platform, want) in cases {
+            let shortcuts: Vec<Shortcut> = platform
+                .hotkey_presets
+                .iter()
+                .map(|preset| preset.shortcut())
+                .collect();
+            let got: Vec<String> = shortcuts
+                .iter()
+                .map(|shortcut| shortcut.display(platform.key_names))
+                .collect();
+            assert_eq!(got, want, "{}", platform.os_name);
+            assert_eq!(
+                shortcuts.first(),
+                Some(platform.default_shortcut),
+                "{}: the default leads",
+                platform.os_name
+            );
+            let lone = shortcuts.iter().any(Shortcut::is_lone_modifier);
+            assert_eq!(lone, platform.lone_modifier_hotkeys, "{}", platform.os_name);
+        }
+    }
+
+    #[test]
+    fn copy_offers_a_lone_modifier_only_where_one_registers_hot_10() {
+        for platform in [
+            Platform::macos(PrivacyNaming::Accessibility),
+            Platform::linux(),
+        ] {
+            let names = platform.key_names;
+            for copy in [
+                names.missing_modifier_message,
+                names.recording_help,
+                names.hotkey_footer,
+            ] {
+                let offers = ["lone modifier", "single modifier", "Fn"]
+                    .iter()
+                    .any(|phrase| copy.contains(phrase));
+                assert_eq!(
+                    offers, platform.lone_modifier_hotkeys,
+                    "{}: {copy}",
+                    platform.os_name
+                );
+            }
         }
     }
 

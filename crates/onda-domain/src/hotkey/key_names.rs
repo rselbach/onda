@@ -81,7 +81,8 @@ impl KeyNames {
                         every innocent keystroke like a gremlin.",
     };
 
-    /// A Linux desktop: names joined with `+` (`Ctrl+Alt+Space`).
+    /// A Linux desktop: names joined with `+` (`Ctrl+Alt+Space`). Its copy
+    /// offers no lone modifier, which a Linux desktop cannot register.
     pub const LINUX: Self = Self {
         control: ModifierNames {
             label: "Ctrl",
@@ -108,11 +109,10 @@ impl KeyNames {
         enter: "Enter",
         backspace: "Backspace",
         paste: "Ctrl+V",
-        missing_modifier_message: "Shortcut must include Ctrl, Alt, or Super — or use a lone modifier like Right Alt or Fn.",
-        recording_help: "Press a key with Ctrl, Alt, or Super. A lone modifier like Right Alt or Fn also works. Escape cancels.",
-        hotkey_footer: "Shortcuts must include Ctrl, Alt, or Super — or use a single modifier \
-                        key like Right Alt or Fn on its own — so Onda does not steal every \
-                        innocent keystroke like a gremlin.",
+        missing_modifier_message: "Shortcut must include Ctrl, Alt, or Super.",
+        recording_help: "Press a key with Ctrl, Alt, or Super. Escape cancels.",
+        hotkey_footer: "Shortcuts must include Ctrl, Alt, or Super, so Onda does not steal \
+                        every innocent keystroke like a gremlin.",
     };
 
     /// The names of `modifier`.

@@ -133,7 +133,7 @@ mod tests {
             ),
             (
                 Platform::linux(),
-                "Shortcuts must include Ctrl, Alt, or Super — or use a single modifier key like Right Alt or Fn on its own — so Onda does not steal every innocent keystroke like a gremlin.",
+                "Shortcuts must include Ctrl, Alt, or Super, so Onda does not steal every innocent keystroke like a gremlin.",
             ),
         ];
         for (platform, want) in cases {

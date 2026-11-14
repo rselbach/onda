@@ -254,8 +254,8 @@ pub struct OnboardingInputs<'a> {
     pub wizard: &'a Onboarding,
     /// What it reads from the app.
     pub env: &'a OnboardingEnv<'a>,
-    /// The system the shell runs on: it says which hotkey presets need
-    /// Accessibility.
+    /// The system the shell runs on: it lists the hotkey presets and says
+    /// which of them need Accessibility.
     pub platform: Platform,
     /// Language search query.
     pub language_query: &'a str,
@@ -349,7 +349,8 @@ fn content(inputs: &OnboardingInputs<'_>) -> OnboardingContent {
             }
         }
         OnboardingStep::Hotkey => {
-            let choices: Vec<HotkeyPresetChoice> = HotkeyPreset::ALL
+            let offered = inputs.platform.hotkey_presets;
+            let choices: Vec<HotkeyPresetChoice> = offered
                 .iter()
                 .map(|preset| {
                     let shortcut = preset.shortcut();
@@ -358,7 +359,8 @@ fn content(inputs: &OnboardingInputs<'_>) -> OnboardingContent {
                         detail: preset.detail(names),
                         needs_accessibility: shortcut.needs_accessibility(inputs.platform),
                         selected: shortcut == *inputs.shortcut,
-                        warning: fn_key_warning(&shortcut, inputs.globe).map(str::to_owned),
+                        warning: fn_key_warning(&shortcut, inputs.globe, inputs.platform)
+                            .map(str::to_owned),
                     }
                 })
                 .collect();
@@ -375,7 +377,7 @@ fn content(inputs: &OnboardingInputs<'_>) -> OnboardingContent {
             OnboardingContent::Hotkey {
                 title: HOTKEY_TITLE.to_owned(),
                 subtitle: step.subtitle,
-                presets: HotkeyPreset::ALL
+                presets: offered
                     .iter()
                     .zip(step.presets)
                     .map(|(preset, card)| PresetCardView {

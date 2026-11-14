@@ -13,6 +13,7 @@ use onda_domain::hotkey::{
     GlobeKeyAction, HeldModifiers, KeyCode, Modifier, ModifierFlagsChange, ModifierKey,
     ModifierSet, RecorderEvent, Shortcut,
 };
+use onda_domain::platform::Platform;
 use onda_domain::tray::TrayIcon;
 use onda_domain::types::ActivationMode;
 
@@ -707,6 +708,75 @@ async fn hot_34_escape_with_the_shortcuts_own_modifiers_also_cancels() {
             "{name}"
         );
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn hot_9_linux_records_combos_and_never_a_lone_modifier() {
+    let h = Harness::on_platform(Platform::linux(), |s| {
+        s.hotkey = Shortcut::CONTROL_ALT_SPACE;
+    })
+    .await;
+    h.app.begin_hotkey_capture();
+    sleep(1).await;
+    for modifier in ModifierKey::ALL {
+        let key = KeyCode::from(modifier);
+        let pressed = h.app.recorder_event(RecorderEvent::FlagsChanged {
+            key: key.clone(),
+            held: HeldModifiers::only(modifier),
+        });
+        let released = h.app.recorder_event(RecorderEvent::FlagsChanged {
+            key,
+            held: HeldModifiers::NONE,
+        });
+        assert!(pressed && released, "{modifier:?} is swallowed");
+    }
+    sleep(10).await;
+    let view = h.hotkey_view();
+    assert!(view.recording, "still recording");
+    assert_eq!(view.display, "Ctrl+Alt+Space");
+    assert_eq!(
+        view.help_text,
+        "Press a key with Ctrl, Alt, or Super. Escape cancels."
+    );
+    assert!(h.log.with("settings:hotkey").is_empty(), "nothing saved");
+
+    h.app.recorder_event(RecorderEvent::KeyDown {
+        key: KeyCode::SPACE,
+        modifiers: mods(&[Modifier::Shift]),
+    });
+    sleep(10).await;
+    assert_eq!(
+        h.hotkey_view().message,
+        Some("Shortcut must include Ctrl, Alt, or Super.")
+    );
+
+    h.app.recorder_event(RecorderEvent::KeyDown {
+        key: KeyCode::SPACE,
+        modifiers: mods(&[Modifier::Control, Modifier::Meta]),
+    });
+    sleep(10).await;
+    let view = h.hotkey_view();
+    assert!(!view.recording);
+    assert_eq!(view.display, "Ctrl+Super+Space");
+    assert_eq!(
+        lock(&h.settings.settings).hotkey,
+        Shortcut::CONTROL_SUPER_SPACE
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn hot_35_linux_never_shows_the_fn_warning() {
+    let h = Harness::build_on(None, Platform::linux(), |s| {
+        s.hotkey = Shortcut::lone(ModifierKey::Fn);
+    });
+    *lock(&h.shell.globe) = GlobeKeyAction::Unknown;
+    h.app.ui_ready();
+    sleep(10).await;
+    h.app.app_became_active();
+    sleep(10).await;
+    let view = h.hotkey_view();
+    assert_eq!(view.display, "Fn");
+    assert_eq!(view.fn_warning, None);
 }
 
 #[tokio::test(start_paused = true)]

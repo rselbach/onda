@@ -4,6 +4,7 @@ use super::key_names::KeyNames;
 use super::shortcut::{
     HeldModifiers, KeyCode, ModifierKey, ModifierSet, Shortcut, ValidationError,
 };
+use crate::platform::Platform;
 
 /// Button title while not recording (HOT-11).
 pub const RECORD_BUTTON_TITLE: &str = "Record Shortcut";
@@ -77,8 +78,11 @@ impl RecorderMessage {
 /// The orchestration layer unregisters the global hotkey when
 /// [`start`](Self::start) is called and re-registers on commit, cancel, or
 /// [`stop`](Self::stop) (HOT-8).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShortcutRecorder {
+    // the platform registers a modifier on its own; without it a modifier
+    // press only ever leads into a combo.
+    lone_modifiers: bool,
     recording: bool,
     // modifier pressed while it was the only one held; committed on release.
     armed: Option<ModifierKey>,
@@ -86,28 +90,30 @@ pub struct ShortcutRecorder {
 }
 
 impl ShortcutRecorder {
-    /// A recorder that is not recording.
-    pub fn new() -> Self {
-        Self::default()
+    /// A recorder that is not recording. It commits only shortcuts
+    /// `platform` can register.
+    pub fn new(platform: Platform) -> Self {
+        Self {
+            lone_modifiers: platform.lone_modifier_hotkeys,
+            recording: false,
+            armed: None,
+            message: None,
+        }
     }
 
     /// Begins recording, clearing any earlier message and candidate.
     pub fn start(&mut self) {
-        *self = Self {
-            recording: true,
-            armed: None,
-            message: None,
-        };
+        self.recording = true;
+        self.armed = None;
+        self.message = None;
     }
 
     /// The shell could not start listening for keys: end the capture at
     /// once and show "Could not start shortcut recording." (HOT-11).
     pub fn start_failed(&mut self) {
-        *self = Self {
-            recording: false,
-            armed: None,
-            message: Some(RecorderMessage::CouldNotStart),
-        };
+        self.recording = false;
+        self.armed = None;
+        self.message = Some(RecorderMessage::CouldNotStart);
     }
 
     /// Ends recording without a change: the button was clicked again, Cancel
@@ -159,6 +165,9 @@ impl ShortcutRecorder {
     }
 
     fn flags_changed(&mut self, key: &KeyCode, held: HeldModifiers) -> RecorderOutcome {
+        if !self.lone_modifiers {
+            return RecorderOutcome::Wait;
+        }
         // caps lock and other non-modifier flag changes are ignored.
         let Some(modifier) = ModifierKey::from_code(key.as_str()) else {
             return RecorderOutcome::Wait;
@@ -210,6 +219,7 @@ impl ShortcutRecorder {
 mod tests {
     use super::*;
     use crate::hotkey::shortcut::Modifier;
+    use crate::privacy_naming::PrivacyNaming;
 
     use Modifier::{Alt, Control, Meta, Shift};
     use ModifierKey::{AltLeft, AltRight, Fn, MetaRight};
@@ -238,6 +248,10 @@ mod tests {
 
     fn combo(code: &str, held: &[Modifier]) -> Shortcut {
         Shortcut::new(key(code), mods(held)).expect("valid")
+    }
+
+    fn macos_recorder() -> ShortcutRecorder {
+        ShortcutRecorder::new(Platform::macos(PrivacyNaming::Accessibility))
     }
 
     struct Step {
@@ -408,13 +422,116 @@ mod tests {
             },
         ];
         for tc in cases {
-            let mut recorder = ShortcutRecorder::new();
+            let mut recorder = macos_recorder();
             recorder.start();
             for (i, s) in tc.steps.into_iter().enumerate() {
                 let got = recorder.handle(s.event);
                 assert_eq!(got, s.want, "{} step {i}", tc.name);
                 assert_eq!(recorder.armed(), s.want_armed, "{} step {i} armed", tc.name);
             }
+        }
+    }
+
+    #[test]
+    fn a_lone_modifier_never_commits_where_none_registers_hot_9() {
+        struct Case {
+            name: &'static str,
+            steps: Vec<(RecorderEvent, RecorderOutcome)>,
+            want_recording: bool,
+        }
+        let cases = [
+            Case {
+                name: "solo right alt press then release keeps recording",
+                steps: vec![
+                    (flags("AltRight", &[Alt], false), Wait),
+                    (flags("AltRight", &[], false), Wait),
+                ],
+                want_recording: true,
+            },
+            Case {
+                name: "every modifier key alone keeps recording",
+                steps: ModifierKey::ALL
+                    .into_iter()
+                    .flat_map(|modifier| {
+                        let change = |held| RecorderEvent::FlagsChanged {
+                            key: modifier.into(),
+                            held,
+                        };
+                        [
+                            (change(HeldModifiers::only(modifier)), Wait),
+                            (change(HeldModifiers::NONE), Wait),
+                        ]
+                    })
+                    .collect(),
+                want_recording: true,
+            },
+            Case {
+                name: "modifiers then a key still record the combo",
+                steps: vec![
+                    (flags("ControlLeft", &[Control], false), Wait),
+                    (flags("AltLeft", &[Control, Alt], false), Wait),
+                    (
+                        down("Space", &[Control, Alt]),
+                        Commit(Shortcut::CONTROL_ALT_SPACE),
+                    ),
+                ],
+                want_recording: false,
+            },
+            Case {
+                name: "a lone press, a rejected key, then a combo",
+                steps: vec![
+                    (flags("AltRight", &[Alt], false), Wait),
+                    (flags("AltRight", &[], false), Wait),
+                    (
+                        down("KeyA", &[]),
+                        Rejected(ValidationError::MissingRequiredModifier),
+                    ),
+                    (down("KeyA", &[Meta]), Commit(combo("KeyA", &[Meta]))),
+                ],
+                want_recording: false,
+            },
+            Case {
+                name: "escape still cancels",
+                steps: vec![
+                    (flags("AltRight", &[Alt], false), Wait),
+                    (down("Escape", &[Alt]), Cancel),
+                ],
+                want_recording: false,
+            },
+        ];
+        for tc in cases {
+            let mut recorder = ShortcutRecorder::new(Platform::linux());
+            recorder.start();
+            for (i, (event, want)) in tc.steps.into_iter().enumerate() {
+                assert_eq!(recorder.handle(event), want, "{} step {i}", tc.name);
+                assert_eq!(recorder.armed(), None, "{} step {i} armed", tc.name);
+            }
+            assert_eq!(recorder.is_recording(), tc.want_recording, "{}", tc.name);
+        }
+    }
+
+    #[test]
+    fn the_rejection_offers_only_what_the_platform_registers_hot_10() {
+        let cases = [
+            (
+                Platform::macos(PrivacyNaming::Accessibility),
+                "Shortcut must include Command, Control, or Option — or use a lone modifier like Right Option or Fn.",
+            ),
+            (
+                Platform::linux(),
+                "Shortcut must include Ctrl, Alt, or Super.",
+            ),
+        ];
+        for (platform, want) in cases {
+            let mut recorder = ShortcutRecorder::new(platform);
+            recorder.start();
+            recorder.handle(down("KeyA", &[Shift]));
+            assert_eq!(
+                recorder.message().map(|m| m.text(platform.key_names)),
+                Some(want),
+                "{}",
+                platform.os_name
+            );
         }
     }
 
@@ -455,7 +572,7 @@ mod tests {
             },
         ];
         for tc in cases {
-            let mut recorder = ShortcutRecorder::new();
+            let mut recorder = macos_recorder();
             recorder.start();
             for event in tc.events {
                 recorder.handle(event);
@@ -474,7 +591,7 @@ mod tests {
     fn recorder_lifecycle_hot_8_hot_11() {
         let current = Shortcut::OPTION_SPACE;
 
-        let mut recorder = ShortcutRecorder::new();
+        let mut recorder = macos_recorder();
         assert_eq!(
             recorder.handle(down("KeyA", &[Meta])),
             RecorderOutcome::PassThrough,
@@ -502,7 +619,7 @@ mod tests {
         );
         assert_eq!(
             recorder.help_text(&current, &KeyNames::LINUX),
-            "Press a key with Ctrl, Alt, or Super. A lone modifier like Right Alt or Fn also works. Escape cancels."
+            "Press a key with Ctrl, Alt, or Super. Escape cancels."
         );
         recorder.handle(flags("AltRight", &[Alt], false));
         assert!(recorder.stop(), "stop while recording asks to re-register");

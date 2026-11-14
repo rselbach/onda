@@ -381,8 +381,13 @@ async fn onb_1_the_wizard_has_a_permissions_step_only_where_permissions_exist() 
 }
 
 #[tokio::test(start_paused = true)]
-async fn onb_7_lone_modifier_presets_need_no_permission_linux_does_not_have() {
-    let h = Harness::on_platform(Platform::linux(), first_run).await;
+async fn onb_7_linux_offers_presets_it_can_register() {
+    let linux = Platform::linux();
+    let h = Harness::on_platform(linux, |s| {
+        first_run(s);
+        s.hotkey = linux.default_shortcut.clone();
+    })
+    .await;
     // the presets must not depend on what the port answers for a
     // permission the system does not have
     h.permissions.accessibility.store(false, Ordering::SeqCst);
@@ -396,15 +401,80 @@ async fn onb_7_lone_modifier_presets_need_no_permission_linux_does_not_have() {
     let OnboardingContent::Hotkey { presets, .. } = view.content else {
         panic!("the hotkey step");
     };
-    let enabled: Vec<bool> = presets.iter().map(|p| p.enabled).collect();
-    assert_eq!(enabled, vec![true, true, true]);
+    let shown: Vec<(HotkeyPreset, Vec<&str>, bool, bool)> = presets
+        .iter()
+        .map(|p| {
+            let keycaps = p.keycaps.iter().map(String::as_str).collect();
+            (p.preset, keycaps, p.enabled, p.selected)
+        })
+        .collect();
+    assert_eq!(
+        shown,
+        vec![
+            (
+                HotkeyPreset::ControlAltSpace,
+                vec!["Ctrl", "Alt", "Space"],
+                true,
+                true
+            ),
+            (
+                HotkeyPreset::AltSuperSpace,
+                vec!["Alt", "Super", "Space"],
+                true,
+                false
+            ),
+            (
+                HotkeyPreset::ControlSuperSpace,
+                vec!["Ctrl", "Super", "Space"],
+                true,
+                false
+            ),
+        ]
+    );
+    for card in &presets {
+        assert!(!card.preset.shortcut().is_lone_modifier(), "{card:?}");
+        assert!(!card.detail.contains("Typing Access"), "{card:?}");
+        assert_eq!(card.warning, None, "{card:?}");
+    }
 
-    h.app.onboarding_select_hotkey(HotkeyPreset::RightOption);
+    h.app.onboarding_select_hotkey(HotkeyPreset::AltSuperSpace);
     sleep(1).await;
     let view = h.hotkey_view();
-    assert_eq!(view.display, "Right Alt");
+    assert_eq!(view.display, "Alt+Super+Space");
     assert!(!view.needs_accessibility);
     assert_eq!(onboarding(&h).hint, None);
+    let OnboardingContent::Hotkey { presets, .. } = onboarding(&h).content else {
+        panic!("the hotkey step");
+    };
+    let selected: Vec<bool> = presets.iter().map(|p| p.selected).collect();
+    assert_eq!(selected, vec![false, true, false]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn onb_7_a_preset_the_platform_does_not_offer_selects_nothing() {
+    let cases = [
+        (
+            Platform::linux(),
+            [HotkeyPreset::RightOption, HotkeyPreset::Fn],
+        ),
+        (
+            Platform::macos(PrivacyNaming::Accessibility),
+            [HotkeyPreset::AltSuperSpace, HotkeyPreset::ControlSuperSpace],
+        ),
+    ];
+    for (platform, not_offered) in cases {
+        let h = Harness::on_platform(platform, first_run).await;
+        sleep(800).await;
+        for preset in not_offered {
+            h.app.onboarding_select_hotkey(preset);
+            sleep(1).await;
+        }
+        assert!(
+            h.log.with("settings:hotkey").is_empty(),
+            "{}",
+            platform.os_name
+        );
+    }
 }
 
 #[tokio::test(start_paused = true)]

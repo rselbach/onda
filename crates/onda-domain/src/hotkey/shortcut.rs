@@ -326,6 +326,18 @@ impl Shortcut {
             .with(Modifier::Control)
             .with(Modifier::Alt),
     };
+    /// Alt+Super+Space, a Linux preset (ONB-7).
+    pub const ALT_SUPER_SPACE: Self = Self {
+        key: KeyCode::SPACE,
+        modifiers: ModifierSet::EMPTY.with(Modifier::Alt).with(Modifier::Meta),
+    };
+    /// Ctrl+Super+Space, a Linux preset (ONB-7).
+    pub const CONTROL_SUPER_SPACE: Self = Self {
+        key: KeyCode::SPACE,
+        modifiers: ModifierSet::EMPTY
+            .with(Modifier::Control)
+            .with(Modifier::Meta),
+    };
 
     /// Builds a shortcut, or reports the first HOT-4 rule it breaks.
     pub fn new(key: KeyCode, modifiers: ModifierSet) -> Result<Self, ValidationError> {
@@ -658,10 +670,7 @@ mod tests {
     #[test]
     fn validation_messages_use_the_systems_key_names() {
         let got = ValidationError::MissingRequiredModifier.message(&KeyNames::LINUX);
-        assert_eq!(
-            got,
-            "Shortcut must include Ctrl, Alt, or Super — or use a lone modifier like Right Alt or Fn."
-        );
+        assert_eq!(got, "Shortcut must include Ctrl, Alt, or Super.");
     }
 
     #[test]
@@ -1053,7 +1062,7 @@ mod tests {
                 "invalid on Linux",
                 invalid,
                 &KeyNames::LINUX,
-                "invalid hotkey setting: Shortcut must include Ctrl, Alt, or Super — or use a lone modifier like Right Alt or Fn.",
+                "invalid hotkey setting: Shortcut must include Ctrl, Alt, or Super.",
             ),
         ];
         for (name, err, names, want) in cases {

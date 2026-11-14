@@ -128,6 +128,36 @@ async fn hot_6_linux_spells_the_shortcut_everywhere_it_is_named() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn hot_9_linux_never_offers_a_lone_modifier() {
+    const LONE_MODIFIER_COPY: [&str; 6] = [
+        "lone modifier",
+        "single modifier",
+        "on its own",
+        "Typing Access",
+        "🌐",
+        "or Fn",
+    ];
+    let offered = |shown: &str| -> Vec<&'static str> {
+        LONE_MODIFIER_COPY
+            .into_iter()
+            .filter(|copy| shown.contains(copy))
+            .collect()
+    };
+    let macos = everything_shown(Platform::macos(PrivacyNaming::Accessibility)).await;
+    assert_eq!(
+        offered(&macos),
+        LONE_MODIFIER_COPY,
+        "macOS shows each of them, so the sweep reaches them"
+    );
+    let linux = everything_shown(Platform::linux()).await;
+    let lines: Vec<&str> = linux
+        .lines()
+        .filter(|line| !offered(line).is_empty())
+        .collect();
+    assert_eq!(offered(&linux), Vec::<&str>::new(), "{lines:#?}");
+}
+
+#[tokio::test(start_paused = true)]
 async fn hot_2_reset_restores_the_platforms_default() {
     let cases = [
         (

@@ -1,6 +1,7 @@
 //! Fn / Globe key warning (HOT-35).
 
 use super::shortcut::{ModifierKey, Shortcut};
+use crate::platform::Platform;
 
 /// What the OS does when Fn (🌐) is pressed on its own: macOS's "Press 🌐
 /// key to" setting.
@@ -57,9 +58,15 @@ impl GlobeKeyAction {
 pub const OPEN_KEYBOARD_SETTINGS_TITLE: &str = "Open Keyboard Settings";
 
 /// The warning to show for `shortcut` given the Globe key setting: only when
-/// the shortcut is Fn and the key does something else too (HOT-35).
-pub fn fn_key_warning(shortcut: &Shortcut, action: GlobeKeyAction) -> Option<&'static str> {
-    if shortcut.lone_modifier() != Some(ModifierKey::Fn) {
+/// the shortcut is Fn and the key does something else too (HOT-35). A
+/// platform where Fn cannot be the shortcut has no such setting to point
+/// at, so it never warns.
+pub fn fn_key_warning(
+    shortcut: &Shortcut,
+    action: GlobeKeyAction,
+    platform: Platform,
+) -> Option<&'static str> {
+    if !platform.lone_modifier_hotkeys || shortcut.lone_modifier() != Some(ModifierKey::Fn) {
         return None;
     }
     action.fn_warning()
@@ -68,6 +75,7 @@ pub fn fn_key_warning(shortcut: &Shortcut, action: GlobeKeyAction) -> Option<&'s
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::privacy_naming::PrivacyNaming;
     use GlobeKeyAction::{
         ChangeInputSource, DoNothing, ShowEmojiAndSymbols, StartDictation, Unknown,
     };
@@ -126,34 +134,58 @@ mod tests {
 
     #[test]
     fn warning_only_for_fn_shortcut_hot_35() {
+        let macos = Platform::macos(PrivacyNaming::Accessibility);
+        let linux = Platform::linux();
         let cases = [
             (
                 "fn with emoji",
+                macos,
                 Shortcut::lone(ModifierKey::Fn),
                 ShowEmojiAndSymbols,
                 true,
             ),
             (
                 "fn with do nothing",
+                macos,
                 Shortcut::lone(ModifierKey::Fn),
                 DoNothing,
                 false,
             ),
             (
                 "right option with emoji",
+                macos,
                 Shortcut::lone(ModifierKey::AltRight),
                 ShowEmojiAndSymbols,
                 false,
             ),
             (
                 "option space with unknown",
+                macos,
                 Shortcut::OPTION_SPACE,
                 Unknown,
                 false,
             ),
+            (
+                "fn with emoji where fn cannot be the shortcut",
+                linux,
+                Shortcut::lone(ModifierKey::Fn),
+                ShowEmojiAndSymbols,
+                false,
+            ),
+            (
+                "fn with unknown where fn cannot be the shortcut",
+                linux,
+                Shortcut::lone(ModifierKey::Fn),
+                Unknown,
+                false,
+            ),
         ];
-        for (name, shortcut, action, want) in cases {
-            assert_eq!(fn_key_warning(&shortcut, action).is_some(), want, "{name}");
+        for (name, platform, shortcut, action, want) in cases {
+            assert_eq!(
+                fn_key_warning(&shortcut, action, platform).is_some(),
+                want,
+                "{name}"
+            );
         }
     }
 }

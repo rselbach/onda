@@ -165,7 +165,7 @@ impl App {
     pub fn start_on(runtime: &Handle, ports: Ports, sink: Arc<dyn EventSink>) -> Self {
         let events = Arc::new(EventBus::new(sink));
         let (messages, inbox) = mpsc::unbounded_channel();
-        let recorder = Arc::new(Mutex::new(ShortcutRecorder::new()));
+        let recorder = Arc::new(Mutex::new(ShortcutRecorder::new(ports.platform)));
         let actor_events = events.clone();
         let actor_messages = messages.clone();
         let actor_recorder = recorder.clone();

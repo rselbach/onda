@@ -282,8 +282,12 @@ impl Actor {
     }
 
     // ONB-7: saves and re-registers at once; presets needing missing
-    // Typing Access are disabled
+    // Typing Access are disabled, and a preset the platform does not offer
+    // is not one it can register
     pub(super) fn onboarding_select_hotkey(&mut self, preset: HotkeyPreset) {
+        if !self.ports.platform.hotkey_presets.contains(&preset) {
+            return;
+        }
         let shortcut = preset.shortcut();
         if shortcut.needs_accessibility(self.ports.platform) && !self.permissions.accessibility {
             return;

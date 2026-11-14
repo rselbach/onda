@@ -189,7 +189,12 @@ pub enum OnboardingStep {
 }
 
 /// An onboarding hotkey preset (ONB-7).
+// The core's enum also names the presets of other systems. macOS offers
+// only the three below, so Swift has a case for no other, and
+// `non_exhaustive` lets this definition leave the rest out. Lowering one
+// of the rest panics, which the test below keeps unreachable.
 #[uniffi::remote(Enum)]
+#[non_exhaustive]
 pub enum HotkeyPreset {
     /// ⌥ Space.
     OptionSpace,
@@ -1312,4 +1317,22 @@ pub struct OnboardingView {
     pub primary_enabled: bool,
     /// The step's content.
     pub content: OnboardingContent,
+}
+
+#[cfg(test)]
+mod tests {
+    use onda_domain::platform::Platform;
+    use onda_domain::privacy_naming::PrivacyNaming;
+
+    use super::*;
+    use crate::UniFfiTag;
+
+    #[test]
+    fn swift_has_a_case_for_every_preset_macos_offers() {
+        for preset in Platform::macos(PrivacyNaming::Accessibility).hotkey_presets {
+            let lowered = <HotkeyPreset as uniffi::Lower<UniFfiTag>>::lower(*preset);
+            let lifted = <HotkeyPreset as uniffi::Lift<UniFfiTag>>::try_lift(lowered);
+            assert_eq!(lifted.ok(), Some(*preset));
+        }
+    }
 }

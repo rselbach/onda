@@ -264,3 +264,20 @@ fn x11(
     manager.unregister(hotkey)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use onda_domain::platform::Platform;
+
+    use super::trigger;
+
+    #[test]
+    fn every_preset_linux_offers_has_a_trigger() {
+        let got: Vec<String> = Platform::linux()
+            .hotkey_presets
+            .iter()
+            .map(|preset| trigger(&preset.shortcut()).expect("a combo the desktop can bind"))
+            .collect();
+        assert_eq!(got, ["CTRL+ALT+space", "ALT+LOGO+space", "CTRL+LOGO+space"]);
+    }
+}
