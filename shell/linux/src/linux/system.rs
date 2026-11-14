@@ -41,20 +41,6 @@ impl Notifier for Desktop {
     fn request_authorization(&self) {}
 }
 
-impl SoundPlayer for Desktop {
-    fn play(&self, cue: Cue) {
-        let event = match cue {
-            Cue::Start => "audio-rec-volume",
-            Cue::Stop => "complete",
-        };
-        if process::available("canberra-gtk-play")
-            && let Err(error) = process::run("canberra-gtk-play", &["-i", event], &[])
-        {
-            tracing::debug!(%error, "sound cue unavailable");
-        }
-    }
-}
-
 impl Power for Desktop {
     fn begin_prevent_idle_sleep(&self, reason: &str) {
         send(&self.events, Message::Inhibit(Some(reason.into())));

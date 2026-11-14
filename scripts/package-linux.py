@@ -183,6 +183,8 @@ def package(version, arch, stage, destination, target):
         ROOT / "assets/AppIcon.appiconset/icon_256x256.png",
         stage / "share/icons/hicolor/256x256/apps/com.rselbach.onda.png",
     )
+    for sound in sorted((ROOT / "assets/sounds").glob("*.wav")):
+        copy(sound, stage / "share/onda/sounds" / sound.name)
     copy(ROOT / "LICENSE", stage / "share/doc/onda/copyright")
     copy(
         ROOT / "shell/linux/licenses/hex.txt", stage / "share/doc/onda/licenses/hex.txt"

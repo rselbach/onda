@@ -319,10 +319,35 @@ struct StreamProperties {
 }
 
 impl Stream {
-    /// Running, and not an event sound such as Onda's own start cue.
+    /// Running, and not an event sound such as a notification.
     fn active(&self) -> bool {
         !self.corked && self.properties.role.as_deref() != Some("event")
     }
+}
+
+/// An application connected to the audio server, as `pactl` lists it.
+#[derive(Debug, Deserialize)]
+struct Client {
+    index: u32,
+    #[serde(default)]
+    properties: ClientProperties,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ClientProperties {
+    #[serde(rename = "application.process.id")]
+    process: Option<String>,
+}
+
+/// The clients of process `pid`, by the text a stream names its client
+/// with. A stream says which client owns it and not which process.
+fn clients_of(pid: u32, clients: &[Client]) -> BTreeSet<String> {
+    let pid = pid.to_string();
+    clients
+        .iter()
+        .filter(|client| client.properties.process.as_deref() == Some(pid.as_str()))
+        .map(|client| client.index.to_string())
+        .collect()
 }
 
 /// The default sink when muting it is right: an application is playing
@@ -406,7 +431,13 @@ impl MuteRecord {
     /// Mutes the default sink when `sink_to_mute` says so and returns its
     /// index for `unmute`.
     fn mute_default_sink(&self) -> anyhow::Result<Option<u32>> {
-        let playing: Vec<Stream> = list("sink-inputs")?;
+        let mut playing: Vec<Stream> = list("sink-inputs")?;
+        if playing.iter().any(Stream::active) {
+            // Onda's start cue is still sounding, and it is not another
+            // application playing
+            let ours = clients_of(std::process::id(), &list::<Client>("clients")?);
+            playing.retain(|stream| !ours.contains(&stream.client));
+        }
         if !playing.iter().any(Stream::active) {
             return Ok(None);
         }
@@ -518,6 +549,30 @@ mod tests {
         "properties": {"application.name": "onda"}}"#;
     const UNOWNED: &str = r#"{"index": 83, "client": "n/a", "sink": 56, "corked": false,
         "properties": {}}"#;
+
+    const CLIENTS: &str = r#"[
+        {"index": 40, "properties": {"application.name": "WirePlumber [export]"}},
+        {"index": 66, "properties": {"application.name": "pw-play",
+            "application.process.id": "4815"}},
+        {"index": 76, "properties": {"application.name": "PipeWire ALSA [onda]",
+            "application.process.id": "1623"}},
+        {"index": 78, "properties": {"application.name": "PipeWire ALSA [onda]",
+            "application.process.id": "1623"}}
+    ]"#;
+
+    #[test]
+    fn the_clients_of_a_process_are_the_ones_that_carry_its_id() {
+        let clients: Vec<Client> = serde_json::from_str(CLIENTS).unwrap();
+        let cases = [
+            ("the cue and the microphone", 1623, vec!["76", "78"]),
+            ("another application", 4815, vec!["66"]),
+            ("a process that plays nothing", 42, vec![]),
+        ];
+        for (name, pid, want) in cases {
+            let want: BTreeSet<String> = want.into_iter().map(str::to_owned).collect();
+            assert_eq!(clients_of(pid, &clients), want, "{name}");
+        }
+    }
 
     fn streams(entries: &[&str]) -> Vec<Stream> {
         serde_json::from_str(&format!("[{}]", entries.join(","))).unwrap()

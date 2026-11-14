@@ -109,11 +109,7 @@ impl Window {
         let sounds = adw::SwitchRow::builder()
             .title(&page.sounds.label)
             .active(page.sounds.on)
-            .sensitive(super::super::process::available("canberra-gtk-play"))
             .build();
-        if !sounds.is_sensitive() {
-            sounds.set_subtitle("Install libcanberra-gtk3 to enable sound feedback.");
-        }
         let weak = Rc::downgrade(self);
         sounds.connect_active_notify(move |row| {
             if let Some(owner) = weak.upgrade() {

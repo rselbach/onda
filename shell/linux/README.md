@@ -204,6 +204,10 @@ removes your custom prompt. Onda does not accept a blank prompt.
   unmutes when the recording stops. Muting uses `pactl` (`pulseaudio-utils`,
   or `libpulse` on Arch Linux), which works with PipeWire and PulseAudio. A
   mute left behind by a crash is undone at the next launch.
+- **Sounds:** the start and stop cues are the macOS ones, converted to WAV
+  and installed in `share/onda/sounds`. They play through ALSA, so they need
+  no sound theme and no package beyond the ALSA library. A cue file that is
+  missing is logged at launch and stays silent.
 - **Cancellation:** the window, tray, or `onda --cancel`. Onda does not claim
   Escape globally on Linux.
 - **Target context:** Linux currently pastes into the focused application at
@@ -297,7 +301,8 @@ microphone release after
 standby and a fresh recording after capture has stopped. A stand-in MPRIS
 player and a `pw-play` stream on a second virtual sink check media pause and
 resume, the play/pause fallback, the output mute, and its recovery after Onda
-is killed.
+is killed. With sounds on, it records that sink and checks that the start and
+stop cues play in full and that the start cue alone does not mute the output.
 
 ```sh
 sudo dnf install xorg-x11-server-Xvfb pipewire pipewire-pulseaudio \

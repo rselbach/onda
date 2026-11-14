@@ -41,6 +41,9 @@ def verify(prefix, version, kind="tar.gz"):
         "share/doc/onda/build.json",
     ):
         assert (prefix / path).is_file(), path
+    for name in ("dictation_start.wav", "dictation_stop.wav"):
+        installed = (prefix / "share/onda/sounds" / name).read_bytes()
+        assert installed == (ROOT / "assets/sounds" / name).read_bytes(), name
     run(
         "desktop-file-validate",
         str(prefix / "share/applications/com.rselbach.onda.desktop"),

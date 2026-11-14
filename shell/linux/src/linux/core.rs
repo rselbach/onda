@@ -113,7 +113,7 @@ impl Core {
                 text_output: output.clone(),
                 permissions: desktop.clone(),
                 media: Some(super::media::start(paths.root())),
-                sounds: desktop.clone(),
+                sounds: Arc::new(super::sounds::start()),
                 power: desktop.clone(),
                 hotkeys: Arc::new(Hotkeys::new(runtime.handle(), events.clone(), held)),
                 notifier: desktop.clone(),

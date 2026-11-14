@@ -51,6 +51,10 @@ def main():
                     raise RuntimeError("Onda did not accept status commands")
                 subprocess.run([binary, "--quit"], env=env, check=True, timeout=10)
                 assert app.wait(timeout=10) == 0
+                log.seek(0)
+                assert "sound cue will stay silent" not in log.read(), (
+                    "the packaged app did not find its sound files"
+                )
                 print("Packaged app started, answered status, and quit cleanly.")
             finally:
                 if app.poll() is None:

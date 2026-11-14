@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Exercise a real GTK window, virtual microphone, inference, X11 paste, the
-# tray menu, and media pause and mute against a private bus and audio server.
+# tray menu, media pause and mute, and sound cues against a private bus and
+# audio server.
 set -euo pipefail
 
 cleanup() {
@@ -11,6 +12,7 @@ cleanup() {
   if [[ -n "${player_pid:-}" ]]; then kill "${player_pid}" 2>/dev/null || true; fi
   if [[ -n "${toggle_pid:-}" ]]; then kill "${toggle_pid}" 2>/dev/null || true; fi
   if [[ -n "${tray_pid:-}" ]]; then kill "${tray_pid}" 2>/dev/null || true; fi
+  if [[ -n "${recorder_pid:-}" ]]; then kill "${recorder_pid}" 2>/dev/null || true; fi
   if [[ -n "${pulse_pid:-}" ]]; then kill "${pulse_pid}" 2>/dev/null || true; fi
   if [[ -n "${wireplumber_pid:-}" ]]; then kill "${wireplumber_pid}" 2>/dev/null || true; fi
   if [[ -n "${pipewire_pid:-}" ]]; then kill "${pipewire_pid}" 2>/dev/null || true; fi
@@ -53,7 +55,7 @@ wait_until() {
 
 write_settings() {
   cat > "${ONDA_DATA_DIR}/settings.json" <<JSON
-{"onboardingCompleted":true,"didShowFirstRunSetup":true,"selectedModel":"parakeet-tdt-v2","selectedLanguage":"en","recentLanguages":"en,pt","soundFeedbackEnabled":false,"pauseMediaDuringRecording":$1}
+{"onboardingCompleted":true,"didShowFirstRunSetup":true,"selectedModel":"parakeet-tdt-v2","selectedLanguage":"en","recentLanguages":"en,pt","soundFeedbackEnabled":${2:-false},"pauseMediaDuringRecording":$1}
 JSON
 }
 
@@ -184,6 +186,9 @@ main() {
     "${ONDA_DATA_DIR}/Models/parakeet-tdt-v2"
   ln -s "${model}" \
     "${ONDA_DATA_DIR}/Models/parakeet-tdt-v2/parakeet-tdt-0.6b-v2-Q8_0.gguf"
+  # an unpackaged binary finds its cue files in the user's data folder
+  install -Dm644 -t "${XDG_DATA_HOME}/onda/sounds" \
+    "${root}"/assets/sounds/*.wav
   write_settings true
   Xvfb -displayfd 3 -screen 0 1024x768x24 3> "${work}/display" \
     > "${work}/xvfb.log" 2>&1 &
@@ -444,8 +449,34 @@ ${menu_tail}"
   wait_until 'the Onda window' onda_window_visible
   tray click 'Quit Onda'
   wait "${app_pid}"
+  kill "${music_pid}"
+  wait "${music_pid}" || true
+  music_pid=""
+  player greendale org.mpris.MediaPlayer2.Player.Pause > /dev/null
+  write_settings true true
+  start_onda
+  parecord --device=onda-speakers.monitor --rate=44100 --channels=1 \
+    --format=s16le --file-format=wav --latency-msec=20 "${work}/heard.wav" &
+  recorder_pid=$!
+  sleep 1
+  "${binary}" --start
+  sleep 1
+  # the start cue is Onda's own sound, not another application to mute
+  speakers_audible
+  paplay --device=onda-test "${sample}"
+  "${binary}" --stop
+  wait_ready
+  sleep 2
+  kill "${recorder_pid}"
+  wait "${recorder_pid}" || true
+  recorder_pid=""
+  python3 "${root}/shell/linux/tests/cues-heard.py" "${work}/heard.wav" \
+    "${root}/assets/sounds/dictation_start.wav" \
+    "${root}/assets/sounds/dictation_stop.wav"
+  "${binary}" --quit
+  wait "${app_pid}"
   app_pid=""
-  echo "PASS: commands, cancellation, overlay cancel button, global shortcut, CPU transcription, GTK paste, clipboard restoration, tray menu, media pause, output mute, mute recovery."
+  echo "PASS: commands, cancellation, overlay cancel button, global shortcut, CPU transcription, GTK paste, clipboard restoration, tray menu, media pause, output mute, mute recovery, sound cues."
 }
 
 main "$@"

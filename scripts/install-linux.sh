@@ -19,6 +19,7 @@ main() {
   install -Dm644 \
     "${root}/assets/AppIcon.appiconset/icon_256x256.png" \
     "${data}/icons/hicolor/256x256/apps/com.rselbach.onda.png"
+  install -Dm644 -t "${data}/onda/sounds" "${root}"/assets/sounds/*.wav
   install -Dm644 "${root}/shell/linux/licenses/hex.txt" \
     "${data}/doc/onda/hex-license.txt"
   echo "Installed ${destination}; ensure ${HOME}/.local/bin is in PATH."

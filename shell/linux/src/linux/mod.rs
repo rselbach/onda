@@ -8,6 +8,7 @@ mod output;
 mod overlay;
 mod portal;
 mod process;
+mod sounds;
 mod speech;
 mod system;
 mod tray;
