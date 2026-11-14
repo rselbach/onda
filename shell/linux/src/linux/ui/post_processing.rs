@@ -9,7 +9,7 @@ use std::{
 };
 
 use adw::prelude::*;
-use onda_app::views::{ModelsNotice, PostProcessingPage, ProvidersDialog};
+use onda_app::views::{ModelsNotice, PostProcessingPage, PromptEditorView, ProvidersDialog};
 use onda_domain::cleanup::{CleanupProvider, custom_model_slug};
 
 use super::{Window, clear, label, page, scrolled};
@@ -20,13 +20,18 @@ pub(super) struct Page {
     details: gtk::Box,
     model: adw::ActionRow,
     caption: gtk::Label,
+    prompt: adw::PreferencesGroup,
+    prompt_row: adw::ActionRow,
+    prompt_preview: gtk::Label,
     test: gtk::Button,
     busy: gtk::Spinner,
+    prompt_status: gtk::Label,
     result: gtk::Label,
     error: gtk::Label,
     dismiss_error: gtk::Button,
     updating: Cell<bool>,
     chooser: RefCell<Option<Rc<Chooser>>>,
+    editor: RefCell<Option<Rc<Editor>>>,
 }
 
 impl Page {
@@ -52,12 +57,40 @@ impl Page {
         let caption = label("");
         caption.set_xalign(0.0);
         details.append(&caption);
+        let prompt = adw::PreferencesGroup::new();
+        let prompt_row = adw::ActionRow::builder()
+            .use_markup(false)
+            .activatable(true)
+            .build();
+        prompt_row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
+        prompt.add(&prompt_row);
+        let prompt_preview = gtk::Label::builder()
+            .wrap(true)
+            .lines(3)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .xalign(0.0)
+            .margin_top(10)
+            .margin_bottom(10)
+            .margin_start(12)
+            .margin_end(12)
+            .build();
+        prompt_preview.add_css_class("caption");
+        prompt_preview.add_css_class("dim-label");
+        prompt.add(
+            &adw::PreferencesRow::builder()
+                .activatable(false)
+                .child(&prompt_preview)
+                .build(),
+        );
+        details.append(&prompt);
         let actions = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         let test = gtk::Button::with_label("Test with Sample Text");
         let busy = gtk::Spinner::new();
         actions.append(&test);
         actions.append(&busy);
         details.append(&actions);
+        let prompt_status = dim_label();
+        details.append(&prompt_status);
         let result = label("");
         result.set_selectable(true);
         result.set_xalign(0.0);
@@ -74,13 +107,18 @@ impl Page {
             details,
             model,
             caption,
+            prompt,
+            prompt_row,
+            prompt_preview,
             test,
             busy,
+            prompt_status,
             result,
             error,
             dismiss_error,
             updating: Cell::new(false),
             chooser: RefCell::new(None),
+            editor: RefCell::new(None),
         }
     }
 
@@ -97,6 +135,12 @@ impl Page {
         self.model.connect_activated(move |_| {
             if let Some(owner) = weak.upgrade() {
                 owner.core.app.open_providers_dialog();
+            }
+        });
+        let weak = Rc::downgrade(owner);
+        self.prompt_row.connect_activated(move |_| {
+            if let Some(owner) = weak.upgrade() {
+                owner.core.app.open_prompt_editor();
             }
         });
         let weak = Rc::downgrade(owner);
@@ -120,7 +164,7 @@ impl Page {
         self.updating.set(false);
         self.details.set_visible(view.details.is_some());
         self.model.set_visible(view.details.is_some());
-        let dialog = if let Some(details) = view.details {
+        let (dialog, editor) = if let Some(details) = view.details {
             self.model.set_subtitle(&format!(
                 "{} · {}",
                 details.model_name, details.provider_name
@@ -150,9 +194,21 @@ impl Page {
             );
             self.error.set_visible(details.test_error.is_some());
             self.dismiss_error.set_visible(details.test_error.is_some());
-            details.dialog
+            let prompt = details.prompt;
+            // a group's title and description are Pango markup
+            self.prompt
+                .set_title(&gtk::glib::markup_escape_text(&prompt.title));
+            self.prompt
+                .set_description(Some(&gtk::glib::markup_escape_text(&prompt.caption)));
+            self.prompt_row.set_title(&prompt.name);
+            self.prompt_row.set_subtitle(&prompt.subtitle);
+            self.prompt_preview.set_text(&prompt.preview);
+            self.prompt_status
+                .set_text(prompt.status.as_deref().unwrap_or_default());
+            self.prompt_status.set_visible(prompt.status.is_some());
+            (details.dialog, prompt.editor)
         } else {
-            None
+            (None, None)
         };
         if let Some(view) = dialog {
             let chooser = self
@@ -165,7 +221,20 @@ impl Page {
                 chooser.dialog.present(Some(&owner.window));
             }
         } else if let Some(chooser) = self.chooser.borrow_mut().take() {
-            chooser.dialog.close();
+            close(&chooser.dialog);
+        }
+        if let Some(view) = editor {
+            let editor = self
+                .editor
+                .borrow_mut()
+                .get_or_insert_with(|| Editor::new(owner))
+                .clone();
+            editor.update(view);
+            if !editor.presented.replace(true) {
+                editor.dialog.present(Some(&owner.window));
+            }
+        } else if let Some(editor) = self.editor.borrow_mut().take() {
+            close(&editor.dialog);
         }
     }
 }
@@ -175,6 +244,7 @@ struct Chooser {
     provider: adw::ComboRow,
     key: adw::PasswordEntryRow,
     key_busy: gtk::Spinner,
+    get_key: gtk::LinkButton,
     key_error: gtk::Label,
     status: gtk::Label,
     search: gtk::SearchEntry,
@@ -182,6 +252,7 @@ struct Chooser {
     busy: gtk::Spinner,
     models_notice: gtk::Label,
     models: gtk::Box,
+    in_use: gtk::Label,
     view: RefCell<Option<ProvidersDialog>>,
     key_revision: RefCell<Option<(String, u64)>>,
     updating: Cell<bool>,
@@ -204,7 +275,10 @@ impl Chooser {
         let content = page();
         content.set_spacing(12);
         let group = adw::PreferencesGroup::new();
-        let provider = adw::ComboRow::builder().title("Provider").build();
+        let provider = adw::ComboRow::builder()
+            .title("Provider")
+            .use_markup(false)
+            .build();
         group.add(&provider);
         let key = adw::PasswordEntryRow::builder()
             .title("API key")
@@ -214,6 +288,9 @@ impl Chooser {
         key.add_prefix(&key_busy);
         group.add(&key);
         content.append(&group);
+        let get_key = gtk::LinkButton::new("");
+        get_key.set_halign(gtk::Align::End);
+        content.append(&get_key);
         let key_error = error_label();
         content.append(&key_error);
         let status = label("");
@@ -241,12 +318,21 @@ impl Chooser {
         model_scroll.set_vexpand(true);
         content.append(&model_scroll);
         toolbar.set_content(Some(&content));
+        let in_use = dim_label();
+        in_use.set_wrap(false);
+        in_use.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+        in_use.set_margin_top(10);
+        in_use.set_margin_bottom(10);
+        in_use.set_margin_start(28);
+        in_use.set_margin_end(28);
+        toolbar.add_bottom_bar(&in_use);
         dialog.set_child(Some(&toolbar));
         let this = Rc::new(Self {
             dialog,
             provider,
             key,
             key_busy,
+            get_key,
             key_error,
             status,
             search,
@@ -254,6 +340,7 @@ impl Chooser {
             busy,
             models_notice,
             models,
+            in_use,
             view: RefCell::new(None),
             key_revision: RefCell::new(None),
             updating: Cell::new(false),
@@ -349,9 +436,17 @@ impl Chooser {
                 .position(|provider| provider.id == view.selected_provider)
                 .unwrap_or(0) as u32,
         );
+        self.provider.set_subtitle(&view.privacy_note);
+        self.in_use.set_text(&format!(
+            "{}: {} · {}",
+            view.in_use_label, view.in_use_model, view.in_use_provider
+        ));
         self.key.set_visible(view.key.is_some());
+        self.get_key.set_visible(view.key.is_some());
         if let Some(key) = &view.key {
             self.key.set_title(&key.placeholder);
+            self.get_key.set_label(&key.get_key_title);
+            self.get_key.set_uri(&key.get_key_url);
             let revision = (view.selected_provider.clone(), key.revision);
             if self.key_revision.borrow().as_ref() != Some(&revision) {
                 self.key.set_text(if provider_changed && key.loading {
@@ -475,9 +570,206 @@ impl Chooser {
     }
 }
 
+// The prompt sheet. The core owns the draft; this forwards typing and takes
+// the core's text only when the core replaces the draft.
+struct Editor {
+    dialog: adw::Dialog,
+    intro: gtk::Label,
+    label: gtk::Label,
+    badge: gtk::Label,
+    text: gtk::TextView,
+    status: gtk::Label,
+    character_count: gtk::Label,
+    help: gtk::Expander,
+    help_text: gtk::Label,
+    restore: gtk::Button,
+    cancel: gtk::Button,
+    save: gtk::Button,
+    revision: Cell<Option<u64>>,
+    updating: Cell<bool>,
+    presented: Cell<bool>,
+}
+
+impl Editor {
+    fn new(owner: &Rc<Window>) -> Rc<Self> {
+        let dialog = adw::Dialog::builder()
+            .content_width(640)
+            .content_height(640)
+            .build();
+        let toolbar = adw::ToolbarView::new();
+        let header = adw::HeaderBar::builder()
+            .show_start_title_buttons(false)
+            .show_end_title_buttons(false)
+            .build();
+        let cancel = gtk::Button::new();
+        header.pack_start(&cancel);
+        let save = gtk::Button::new();
+        save.add_css_class("suggested-action");
+        header.pack_end(&save);
+        toolbar.add_top_bar(&header);
+        let content = page();
+        content.set_spacing(12);
+        let intro = dim_label();
+        content.append(&intro);
+        let heading = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        let label = gtk::Label::builder().xalign(0.0).hexpand(true).build();
+        label.add_css_class("heading");
+        heading.append(&label);
+        let badge = gtk::Label::new(None);
+        badge.add_css_class("caption");
+        badge.add_css_class("dim-label");
+        heading.append(&badge);
+        content.append(&heading);
+        let text = gtk::TextView::builder()
+            .monospace(true)
+            .wrap_mode(gtk::WrapMode::WordChar)
+            .top_margin(8)
+            .bottom_margin(8)
+            .left_margin(8)
+            .right_margin(8)
+            .build();
+        text.update_relation(&[gtk::accessible::Relation::LabelledBy(&[label.upcast_ref()])]);
+        content.append(
+            &gtk::ScrolledWindow::builder()
+                .hscrollbar_policy(gtk::PolicyType::Never)
+                .has_frame(true)
+                .vexpand(true)
+                .child(&text)
+                .build(),
+        );
+        let counts = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        let status = gtk::Label::builder()
+            .wrap(true)
+            .xalign(0.0)
+            .hexpand(true)
+            .build();
+        status.add_css_class("caption");
+        counts.append(&status);
+        let character_count = gtk::Label::builder().valign(gtk::Align::Start).build();
+        for class in ["caption", "dim-label", "numeric"] {
+            character_count.add_css_class(class);
+        }
+        counts.append(&character_count);
+        content.append(&counts);
+        let help = gtk::Expander::new(None);
+        let help_text = dim_label();
+        help_text.set_margin_top(6);
+        help.set_child(Some(&help_text));
+        content.append(&help);
+        let restore = gtk::Button::new();
+        restore.set_halign(gtk::Align::Start);
+        content.append(&restore);
+        toolbar.set_content(Some(&content));
+        dialog.set_child(Some(&toolbar));
+        dialog.set_focus(Some(&text));
+        let this = Rc::new(Self {
+            dialog,
+            intro,
+            label,
+            badge,
+            text,
+            status,
+            character_count,
+            help,
+            help_text,
+            restore,
+            cancel,
+            save,
+            revision: Cell::new(None),
+            updating: Cell::new(false),
+            presented: Cell::new(false),
+        });
+        // Escape, Cancel, and the core closing the sheet all end here; the
+        // core has already dropped a saved draft
+        let weak = Rc::downgrade(owner);
+        this.dialog.connect_closed(move |_| {
+            if let Some(owner) = weak.upgrade() {
+                owner.core.app.cancel_prompt_editor();
+            }
+        });
+        let weak = Rc::downgrade(&this);
+        this.cancel.connect_clicked(move |_| {
+            if let Some(this) = weak.upgrade() {
+                this.dialog.close();
+            }
+        });
+        let weak = Rc::downgrade(&this);
+        let owner_weak = Rc::downgrade(owner);
+        this.text.buffer().connect_changed(move |buffer| {
+            if let Some(this) = weak.upgrade()
+                && !this.updating.get()
+                && let Some(owner) = owner_weak.upgrade()
+            {
+                let (start, end) = buffer.bounds();
+                owner
+                    .core
+                    .app
+                    .prompt_edited(buffer.text(&start, &end, true).to_string());
+            }
+        });
+        let weak = Rc::downgrade(owner);
+        this.restore.connect_clicked(move |_| {
+            if let Some(owner) = weak.upgrade() {
+                owner.core.app.restore_default_prompt();
+            }
+        });
+        let weak = Rc::downgrade(owner);
+        this.save.connect_clicked(move |_| {
+            if let Some(owner) = weak.upgrade() {
+                owner.core.app.save_prompt();
+            }
+        });
+        this
+    }
+
+    fn update(&self, view: PromptEditorView) {
+        self.dialog.set_title(&view.title);
+        self.intro.set_text(&view.intro);
+        self.label.set_text(&view.label);
+        self.badge.set_text(&view.badge);
+        if self.revision.replace(Some(view.revision)) != Some(view.revision) {
+            let buffer = self.text.buffer();
+            self.updating.set(true);
+            buffer.set_text(&view.text);
+            self.updating.set(false);
+            buffer.place_cursor(&buffer.start_iter());
+        }
+        self.status.set_text(&view.status);
+        let (shown, hidden) = match view.status_is_error {
+            true => ("error", "dim-label"),
+            false => ("dim-label", "error"),
+        };
+        self.status.remove_css_class(hidden);
+        self.status.add_css_class(shown);
+        self.character_count.set_text(&view.character_count);
+        self.help.set_label(Some(&view.help_title));
+        self.help_text.set_text(&view.help);
+        self.restore.set_label(&view.restore.title);
+        self.restore.set_sensitive(view.restore.enabled);
+        self.cancel.set_label(&view.cancel_title);
+        self.save.set_label(&view.save.title);
+        self.save.set_sensitive(view.save.enabled);
+    }
+}
+
+// The core's view drops a sheet the user has already closed. libadwaita logs
+// a critical when asked to close a dialog that is no longer presented.
+fn close(dialog: &adw::Dialog) {
+    if dialog.parent().is_some() {
+        dialog.close();
+    }
+}
+
 fn matches_model(name: &str, slug: &str, query: &str) -> bool {
     let query = query.to_lowercase();
     name.to_lowercase().contains(&query) || slug.to_lowercase().contains(&query)
+}
+
+fn dim_label() -> gtk::Label {
+    let label = label("");
+    label.set_xalign(0.0);
+    label.add_css_class("dim-label");
+    label
 }
 
 fn error_label() -> gtk::Label {

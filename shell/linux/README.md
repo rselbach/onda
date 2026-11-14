@@ -157,7 +157,15 @@ Post-processing sends the transcript to the selected cloud provider. API keys
 are stored in the desktop's Secret Service keyring through `secret-tool`
 (Fedora's `libsecret` package), rather than in Onda's settings file. A compatible
 keyring, such as GNOME Keyring, must be available and unlocked. Keys save when
-you leave the field, switch providers, or close the chooser.
+you leave the field, switch providers, or close the chooser. The chooser also
+states where each provider sends your transcript, links to the provider's page
+for creating a key, and names the model in use.
+
+Click the row under **Prompt** to read or replace the instructions Onda sends
+with each transcript. One prompt serves every provider and model. Edit the text
+and click **Save**. Click **Cancel** or press Escape to discard your changes.
+**Restore Default** puts Onda's own prompt back in the editor, and **Save** then
+removes your custom prompt. Onda does not accept a blank prompt.
 
 ## Desktop integration
 
@@ -239,8 +247,8 @@ call site. Delete a command's line in the same change that starts calling it.
 
 The post-processing GUI test uses Xvfb and a private D-Bus session and keyring.
 It checks provider switching, key storage and deletion, custom model selection,
-missing-key feedback, replacement editing, shortcuts, history search, and
-confirmation dialogs without using your credentials or normal Onda data.
+missing-key feedback, prompt editing, replacement editing, shortcuts, history
+search, and confirmation dialogs without using your credentials or normal Onda data.
 Set `ONDA_TEST_SCREENSHOT_DIR` to capture the pages in light and dark appearances.
 Run it as a regular user:
 

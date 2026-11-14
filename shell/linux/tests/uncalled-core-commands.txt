@@ -8,7 +8,6 @@
 # <command> never <why Linux never needs it>
 
 begin_hotkey_capture             #13 shortcut recorder
-cancel_prompt_editor             #27 custom prompt editor
 choose_other_language            #3 tray menu
 copy_history_original            #29 history row actions
 deliver_transcript               #3 tray menu
@@ -35,16 +34,12 @@ onboarding_use_clipboard         #15 onboarding wizard
 open_app                         #3 tray menu
 open_keyboard_settings           never it sits next to the Fn warning, and Linux has no Fn shortcuts
 open_login_items                 never Linux autostart needs no approval, so the caption never offers it
-open_prompt_editor               #27 custom prompt editor
 open_settings                    #3 tray menu
-prompt_edited                    #27 custom prompt editor
 recorder_event                   #13 shortcut recorder
 redownload_model                 #3 tray menu
 reset_hotkey                     #8 reset button on the Hotkey page
-restore_default_prompt           #27 custom prompt editor
 retry_failed_dictation           #3 tray menu
 run_setup_again                  #17 Getting Started page
-save_prompt                      #27 custom prompt editor
 select_language_from_menu        #3 tray menu
 set_pause_media                  #12 pause media while recording
 setup_action                     #17 Getting Started page

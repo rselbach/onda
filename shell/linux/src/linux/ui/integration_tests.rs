@@ -93,7 +93,7 @@ fn button(root: &impl IsA<gtk::Widget>, title: &str) -> gtk::Button {
         .unwrap()
 }
 
-fn capture(owner: &Window, name: &str) {
+pub(super) fn capture(owner: &Window, name: &str) {
     let Some(directory) = std::env::var_os("ONDA_TEST_SCREENSHOT_DIR") else {
         return;
     };

@@ -1,5 +1,7 @@
 use std::time::{Duration, Instant};
 
+use onda_domain::cleanup::SYSTEM_PROMPT;
+
 use super::*;
 
 fn wait_for(description: &str, ready: impl Fn() -> bool) {
@@ -24,6 +26,38 @@ fn provider_loaded(chooser: &Chooser, provider: &str) -> bool {
     chooser.view.borrow().as_ref().is_some_and(|view| {
         view.selected_provider == provider && view.key.as_ref().is_some_and(|key| !key.loading)
     })
+}
+
+fn editor_text(editor: &Editor) -> String {
+    let buffer = editor.text.buffer();
+    let (start, end) = buffer.bounds();
+    buffer.text(&start, &end, true).to_string()
+}
+
+fn open_editor(page: &Page) -> Rc<Editor> {
+    page.prompt_row.emit_by_name::<()>("activated", &[]);
+    wait_for("prompt sheet", || page.editor.borrow().is_some());
+    page.editor.borrow().as_ref().unwrap().clone()
+}
+
+fn type_draft(editor: &Editor, draft: &str) {
+    editor.text.buffer().set_text(draft);
+    wait_for("unsaved draft", || {
+        editor.save.is_sensitive() && editor.status.text() == "Unsaved changes"
+    });
+    assert_eq!(
+        editor_text(editor),
+        draft,
+        "a view update must not overwrite typing"
+    );
+}
+
+fn stored_prompt() -> Option<serde_json::Value> {
+    let path =
+        std::path::PathBuf::from(std::env::var_os("ONDA_DATA_DIR").unwrap()).join("settings.json");
+    let settings: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    settings.get("cleanupPrompt").cloned()
 }
 
 #[test]
@@ -61,6 +95,14 @@ fn real_gui_preserves_provider_keys_and_model_selection() {
         "missing key must not be a keyring error"
     );
     assert!(chooser.key.text().is_empty());
+    assert!(chooser.provider.subtitle().unwrap().contains("OpenRouter"));
+    assert_eq!(chooser.get_key.label().unwrap(), "Get a key");
+    assert_eq!(
+        Some(chooser.get_key.uri().as_str()),
+        CleanupProvider::OpenRouter.key_url()
+    );
+    assert!(chooser.in_use.text().starts_with("In use: "));
+    assert!(chooser.in_use.text().ends_with(" · OpenRouter"));
     assert!(
         !chooser
             .view
@@ -193,6 +235,50 @@ fn real_gui_preserves_provider_keys_and_model_selection() {
     assert!(page.error.text().contains("API key"));
     page.dismiss_error.emit_clicked();
     wait_for("dismissed error", || !page.error.is_visible());
+
+    let draft = "Rewrite the transcript the way Troy Barnes would say it.";
+    assert_eq!(page.prompt_row.title(), "Onda default");
+    let editor = open_editor(page);
+    assert_eq!(editor_text(&editor), SYSTEM_PROMPT);
+    assert!(!editor.save.is_sensitive() && !editor.restore.is_sensitive());
+    type_draft(&editor, draft);
+    assert_eq!(editor.badge.text(), "Custom");
+    super::super::integration_tests::capture(&owner, "prompt-editor");
+    editor.dialog.close();
+    wait_for("prompt sheet closed", || page.editor.borrow().is_none());
+    assert_eq!(stored_prompt(), None, "a closed sheet must store nothing");
+    assert_eq!(page.prompt_row.title(), "Onda default");
+    let editor = open_editor(page);
+    assert_eq!(
+        editor_text(&editor),
+        SYSTEM_PROMPT,
+        "a discarded draft must not come back"
+    );
+
+    type_draft(&editor, draft);
+    editor.save.emit_clicked();
+    wait_for("custom prompt saved", || page.editor.borrow().is_none());
+    assert_eq!(stored_prompt(), Some(draft.into()));
+    assert_eq!(page.prompt_row.title(), "Custom prompt");
+    assert_eq!(page.prompt_preview.text(), draft);
+    assert!(page.prompt_status.text().contains("Custom prompt saved"));
+
+    let editor = open_editor(page);
+    assert_eq!(editor_text(&editor), draft);
+    assert!(!page.prompt_status.is_visible());
+    editor.restore.emit_clicked();
+    wait_for("default restored in the draft", || {
+        editor_text(&editor) == SYSTEM_PROMPT && editor.save.is_sensitive()
+    });
+    assert_eq!(
+        stored_prompt(),
+        Some(draft.into()),
+        "Restore Default must not save"
+    );
+    editor.save.emit_clicked();
+    wait_for("default prompt saved", || page.editor.borrow().is_none());
+    assert_eq!(stored_prompt(), None);
+    assert_eq!(page.prompt_row.title(), "Onda default");
     page.enabled.set_active(false);
     wait_for("disabled details", || !page.details.is_visible());
     let settings = std::fs::read_to_string(
