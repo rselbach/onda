@@ -354,7 +354,7 @@ Run it as a regular user:
 
 ```sh
 sudo dnf install xorg-x11-server-Xvfb dbus-daemon dbus-tools gnome-keyring \
-  libsecret xclip python3
+  libsecret xclip xdotool python3
 scripts/test-linux-gui.sh
 ```
 

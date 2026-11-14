@@ -55,7 +55,7 @@ jobs:
       - name: Linux real-GUI tests
         run: |
           dnf install -y xorg-x11-server-Xvfb dbus-daemon dbus-tools \
-            gnome-keyring libsecret xclip python3
+            gnome-keyring libsecret xclip xdotool python3
           scripts/test-linux-gui.sh
 
       - name: Linux build
