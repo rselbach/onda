@@ -29,6 +29,9 @@ Archive runtime dependencies on Arch Linux:
   sudo pacman -S --needed gtk4 libadwaita alsa-lib gcc-libs libsecret \
     wl-clipboard wtype xclip xdotool xdg-utils xdg-desktop-portal
 
+Muting other audio while you dictate also needs pactl, from pulseaudio-utils
+on Ubuntu and Fedora and from libpulse on Arch Linux.
+
 Use your desktop's portal backend and an unlocked Secret Service keyring
 (such as GNOME Keyring) for global shortcuts, keyboard permission, and API keys.
 Keep your existing PipeWire or PulseAudio setup; no PulseAudio daemon is needed.

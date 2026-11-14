@@ -111,7 +111,7 @@ impl Core {
             Ports {
                 text_output: output.clone(),
                 permissions: desktop.clone(),
-                media: None,
+                media: Some(super::media::start(paths.root())),
                 sounds: desktop.clone(),
                 power: desktop.clone(),
                 hotkeys: Arc::new(Hotkeys::new(runtime.handle(), events.clone(), held)),

@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
-# Exercise a real GTK window, virtual microphone, inference, and X11 paste.
+# Exercise a real GTK window, virtual microphone, inference, X11 paste, and
+# media pause and mute against a private bus and audio server.
 set -euo pipefail
 
 cleanup() {
   local status=$?
   if [[ -n "${app_pid:-}" ]]; then kill "${app_pid}" 2>/dev/null || true; fi
   if [[ -n "${target_pid:-}" ]]; then kill "${target_pid}" 2>/dev/null || true; fi
+  if [[ -n "${music_pid:-}" ]]; then kill "${music_pid}" 2>/dev/null || true; fi
+  if [[ -n "${player_pid:-}" ]]; then kill "${player_pid}" 2>/dev/null || true; fi
+  if [[ -n "${toggle_pid:-}" ]]; then kill "${toggle_pid}" 2>/dev/null || true; fi
   if [[ -n "${pulse_pid:-}" ]]; then kill "${pulse_pid}" 2>/dev/null || true; fi
   if [[ -n "${wireplumber_pid:-}" ]]; then kill "${wireplumber_pid}" 2>/dev/null || true; fi
   if [[ -n "${pipewire_pid:-}" ]]; then kill "${pipewire_pid}" 2>/dev/null || true; fi
@@ -31,6 +35,60 @@ wait_ready() {
   done
   echo "Onda did not become ready" >&2
   return 1
+}
+
+wait_until() {
+  local what="$1"
+  shift
+  local attempt
+  for ((attempt = 0; attempt < 100; attempt++)); do
+    if "$@"; then return 0; fi
+    sleep 0.1
+  done
+  echo "Timed out waiting for ${what}" >&2
+  return 1
+}
+
+write_settings() {
+  cat > "${ONDA_DATA_DIR}/settings.json" <<JSON
+{"onboardingCompleted":true,"didShowFirstRunSetup":true,"selectedModel":"parakeet-tdt-v2","soundFeedbackEnabled":false,"pauseMediaDuringRecording":$1}
+JSON
+}
+
+start_onda() {
+  PIPEWIRE_PROPS='{ stream.capture.sink = true }' \
+    "${binary}" >> "${work}/onda.log" 2>&1 &
+  app_pid=$!
+  wait_ready
+}
+
+player() {
+  gdbus call --session --dest "org.mpris.MediaPlayer2.$1" \
+    --object-path /org/mpris/MediaPlayer2 --method "$2" "${@:3}"
+}
+
+player_is() {
+  local status
+  status="$(player "$1" org.freedesktop.DBus.Properties.Get \
+    org.mpris.MediaPlayer2.Player PlaybackStatus)"
+  [[ "${status}" == *"'$2'"* ]]
+}
+
+calls() {
+  tr '\n' ' ' < "$1"
+}
+
+speakers_are_default() {
+  pactl set-default-sink onda-speakers 2> /dev/null \
+    && [[ "$(pactl get-default-sink)" == 'onda-speakers' ]]
+}
+
+speakers_muted() {
+  [[ "$(LC_ALL=C pactl get-sink-mute onda-speakers)" == 'Mute: yes' ]]
+}
+
+speakers_audible() {
+  [[ "$(LC_ALL=C pactl get-sink-mute onda-speakers)" == 'Mute: no' ]]
 }
 
 check_microphone_released() {
@@ -76,9 +134,7 @@ main() {
     "${ONDA_DATA_DIR}/Models/parakeet-tdt-v2"
   ln -s "${model}" \
     "${ONDA_DATA_DIR}/Models/parakeet-tdt-v2/parakeet-tdt-0.6b-v2-Q8_0.gguf"
-  cat > "${ONDA_DATA_DIR}/settings.json" <<'JSON'
-{"onboardingCompleted":true,"didShowFirstRunSetup":true,"selectedModel":"parakeet-tdt-v2","soundFeedbackEnabled":false,"pauseMediaDuringRecording":false}
-JSON
+  write_settings true
   Xvfb -displayfd 3 -screen 0 1024x768x24 3> "${work}/display" \
     > "${work}/xvfb.log" 2>&1 &
   display_pid=$!
@@ -130,6 +186,26 @@ CONF
   done
   pactl load-module module-null-sink sink_name=onda-test \
     rate=16000 channels=1 > /dev/null
+  # media plays through its own default sink, so a mute never reaches the
+  # virtual microphone; the default can be set once WirePlumber is up
+  pactl load-module module-null-sink sink_name=onda-speakers > /dev/null
+  wait_until 'the default sink' speakers_are_default
+  python3 - "${work}/music.wav" <<'PY'
+import math
+import struct
+import sys
+import wave
+
+second = b"".join(
+    struct.pack("<h", int(8000 * math.sin(math.tau * 400 * n / 8000)))
+    for n in range(8000)
+)
+with wave.open(sys.argv[1], "wb") as tone:
+    tone.setnchannels(1)
+    tone.setsampwidth(2)
+    tone.setframerate(8000)
+    tone.writeframes(second * 900)
+PY
   export ALSA_CONFIG_PATH="${work}/alsa.conf"
   cat > "${ALSA_CONFIG_PATH}" <<'CONF'
 pcm.!default {
@@ -148,10 +224,7 @@ CONF
     echo "A control command incorrectly started Onda" >&2
     return 1
   fi
-  PIPEWIRE_PROPS='{ stream.capture.sink = true }' \
-    "${binary}" > "${work}/onda.log" 2>&1 &
-  app_pid=$!
-  wait_ready
+  start_onda
   "${binary}" --start
   "${binary}" --start
   sleep 0.4
@@ -163,10 +236,18 @@ CONF
   target_window="$(xdotool search --sync --name 'Greendale dictation target' | head -1)"
   xdotool windowfocus --sync "${target_window}"
   printf 'Greendale clipboard' | xclip -selection clipboard -in
+  python3 "${root}/shell/linux/tests/mpris-player.py" \
+    greendale "${work}/greendale.log" &
+  player_pid=$!
+  wait_until 'the media player' player_is greendale Playing
+  pw-play "${work}/music.wav" > "${work}/music.log" 2>&1 &
+  music_pid=$!
   "${binary}" --start
+  wait_until 'the player to pause' player_is greendale Paused
   sleep 0.5
   paplay --device=onda-test "${sample}"
   sleep 0.3
+  speakers_audible
   "${binary}" --stop
   "${binary}" --stop
   for ((attempt = 0; attempt < 600; attempt++)); do
@@ -177,13 +258,20 @@ CONF
   rg -qi 'ask not|country' "${work}/transcript"
   wait_ready
   [[ "$(xclip -selection clipboard -out)" == 'Greendale clipboard' ]]
+  wait_until 'the player to resume' player_is greendale Playing
+  [[ "$(calls "${work}/greendale.log")" == 'Pause Play ' ]]
   sleep 9
   check_microphone_released
+  player greendale org.mpris.MediaPlayer2.Player.Pause > /dev/null
+  : > "${work}/greendale.log"
   xdotool key ctrl+a BackSpace
   xdotool keydown alt+space
+  wait_until 'the mute' speakers_muted
   sleep 0.5
   paplay --device=onda-test "${sample}"
+  speakers_muted
   xdotool keyup alt+space
+  wait_until 'the unmute' speakers_audible
   for ((attempt = 0; attempt < 600; attempt++)); do
     if [[ -s "${work}/transcript" ]] && \
       rg -qi 'ask not|country' "${work}/transcript"; then break; fi
@@ -191,6 +279,8 @@ CONF
   done
   rg -qi 'ask not|country' "${work}/transcript"
   wait_ready
+  player_is greendale Paused
+  [[ ! -s "${work}/greendale.log" ]]
   sleep 9
   check_microphone_released
   "${binary}"
@@ -200,8 +290,45 @@ CONF
   fi
   "${binary}" --quit
   wait "${app_pid}"
+  start_onda
+  python3 "${root}/shell/linux/tests/mpris-player.py" --ignore-pause \
+    troy "${work}/troy.log" &
+  toggle_pid=$!
+  wait_until 'the second media player' player_is troy Playing
+  "${binary}" --start
+  wait_until 'the toggle to pause' player_is troy Paused
+  "${binary}" --cancel
+  wait_until 'the second player to resume' player_is troy Playing
+  [[ "$(calls "${work}/troy.log")" == 'Pause PlayPause Play ' ]]
+  player_is greendale Paused
+  [[ ! -s "${work}/greendale.log" ]]
+  kill "${toggle_pid}"
+  wait "${toggle_pid}" || true
+  toggle_pid=""
+  wait_ready
+  "${binary}" --start
+  wait_until 'the mute' speakers_muted
+  [[ "$(cat "${ONDA_DATA_DIR}/muted-output")" == 'onda-speakers' ]]
+  kill -KILL "${app_pid}"
+  wait "${app_pid}" || true
+  speakers_muted
+  write_settings false
+  start_onda
+  speakers_audible
+  [[ ! -e "${ONDA_DATA_DIR}/muted-output" ]]
+  player greendale org.mpris.MediaPlayer2.Player.Play > /dev/null
+  : > "${work}/greendale.log"
+  "${binary}" --start
+  sleep 3
+  player_is greendale Playing
+  [[ ! -s "${work}/greendale.log" ]]
+  speakers_audible
+  "${binary}" --cancel
+  wait_ready
+  "${binary}" --quit
+  wait "${app_pid}"
   app_pid=""
-  echo "PASS: commands, cancellation, global shortcut, CPU transcription, GTK paste, clipboard restoration."
+  echo "PASS: commands, cancellation, global shortcut, CPU transcription, GTK paste, clipboard restoration, media pause, output mute, mute recovery."
 }
 
 main "$@"

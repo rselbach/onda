@@ -3,6 +3,7 @@
 mod clipboard;
 mod core;
 mod hotkeys;
+mod media;
 mod output;
 mod overlay;
 mod portal;

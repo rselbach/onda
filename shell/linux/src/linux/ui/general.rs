@@ -89,6 +89,22 @@ impl Window {
         group.add(&terminal);
         self.general.append(&group);
 
+        let group = adw::PreferencesGroup::builder().title("Media").build();
+        let media = adw::SwitchRow::builder()
+            .title(&page.pause_media.label)
+            .subtitle(&page.pause_media_caption)
+            .active(page.pause_media.on)
+            .sensitive(page.pause_media.enabled)
+            .build();
+        let weak = Rc::downgrade(self);
+        media.connect_active_notify(move |row| {
+            if let Some(owner) = weak.upgrade() {
+                owner.core.app.set_pause_media(row.is_active());
+            }
+        });
+        group.add(&media);
+        self.general.append(&group);
+
         let group = adw::PreferencesGroup::builder().title("Feedback").build();
         let sounds = adw::SwitchRow::builder()
             .title(&page.sounds.label)

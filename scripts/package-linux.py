@@ -220,9 +220,18 @@ def package(version, arch, stage, destination, target):
             if p.is_file()
         ],
         "overrides": {
-            "deb": {"depends": deb, "recommends": ["gnome-keyring"]},
-            "rpm": {"depends": rpm, "recommends": ["gnome-keyring"]},
-            "archlinux": {"depends": archlinux, "recommends": ["gnome-keyring"]},
+            "deb": {
+                "depends": deb,
+                "recommends": ["gnome-keyring", "pulseaudio-utils"],
+            },
+            "rpm": {
+                "depends": rpm,
+                "recommends": ["gnome-keyring", "pulseaudio-utils"],
+            },
+            "archlinux": {
+                "depends": archlinux,
+                "recommends": ["gnome-keyring", "libpulse"],
+            },
         },
         "archlinux": {"packager": "Roberto Selbach <rselbach@rselbach.com>"},
     }

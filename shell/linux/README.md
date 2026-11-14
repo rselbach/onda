@@ -190,6 +190,12 @@ removes your custom prompt. Onda does not accept a blank prompt.
 - **Tray:** optional StatusNotifierItem. Closing the main window keeps Onda
   running; the launcher reopens the existing process. Quit is always available
   in the window and through the CLI.
+- **Media:** with **Pause media while recording** on, Onda pauses the MPRIS
+  players that are playing and resumes only those. When none is playing, it
+  mutes the default output while another application plays through it, and
+  unmutes when the recording stops. Muting uses `pactl` (`pulseaudio-utils`,
+  or `libpulse` on Arch Linux), which works with PipeWire and PulseAudio. A
+  mute left behind by a crash is undone at the next launch.
 - **Cancellation:** the window, tray, or `onda --cancel`. Onda does not claim
   Escape globally on Linux.
 - **Target context:** Linux currently pastes into the focused application at
@@ -265,12 +271,15 @@ whisper.cpp's `samples/jfk.wav` (the expected transcript contains “country”)
 It checks cancellation, command controls, global push-to-talk, CPU inference,
 paste, clipboard restoration, and single-instance activation. It never uses
 your normal Onda data or microphone. It also checks microphone release after
-standby and a fresh recording after capture has stopped.
+standby and a fresh recording after capture has stopped. A stand-in MPRIS
+player and a `pw-play` stream on a second virtual sink check media pause and
+resume, the play/pause fallback, the output mute, and its recovery after Onda
+is killed.
 
 ```sh
 sudo dnf install xorg-x11-server-Xvfb pipewire pipewire-pulseaudio \
   pipewire-alsa wireplumber pulseaudio-utils dbus-daemon gcc ripgrep \
-  xclip xdotool python3
+  xclip xdotool python3 python3-dbus python3-gobject
 scripts/test-linux-dictation.sh \
   target/debug/onda /path/to/parakeet-tdt-0.6b-v2-Q8_0.gguf /path/to/jfk.wav
 ```

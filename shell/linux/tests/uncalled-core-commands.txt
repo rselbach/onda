@@ -40,7 +40,6 @@ reset_hotkey                     #8 reset button on the Hotkey page
 retry_failed_dictation           #3 tray menu
 run_setup_again                  #17 Getting Started page
 select_language_from_menu        #3 tray menu
-set_pause_media                  #12 pause media while recording
 setup_action                     #17 Getting Started page
 show_all_history                 #3 tray menu
 shutdown                         never the shell owns the runtime and calls shutdown_async

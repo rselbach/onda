@@ -283,6 +283,18 @@ pub(super) fn exercise_pages(owner: &Rc<Window>) {
         .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
         .is_some_and(|prefs| prefs["automatic_checks"] == false)
     });
+    let media = widgets::<adw::SwitchRow>(&owner.general)
+        .into_iter()
+        .find(|row| row.title() == "Pause media while recording")
+        .unwrap();
+    assert!(!media.is_active());
+    assert!(
+        media
+            .subtitle()
+            .is_some_and(|caption| caption.contains("resumes only if Onda paused it"))
+    );
+    media.set_active(true);
+    wait_for(|| owner.core.settings.pause_media_during_recording());
     wait_for(|| {
         owner
             .core
