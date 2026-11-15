@@ -399,7 +399,11 @@ pub(crate) async fn deliver(
                     return vec![];
                 }
                 let joined = match field {
-                    Some(field) => join(&text, text_before_caret(&field.text, field.caret_utf16)),
+                    Some(field) => join(
+                        &text,
+                        text_before_caret(&field.text, field.caret_utf16),
+                        field.kind,
+                    ),
                     None => text,
                 };
                 text_output

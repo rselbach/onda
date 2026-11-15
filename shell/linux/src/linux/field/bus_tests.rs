@@ -32,10 +32,20 @@ const INTERFACES: &str = r#"<node>
     <property name="CaretOffset" type="i" access="read"/>
     <property name="CharacterCount" type="i" access="read"/>
   </interface>
+  <interface name="org.a11y.atspi.Collection">
+    <method name="GetMatches">
+      <arg type="(aiia{ss}iaiiasib)" direction="in"/>
+      <arg type="u" direction="in"/>
+      <arg type="i" direction="in"/>
+      <arg type="b" direction="in"/>
+      <arg type="a(so)" direction="out"/>
+    </method>
+  </interface>
 </node>"#;
 
 const TEXT_ROLE: u32 = 61;
 const BUTTON_ROLE: u32 = 43;
+const TERMINAL_ROLE: u32 = 60;
 const FRAME_ROLE: u32 = 23;
 
 /// One accessible of the stand-in bus. Its children are indices into the
@@ -48,6 +58,8 @@ struct Node {
     text: Option<Text>,
     /// an application that never answers
     hangs: bool,
+    /// finds the focus under itself when asked, as Firefox and Chromium do
+    searches: bool,
 }
 
 #[derive(Clone)]
@@ -133,15 +145,17 @@ fn serve(connection: &gio::DBusConnection, stage: &Rc<RefCell<Stage>>, nodes: us
         .build()
         .expect("the stand-in bus locator");
     for index in 0..nodes {
-        for name in [ACCESSIBLE, TEXT] {
+        for name in [ACCESSIBLE, TEXT, COLLECTION] {
             let asked = stage.clone();
             let read = stage.clone();
             connection
                 .register_object(&path(index), &interface(name))
-                .method_call(move |connection, _, path, _, method, _, invocation| {
-                    let own = connection.unique_name().expect("a bus name");
-                    answer(&asked, &own, index_of(path), method, invocation);
-                })
+                .method_call(
+                    move |connection, _, path, _, method, parameters, invocation| {
+                        let own = connection.unique_name().expect("a bus name");
+                        answer(&asked, &own, index_of(path), method, parameters, invocation);
+                    },
+                )
                 .property(move |_, _, path, _, property| {
                     let stage = read.borrow();
                     let text = stage
@@ -168,6 +182,7 @@ fn answer(
     own: &str,
     index: usize,
     method: &str,
+    parameters: glib::Variant,
     invocation: gio::DBusMethodInvocation,
 ) {
     let mut stage = stage.borrow_mut();
@@ -199,6 +214,19 @@ fn answer(
             (words,).to_variant()
         }
         ("GetRole", _) => (node.role,).to_variant(),
+        ("GetMatches", _) if node.searches => {
+            let found = matches_focus(&parameters)
+                .then(|| focused_under(&stage.tree, index))
+                .flatten();
+            let matches: Vec<(String, ObjectPath)> = found
+                .into_iter()
+                .map(|child| {
+                    let path = ObjectPath::try_from(path(child)).expect("an object path");
+                    (own.to_owned(), path)
+                })
+                .collect();
+            (matches,).to_variant()
+        }
         ("GetInterfaces", text) => {
             let mut interfaces = vec![ACCESSIBLE];
             interfaces.extend(text.is_some().then_some(TEXT));
@@ -228,6 +256,57 @@ fn answer(
         }
     };
     invocation.return_value(Some(&reply));
+}
+
+/// Whether a search asks for the focused accessible in the one form Firefox
+/// 160 and Electron 45 answered: every criterion matching all, canonical
+/// order, the whole tree. They return nothing for any other form.
+fn matches_focus(search: &glib::Variant) -> bool {
+    type Rule = (
+        Vec<i32>,
+        i32,
+        HashMap<String, String>,
+        i32,
+        Vec<i32>,
+        i32,
+        Vec<String>,
+        i32,
+        bool,
+    );
+    let Some((rule, order, _count, traverse)) = search.get::<(Rule, u32, i32, bool)>() else {
+        return false;
+    };
+    let (
+        states,
+        state_match,
+        attributes,
+        attribute_match,
+        roles,
+        role_match,
+        interfaces,
+        interface_match,
+        invert,
+    ) = rule;
+    states == [1 << FOCUSED, 0]
+        && [state_match, attribute_match, role_match, interface_match] == [1; 4]
+        && attributes.is_empty()
+        && roles == [0; 4]
+        && interfaces.is_empty()
+        && !invert
+        && order == 1
+        && traverse
+}
+
+/// The first node with the focus under `index`, in document order, found
+/// without asking any node: a hung one does not hold it up.
+fn focused_under(tree: &[Node], index: usize) -> Option<usize> {
+    tree[index]
+        .children
+        .iter()
+        .find_map(|&child| match tree[child].states.contains(&FOCUSED) {
+            true => Some(child),
+            false => focused_under(tree, child),
+        })
 }
 
 /// Owns `name`, or fails where a real service already does: this test
@@ -277,6 +356,7 @@ fn found(text: &str, caret_utf16: usize) -> Option<FieldText> {
     Some(FieldText {
         text: text.into(),
         caret_utf16,
+        kind: FieldKind::Prose,
     })
 }
 
@@ -361,6 +441,71 @@ fn the_focused_field_is_read_from_the_accessibility_bus() {
             process_id: Some(ours),
             want: found("Troy Barnes joined", 5),
             text_reads: 1,
+            takes: prompt,
+        },
+        Case {
+            name: "a terminal's screen is told apart from prose",
+            tree: one_application(Node {
+                role: TERMINAL_ROLE,
+                ..field("troy@greendale:~$ ", 18)
+            }),
+            process_id: Some(ours),
+            want: Some(FieldText {
+                text: "troy@greendale:~$ ".into(),
+                caret_utf16: 18,
+                kind: FieldKind::Terminal,
+            }),
+            text_reads: 1,
+            takes: prompt,
+        },
+        Case {
+            name: "an application that searches for the focus is not walked",
+            tree: vec![
+                parent(&[1]),
+                parent(&[2]),
+                Node {
+                    searches: true,
+                    ..window(&[ACTIVE], &[3, 4])
+                },
+                // the walk would wait here and pass the application over
+                hung(),
+                field("Greendale is open.", 18),
+            ],
+            process_id: Some(ours),
+            want: found("Greendale is open.", 18),
+            text_reads: 1,
+            takes: (Duration::ZERO, CALL_TIMEOUT),
+        },
+        Case {
+            name: "the target's own search needs no active window, as Chromium has none",
+            tree: vec![
+                parent(&[1]),
+                Node {
+                    searches: true,
+                    ..parent(&[2])
+                },
+                window(&[], &[3]),
+                field("Troy Barnes joined the", 22),
+            ],
+            process_id: Some(ours),
+            want: found("Troy Barnes joined the", 22),
+            text_reads: 1,
+            takes: prompt,
+        },
+        Case {
+            name: "without a target, a search is made under an active window only",
+            tree: vec![
+                parent(&[1]),
+                Node {
+                    searches: true,
+                    ..parent(&[2])
+                },
+                window(&[], &[3]),
+                field("Troy Barnes joined the", 22),
+            ],
+            process_id: None,
+            want: None,
+            text_reads: 0,
             takes: prompt,
         },
         Case {

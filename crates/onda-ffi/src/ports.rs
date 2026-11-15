@@ -11,6 +11,7 @@ use onda_app::ports::{
     Notifier, NowPlaying, Permissions, Power, PrivacyPane, SoundPlayer, Target, TextOutput,
 };
 use onda_domain::hotkey::{GlobeKeyAction, ModifierSet, Shortcut};
+use onda_domain::joiner::FieldKind;
 use onda_domain::messages::{LoginItemRegistryStatus, NotificationAuthorization};
 use onda_domain::privacy_naming::PrivacyNaming;
 use onda_domain::types::MicrophonePermission;
@@ -452,6 +453,8 @@ impl TextOutput for Shell {
             .map(|field| FieldText {
                 text: field.text,
                 caret_utf16: usize::try_from(field.caret_utf16).unwrap_or(usize::MAX),
+                // the Swift shell does not say what the field holds
+                kind: FieldKind::Prose,
             })
     }
 

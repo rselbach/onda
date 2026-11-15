@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use onda_domain::cleanup::OnDeviceStatus;
 use onda_domain::hotkey::{GlobeKeyAction, ModifierSet, Shortcut};
+use onda_domain::joiner::FieldKind;
 use onda_domain::messages::{LoginItemRegistryStatus, NotificationAuthorization, UserMessage};
 use onda_domain::models::SystemSpeechInfo;
 use onda_domain::types::MicrophonePermission;
@@ -35,6 +36,8 @@ pub struct FieldText {
     pub text: String,
     /// Selection start in UTF-16 code units.
     pub caret_utf16: usize,
+    /// What the field holds, which decides how a dictation joins it.
+    pub kind: FieldKind,
 }
 
 /// How an insertion through the OUT-3 strategy chain ended.

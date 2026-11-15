@@ -8,7 +8,21 @@ const CONTINUATION_WORDS: [&str; 18] = [
     "though", "to", "when", "while", "yet",
 ];
 
-/// Returns `text` adjusted to follow `preceding`, the text before the caret.
+/// What the focused field holds, which decides how a dictation is fitted to
+/// the text before the caret.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldKind {
+    /// Text the user writes. The dictation takes its case and its spacing
+    /// from it.
+    Prose,
+    /// A terminal's screen. A prompt or a program's output comes before the
+    /// caret and says nothing about sentences, so the dictation keeps its
+    /// case and takes only its spacing.
+    Terminal,
+}
+
+/// Returns `text` adjusted to follow `preceding`, the text before the caret
+/// of a `field`.
 ///
 /// - OUT-8: an empty `preceding` (start of field) or empty `text` returns
 ///   `text` unchanged.
@@ -17,7 +31,9 @@ const CONTINUATION_WORDS: [&str; 18] = [
 ///   lowercased.
 /// - OUT-11: one leading space is inserted when the two sides would touch,
 ///   unless either side is in a script written without spaces.
-pub fn join(text: &str, preceding: &str) -> String {
+///
+/// OUT-9 and OUT-10 apply to [`FieldKind::Prose`] only.
+pub fn join(text: &str, preceding: &str, field: FieldKind) -> String {
     let Some(last) = preceding.chars().next_back() else {
         return text.to_owned();
     };
@@ -25,7 +41,10 @@ pub fn join(text: &str, preceding: &str) -> String {
         return text.to_owned();
     }
 
-    let mut joined = set_initial_case(text, is_sentence_start(preceding));
+    let mut joined = match field {
+        FieldKind::Prose => set_initial_case(text, is_sentence_start(preceding)),
+        FieldKind::Terminal => text.to_owned(),
+    };
     let needs_space = !last.is_whitespace()
         && !"([{“‘".contains(last)
         && !is_written_without_spaces(last)
@@ -303,7 +322,56 @@ mod tests {
             },
         ];
         for tc in cases {
-            assert_eq!(join(tc.text, tc.preceding), tc.want, "{}", tc.name);
+            assert_eq!(
+                join(tc.text, tc.preceding, FieldKind::Prose),
+                tc.want,
+                "{}",
+                tc.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_terminal_gives_spacing_and_no_case() {
+        let cases = [
+            Case {
+                name: "after a prompt",
+                preceding: "troy@greendale:~$ ",
+                text: "And so it begins.",
+                want: "And so it begins.",
+            },
+            Case {
+                name: "after a word",
+                preceding: "troy@greendale:~$ echo enroll",
+                text: "And so it begins.",
+                want: " And so it begins.",
+            },
+            Case {
+                name: "after a full stop",
+                preceding: "troy@greendale:~$ echo done.",
+                text: "next thing",
+                want: " next thing",
+            },
+            Case {
+                name: "after a space",
+                preceding: "troy@greendale:~$ echo ",
+                text: "The plan works",
+                want: "The plan works",
+            },
+            Case {
+                name: "an empty screen",
+                preceding: "",
+                text: "The plan works",
+                want: "The plan works",
+            },
+        ];
+        for tc in cases {
+            assert_eq!(
+                join(tc.text, tc.preceding, FieldKind::Terminal),
+                tc.want,
+                "{}",
+                tc.name
+            );
         }
     }
 }

@@ -5,6 +5,7 @@
 //! Everything else reads as no field, and the dictation is then delivered
 //! without joining.
 
+use std::collections::HashMap;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -14,6 +15,7 @@ use gtk::{
     glib::{self, variant::ObjectPath},
 };
 use onda_app::ports::FieldText;
+use onda_domain::joiner::FieldKind;
 
 /// OUT-2: a read that takes longer is given up.
 const LIMIT: Duration = Duration::from_millis(250);
@@ -25,13 +27,21 @@ const CALL_TIMEOUT: Duration = Duration::from_millis(100);
 
 const ACCESSIBLE: &str = "org.a11y.atspi.Accessible";
 const TEXT: &str = "org.a11y.atspi.Text";
+const COLLECTION: &str = "org.a11y.atspi.Collection";
+
+/// `ATSPI_Collection_MATCH_ALL`, which an empty criterion needs as much as
+/// a set one, and `ATSPI_Collection_SORT_ORDER_CANONICAL`. Firefox and
+/// Chromium answer nothing for other values.
+const MATCH_ALL: i32 = 1;
+const SORT_CANONICAL: u32 = 1;
 
 /// `ATSPI_STATE_ACTIVE` and `ATSPI_STATE_FOCUSED`, as bit positions.
 const ACTIVE: u32 = 1;
 const FOCUSED: u32 = 12;
 
-/// `ATSPI_ROLE_PASSWORD_TEXT`.
+/// `ATSPI_ROLE_PASSWORD_TEXT` and `ATSPI_ROLE_TERMINAL`.
 const PASSWORD_TEXT: u32 = 40;
+const TERMINAL: u32 = 60;
 
 /// The characters GTK draws in place of hidden text, in the order it tries
 /// them, and the asterisk it falls back to.
@@ -126,7 +136,14 @@ impl Bus {
 
     fn field(&self, process_id: Option<u32>) -> anyhow::Result<Option<FieldText>> {
         for application in self.applications(process_id)? {
-            match self.focused_in(&application) {
+            // the target has the keyboard, so its focus needs no active
+            // window, and Chromium reports none until an assistive
+            // technology has asked for its bus address
+            let focused = match process_id.and_then(|_| self.focused_match(&application)) {
+                Some(focused) => Ok(Some(focused)),
+                None => self.focused_in(&application),
+            };
+            match focused {
                 Ok(Some(focused)) => return self.field_text(&focused),
                 Ok(None) => {}
                 Err(error) if self.cancellable.is_cancelled() => return Err(error),
@@ -174,6 +191,9 @@ impl Bus {
             if !self.states(&window)?.has(ACTIVE) {
                 continue;
             }
+            if let Some(focused) = self.focused_match(&window) {
+                return Ok(Some(focused));
+            }
             let mut pending = vec![window];
             while let Some(current) = pending.pop() {
                 if self.states(&current)?.has(FOCUSED) {
@@ -183,6 +203,34 @@ impl Bus {
             }
         }
         Ok(None)
+    }
+
+    /// What the application finds with the focus under `root` when it
+    /// searches its own tree, which takes one call however long the page.
+    /// Firefox, Chromium, and GTK 3 search. `None` from a toolkit that does
+    /// not, as GTK 4 and Qt, and when nothing matches. The walk then looks.
+    fn focused_match(&self, root: &Accessible) -> Option<Accessible> {
+        let focused = (
+            vec![1i32 << FOCUSED, 0],
+            MATCH_ALL,
+            HashMap::<String, String>::new(),
+            MATCH_ALL,
+            vec![0i32; 4],
+            MATCH_ALL,
+            Vec::<String>::new(),
+            MATCH_ALL,
+            false,
+        );
+        // one match, from the whole tree under the root
+        let search = (focused, SORT_CANONICAL, 1i32, true);
+        let (matches,) = self
+            .ask(root, COLLECTION, "GetMatches", Some(&search.to_variant()))
+            .ok()?
+            .get::<(Vec<(String, ObjectPath)>,)>()?;
+        matches.into_iter().next().map(|(owner, path)| Accessible {
+            owner,
+            path: path.as_str().into(),
+        })
     }
 
     fn field_text(&self, focused: &Accessible) -> anyhow::Result<Option<FieldText>> {
@@ -216,6 +264,10 @@ impl Bus {
                     false => utf16_offset(&text, offset),
                 },
                 text,
+                kind: match role {
+                    TERMINAL => FieldKind::Terminal,
+                    _ => FieldKind::Prose,
+                },
             }))
     }
 

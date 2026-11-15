@@ -1817,6 +1817,7 @@ async fn out_8_joiner_uses_the_text_before_the_caret() {
     *lock(&h.text.field) = Some(onda_app::ports::FieldText {
         text: "Done.".to_owned(),
         caret_utf16: 5,
+        kind: onda_domain::joiner::FieldKind::Prose,
     });
     *lock(&h.script.final_default) = "next thing".to_owned();
     h.dictate().await;
