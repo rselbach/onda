@@ -286,6 +286,17 @@ impl Settings {
         self.put(Key::PauseMediaDuringRecording, Value::from(enabled))
     }
 
+    /// Whether Linux pastes with Ctrl+Shift+V instead of Ctrl+V, as
+    /// terminals expect. Default false.
+    pub fn terminal_paste_shortcut(&self) -> bool {
+        self.bool(Key::TerminalPasteShortcut, false)
+    }
+
+    /// Stores `terminalPasteShortcut`.
+    pub fn set_terminal_paste_shortcut(&self, enabled: bool) -> Result<(), SettingsError> {
+        self.put(Key::TerminalPasteShortcut, Value::from(enabled))
+    }
+
     /// Start/stop cues. Default true.
     pub fn sound_feedback_enabled(&self) -> bool {
         self.bool(Key::SoundFeedbackEnabled, true)

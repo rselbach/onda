@@ -566,6 +566,20 @@ pub(super) fn exercise_pages(owner: &Rc<Window>) {
     );
     media.set_active(true);
     wait_for(|| owner.core.settings.pause_media_during_recording());
+    let terminal = widgets::<adw::SwitchRow>(&owner.general)
+        .into_iter()
+        .find(|row| row.title() == "Terminal paste shortcut")
+        .unwrap();
+    assert!(!terminal.is_active());
+    terminal.set_active(true);
+    wait_for(|| {
+        onda_settings::Settings::open(
+            super::super::core::data_dir()
+                .unwrap()
+                .join("settings.json"),
+        )
+        .terminal_paste_shortcut()
+    });
     wait_for(|| {
         owner
             .core

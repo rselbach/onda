@@ -34,6 +34,7 @@ struct Snapshot {
     hotkey: Shortcut,
     activation_mode: ActivationMode,
     pause_media_during_recording: bool,
+    terminal_paste_shortcut: bool,
     sound_feedback_enabled: bool,
     history_enabled: bool,
     history_keeps_audio: bool,
@@ -60,6 +61,7 @@ fn snapshot(settings: &Settings) -> Snapshot {
         hotkey: settings.hotkey(&Shortcut::OPTION_SPACE),
         activation_mode: settings.activation_mode(),
         pause_media_during_recording: settings.pause_media_during_recording(),
+        terminal_paste_shortcut: settings.terminal_paste_shortcut(),
         sound_feedback_enabled: settings.sound_feedback_enabled(),
         history_enabled: settings.history_enabled(),
         history_keeps_audio: settings.history_keeps_audio(),
@@ -93,6 +95,7 @@ fn defaults() -> Snapshot {
         hotkey: Shortcut::OPTION_SPACE,
         activation_mode: ActivationMode::Hold,
         pause_media_during_recording: false,
+        terminal_paste_shortcut: false,
         sound_feedback_enabled: true,
         history_enabled: true,
         history_keeps_audio: false,
@@ -213,6 +216,7 @@ fn key_names_match_prd_09() {
         "hotkey",
         "hotkeyActivationMode",
         "pauseMediaDuringRecording",
+        "terminalPasteShortcut",
         "soundFeedbackEnabled",
         "historyEnabled",
         "historyKeepsAudio",
@@ -269,6 +273,7 @@ fn every_setter_round_trips_through_the_file() {
     settings
         .set_pause_media_during_recording(true)
         .expect("set");
+    settings.set_terminal_paste_shortcut(true).expect("set");
     settings.set_sound_feedback_enabled(false).expect("set");
     settings.set_history_enabled(false).expect("set");
     settings.set_history_keeps_audio(true).expect("set");
@@ -307,6 +312,7 @@ fn every_setter_round_trips_through_the_file() {
         hotkey: hotkey.clone(),
         activation_mode: ActivationMode::Automatic,
         pause_media_during_recording: true,
+        terminal_paste_shortcut: true,
         sound_feedback_enabled: false,
         history_enabled: false,
         history_keeps_audio: true,
@@ -464,6 +470,7 @@ fn corrupt_values_read_as_defaults_set_2() {
     ];
     let bool_keys = [
         Key::PauseMediaDuringRecording,
+        Key::TerminalPasteShortcut,
         Key::SoundFeedbackEnabled,
         Key::HistoryEnabled,
         Key::HistoryKeepsAudio,

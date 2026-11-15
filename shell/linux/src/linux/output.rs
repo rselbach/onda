@@ -1,10 +1,7 @@
 //! Clipboard delivery and consented Wayland keyboard injection.
 
 use std::path::{Path, PathBuf};
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ashpd::desktop::{
@@ -12,6 +9,7 @@ use ashpd::desktop::{
     remote_desktop::{DeviceType, KeyState, RemoteDesktop, SelectDevicesOptions},
 };
 use onda_app::ports::{CopyOutcome, Delivery, FieldText, InsertOutcome, Target, TextOutput};
+use onda_settings::Settings;
 use tokio::sync::OwnedMutexGuard;
 
 use super::{field, hotkeys::HeldKeys, process, target};
@@ -21,7 +19,7 @@ pub struct Output {
     token: PathBuf,
     portal: Arc<tokio::sync::Mutex<Option<Grant>>>,
     serial: Mutex<()>,
-    pub terminal: AtomicBool,
+    settings: Arc<Settings>,
     pub held: Arc<HeldKeys>,
 }
 
@@ -37,13 +35,14 @@ impl Output {
         runtime: tokio::runtime::Handle,
         root: &std::path::Path,
         held: Arc<HeldKeys>,
+        settings: Arc<Settings>,
     ) -> Self {
         Self {
             runtime,
             token: root.join("remote-desktop-token"),
             portal: Arc::default(),
             serial: Mutex::new(()),
-            terminal: AtomicBool::new(false),
+            settings,
             held,
         }
     }
@@ -321,7 +320,7 @@ impl TextOutput for Output {
             return InsertOutcome::TargetLeft;
         }
         match keyboard
-            .and_then(|keyboard| self.press(keyboard, self.terminal.load(Ordering::Relaxed)))
+            .and_then(|keyboard| self.press(keyboard, self.settings.terminal_paste_shortcut()))
         {
             Ok(()) => {
                 if let Some(previous) = previous {
@@ -449,6 +448,7 @@ mod tests {
             runtime.handle().clone(),
             Path::new("/nonexistent/greendale"),
             Arc::default(),
+            Arc::new(Settings::open("/nonexistent/greendale/settings.json")),
         ));
         let inserting = output.serial.lock().expect("serial lock");
         let delivery = Delivery::new();

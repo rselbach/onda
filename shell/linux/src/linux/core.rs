@@ -24,8 +24,8 @@ use super::{
 
 pub struct Core {
     pub app: App,
-    /// What the app saved, which the real-GUI tests read back.
-    #[cfg(test)]
+    /// What the app saved. The window keeps the paste shortcut here, which
+    /// the core does not own, and the real-GUI tests read it back.
     pub settings: Arc<Settings>,
     pub output: Arc<Output>,
     pub runtime: tokio::runtime::Runtime,
@@ -93,6 +93,7 @@ impl Core {
             runtime.handle().clone(),
             paths.root(),
             held.clone(),
+            settings.clone(),
         ));
         let desktop = Arc::new(Desktop {
             events: events.clone(),
@@ -138,7 +139,6 @@ impl Core {
         forward_audio_events(audio_events, app.audio_signals());
         Ok(Self {
             app,
-            #[cfg(test)]
             settings,
             output,
             runtime,

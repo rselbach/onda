@@ -2,7 +2,7 @@ use super::{Window, clear};
 use adw::prelude::*;
 use onda_app::views::GeneralPage;
 use onda_domain::types::OutputMode;
-use std::{rc::Rc, sync::atomic::Ordering};
+use std::rc::Rc;
 
 impl Window {
     pub(super) fn settings(self: &Rc<Self>, page: GeneralPage) {
@@ -72,18 +72,20 @@ impl Window {
         group.add(&output);
         let terminal = adw::SwitchRow::builder()
             .title("Terminal paste shortcut")
-            .subtitle("Use Ctrl+Shift+V instead of Ctrl+V for this session.")
-            .active(self.core.output.terminal.load(Ordering::Relaxed))
+            .subtitle("Paste with Ctrl+Shift+V instead of Ctrl+V.")
+            .active(self.core.settings.terminal_paste_shortcut())
             .sensitive(page.output.selected == OutputMode::Type)
             .build();
         let weak = Rc::downgrade(self);
         terminal.connect_active_notify(move |row| {
-            if let Some(owner) = weak.upgrade() {
-                owner
+            if let Some(owner) = weak.upgrade()
+                && let Err(error) = owner
                     .core
-                    .output
-                    .terminal
-                    .store(row.is_active(), Ordering::Relaxed);
+                    .settings
+                    .set_terminal_paste_shortcut(row.is_active())
+            {
+                tracing::error!(%error, "could not save the terminal paste shortcut");
+                row.set_active(owner.core.settings.terminal_paste_shortcut());
             }
         });
         group.add(&terminal);

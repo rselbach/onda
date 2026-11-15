@@ -21,6 +21,8 @@ pub enum Key {
     HotkeyActivationMode,
     /// `pauseMediaDuringRecording`.
     PauseMediaDuringRecording,
+    /// `terminalPasteShortcut`: paste with Ctrl+Shift+V (Linux).
+    TerminalPasteShortcut,
     /// `soundFeedbackEnabled`.
     SoundFeedbackEnabled,
     /// `historyEnabled`.
@@ -53,7 +55,7 @@ pub enum Key {
 
 impl Key {
     /// Every key.
-    pub const ALL: [Key; 22] = [
+    pub const ALL: [Key; 23] = [
         Key::SelectedModel,
         Key::SelectedLanguage,
         Key::RecentLanguages,
@@ -62,6 +64,7 @@ impl Key {
         Key::Hotkey,
         Key::HotkeyActivationMode,
         Key::PauseMediaDuringRecording,
+        Key::TerminalPasteShortcut,
         Key::SoundFeedbackEnabled,
         Key::HistoryEnabled,
         Key::HistoryKeepsAudio,
@@ -89,6 +92,7 @@ impl Key {
             Key::Hotkey => "hotkey",
             Key::HotkeyActivationMode => "hotkeyActivationMode",
             Key::PauseMediaDuringRecording => "pauseMediaDuringRecording",
+            Key::TerminalPasteShortcut => "terminalPasteShortcut",
             Key::SoundFeedbackEnabled => "soundFeedbackEnabled",
             Key::HistoryEnabled => "historyEnabled",
             Key::HistoryKeepsAudio => "historyKeepsAudio",

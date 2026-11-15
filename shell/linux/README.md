@@ -189,7 +189,8 @@ removes your custom prompt. Onda does not accept a blank prompt.
 - **Paste:** `wl-copy` plus `wtype` when the compositor advertises virtual
   keyboards, otherwise a keyboard-only RemoteDesktop portal session. X11 uses
   `xclip` and `xdotool`. Refused or failed injection leaves the transcript on
-  the clipboard. Terminal paste selects Ctrl+Shift+V for the current session.
+  the clipboard. **Terminal paste shortcut** selects Ctrl+Shift+V
+  and is saved with the other settings.
 - **Permission lifetime:** portal restore tokens are kept with owner-only
   permissions. A restorable keyboard session closes after 15 idle seconds.
   The desktop may show a remote-control indicator while it is open.
