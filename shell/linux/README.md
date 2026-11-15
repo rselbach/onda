@@ -255,7 +255,9 @@ removes your custom prompt. Onda does not accept a blank prompt.
   to what precedes it. Mid-sentence it adds a space and lowers a word such as
   "And". After a sentence it adds the space and keeps the capital. This works
   in GTK, Qt, Firefox, Chromium, and terminal fields once the application is
-  on the accessibility bus. A password field is never read, and a field
+  on the accessibility bus. In a terminal Onda adds the space and leaves the
+  case alone, because a prompt says nothing about sentences. A password
+  field is never read, and a field
   that does not answer within 250 ms, or that is not on the accessibility
   bus, gets the transcript as the model wrote it (see
   [Text before the caret](#text-before-the-caret)).
@@ -441,25 +443,29 @@ input. No physical keyboard, screen, or microphone was involved:
 | --- | --- |
 | sway 1.11, wlroots 0.19 | The overlay as a layer surface: recording, transcribing, notices, download, and load. It never takes the keyboard, a press on the waveform reaches the window below, and only the button takes a press. Paste with `wtype`. |
 | GNOME Shell 50.1, Wayland | The shortcut recorder, the GlobalShortcuts portal grant and refusal, a dictation held on the granted shortcut, the overlay through XWayland above a Wayland window, paste after the RemoteDesktop consent, and Files selecting a recording. |
-| KWin 6.6.6 with Plasma 6.6.6, Wayland | The GlobalShortcuts portal grant and refusal, a dictation held on the granted shortcut, and both sound cues. Plasma binds none of Onda's three shortcut presets by default. |
+| KWin 6.6.6 with Plasma 6.6.6, Wayland | The GlobalShortcuts portal grant and refusal, a dictation held on the granted shortcut, both sound cues, and Dolphin 25.12 coming to the front for a recording whose folder it already shows. Plasma binds none of Onda's three shortcut presets by default. |
 | Dolphin 25.12, X11 | Dolphin selecting a recording from History. |
 
 What those sessions showed that a user will notice:
 
-- **GNOME's shortcut dialog can open behind Onda's window.** Started with its
-  window, Onda asks for the shortcut before the window is on screen, and the
-  **Add Keyboard Shortcuts** dialog then opened under it in five of five
-  launches. The Hotkey row reads "Preparing the global shortcut…" until the
-  dialog is answered. Started with `--background`, the dialog opens on top.
-  GNOME's shortcut helper was already running in that session. A helper the
-  bus has to start first may be slow enough to land on top.
-- **A refused shortcut is reported as a conflict.** When the user cancels the
-  desktop's dialog, or the portal fails, the notification still says the
-  hotkey "may be in use by another application". The Hotkey row gives the
-  real reason.
-- **Files is not raised a second time.** "Show Recording in Folder" passes no
-  activation token. GNOME Files comes to the front when it opens a window,
-  and stays behind Onda when the folder is already open in one.
+- **GNOME's shortcut dialog belongs to Onda's window.** Onda gives the portal
+  its window as the dialog's parent, so **Add Keyboard Shortcuts** opens
+  above the window and blocks it until it is answered. This held in nine of
+  nine launches and for a shortcut changed on the Hotkey page. Started with
+  `--background`, Onda has no window to give, and the dialog opens on its
+  own.
+- **A refused shortcut is not blamed on another application.** When the user
+  cancels the desktop's dialog, or the portal fails, the notification says
+  "The desktop did not grant it." The Hotkey row gives the reason. On X11,
+  where another application can hold the keys, the notification still says
+  the hotkey "may be in use by another application".
+- **Dolphin comes to the front, and GNOME Files does not a second time.**
+  "Show Recording in Folder" passes the file manager an activation token.
+  On KWin, Dolphin then came to the front with the recording selected, where
+  without the token it stayed behind Onda. GNOME's compositor honors the
+  token while Onda's window has the focus, but Files 50.2 uses it only for
+  a window it opens. For a folder that is already open, that window stays
+  behind Onda and the shell shows a "Files" notification.
 - **The first paste on GNOME and KDE waits for consent.** The desktop shows
   its remote-control dialog, and the overlay stays on "Transcribing…" until
   it is answered. Refused, the transcript stays on the clipboard and the
@@ -517,7 +523,10 @@ unchanged, as it did before it could read fields.
 The route is the one described above. On X11 Onda asks only the target
 application, which it finds by process id. On Wayland it has no target, so it
 asks every application for its active window. It reads the role, the text,
-and the selection of the focused accessible. The dictation follows the start
+and the selection of the focused accessible. To find that accessible, Onda
+first asks the application to search its own tree, which Firefox, Chromium,
+and GTK 3 do in one call. GTK 4 and Qt have no such search, and Onda walks
+their window. The dictation follows the start
 of the selection, or the caret when nothing is selected. AT-SPI counts in
 characters and Onda's core in UTF-16 units, so Onda converts. Qt counts in
 UTF-16 units already. Its character count gives that away once the text
@@ -563,7 +572,7 @@ space, and in an empty field:
 | --- | --- | --- | --- |
 | `QTextEdit`, `QLineEdit` | Qt 6.10 | with `QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1`, or once `IsEnabled` is true | joined |
 | `QLineEdit` in password mode | Qt 6.10 | as above | not read: role `password text` |
-| `<textarea>`, `<input>`, `contenteditable` | Firefox 160 | started with `GNOME_ACCESSIBILITY=1`, or with `IsEnabled` true | joined, with the two limits below |
+| `<textarea>`, `<input>`, `contenteditable` | Firefox 160 | started with `GNOME_ACCESSIBILITY=1`, or with `IsEnabled` true | joined, with the limit below |
 | `<input type=password>` | Firefox 160 | as above | not read: role `password text` |
 | `<textarea>`, `<input>`, `contenteditable` | Electron 45, Chromium 156 | only with `IsEnabled` true at its start and `--force-renderer-accessibility` | joined |
 | Shell line | GNOME Terminal 3.58, Ptyxis 50.1 | by default | joined, with **Terminal paste shortcut** on |
@@ -575,16 +584,24 @@ space, and in an empty field:
   run, Qt joins the bus within a second, Firefox joins but reports no caret
   until it moves, and Chromium does not join.
 - **A space typed into a web page.** A browser keeps the last space of a
-  `contenteditable` as a no-break space. The core does not take it for a
-  space when it looks for the end of a sentence, so a dictation after
-  `Greendale. ` starts with a lowered "and".
-- **A field deep in a long page.** Onda walks the window's accessibles in
-  document order, two calls each. Below 1,500 paragraphs in Firefox it made
-  646 pairs of calls in 250 ms, did not reach the field, and delivered the
-  transcript unchanged.
-- **Terminals.** The shell prompt counts as text before the caret. At an
-  empty prompt such as `greendale$ `, a dictation therefore starts with a
-  lowered "and". Without **Terminal paste shortcut**, Ctrl+V does not paste
+  `contenteditable` as a no-break space. Onda takes it for a space, so a
+  dictation after `Greendale. ` keeps its capital.
+- **A field deep in a long page.** Below 1,500 paragraphs in Firefox, the
+  application's own search found the field, and the whole read took 8 calls
+  in 3.9 ms. A walk of the same page did not reach the field in 250 ms. GTK 4
+  and Qt are still walked, two calls for each accessible.
+- **The first dictation into a newly started Firefox.** Firefox answers the
+  first request for a field's text with an empty text and a caret behind it.
+  Onda takes the field for empty and delivers the transcript unchanged.
+  Every later dictation into the same Firefox is joined.
+- **Chromium without an assistive technology.** Chromium marks no window as
+  active until an assistive technology has asked for its bus address. On
+  X11 Onda knows the application and needs no active window. On Wayland it
+  has no target, so it would find no field there. That case was not run.
+- **Terminals.** A terminal reports the role `terminal`, and Onda then leaves
+  the case of the dictation alone. At an empty prompt such as `greendale$ `
+  the transcript arrives as the model wrote it, and after a typed word it
+  gets one space. Without **Terminal paste shortcut**, Ctrl+V does not paste
   in a terminal and nothing arrives.
 
 ## Blank GNOME shortcut dialog
