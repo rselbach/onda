@@ -61,7 +61,9 @@ fn is_sentence_start(preceding: &str) -> bool {
     let mut rest = preceding
         .chars()
         .rev()
-        .skip_while(|c| *c == ' ' || *c == '\t')
+        // any space within the line: a browser ends an editable line with
+        // a no-break space
+        .skip_while(|c| c.is_whitespace() && !is_newline(*c))
         .peekable();
     let Some(&last) = rest.peek() else {
         return true;
@@ -166,6 +168,18 @@ mod tests {
                 preceding: "Done.\t ",
                 text: "next thing.",
                 want: "Next thing.",
+            },
+            Case {
+                name: "OUT-9 after a no-break space",
+                preceding: "Enroll at Greendale.\u{a0}",
+                text: "and bring Troy.",
+                want: "And bring Troy.",
+            },
+            Case {
+                name: "OUT-10 mid-sentence before a no-break space",
+                preceding: "Troy\u{a0}",
+                text: "And Abed.",
+                want: "and Abed.",
             },
             Case {
                 name: "OUT-9 after a newline",
