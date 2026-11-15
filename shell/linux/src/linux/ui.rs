@@ -232,6 +232,40 @@ impl Window {
         self.hotkey.set_status(status);
     }
 
+    /// The window's surface on Wayland, while the window has one.
+    fn toplevel(&self) -> Option<gdk4_wayland::WaylandToplevel> {
+        self.window.surface()?.downcast().ok()
+    }
+
+    /// Answers with the open window's handle once the compositor has
+    /// exported it. A closed window drops `reply`, which reads as no parent.
+    fn export_window(&self, reply: tokio::sync::oneshot::Sender<String>) {
+        let Some(toplevel) = self.toplevel().filter(|_| self.window.is_visible()) else {
+            return;
+        };
+        let reply = Cell::new(Some(reply));
+        toplevel.export_handle(move |toplevel, handle| {
+            if let (Some(reply), Ok(handle)) = (reply.take(), handle)
+                // the worker stopped waiting, so nothing else releases it
+                && let Err(handle) = reply.send(handle.into())
+            {
+                toplevel.drop_exported_handle(&handle);
+            }
+        });
+    }
+
+    /// A token from the display that lets the file manager raise its
+    /// window. GNOME's compositor and KWin honored one asked for while
+    /// Onda's window had the focus, and GNOME's no other. `None` when no
+    /// application opens folders: X11 names that application in the token.
+    fn activation_token(&self) -> Option<String> {
+        let files = gio::AppInfo::default_for_type("inode/directory", false)?;
+        let token = gtk::prelude::WidgetExt::display(&self.window)
+            .app_launch_context()
+            .startup_notify_id(Some(&files), &[])?;
+        Some(token.into())
+    }
+
     /// The one place a tray choice becomes a core call.
     fn tray(&self, command: Command) {
         let app = &self.core.app;
@@ -271,11 +305,19 @@ impl Window {
             Message::DevicesChanged => self.core.app.input_devices_changed(),
             Message::UpdaterChanged => self.core.app.updater_changed(),
             Message::ShortcutStatus(status) => self.set_shortcut_status(&status),
-            Message::ShortcutUnavailable(status) => {
-                self.set_shortcut_status(&status);
-                self.core
-                    .app
-                    .hotkey_registration_failed(super::hotkeys::NO_STATUS);
+            Message::ShortcutUnavailable(reason, status) => {
+                self.set_shortcut_status(&reason);
+                self.core.app.hotkey_registration_failed(status);
+            }
+            Message::DialogParent(reply) => self.export_window(reply),
+            Message::DialogParentReleased(handle) => {
+                if let Some(toplevel) = self.toplevel() {
+                    toplevel.drop_exported_handle(&handle);
+                }
+            }
+            Message::ActivationToken(reply) => {
+                // the receiver is gone once it stopped waiting
+                let _ = reply.send(self.activation_token());
             }
             Message::Notice(title, body) => {
                 self.toast

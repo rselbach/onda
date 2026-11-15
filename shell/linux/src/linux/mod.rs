@@ -32,8 +32,16 @@ enum Message {
     DevicesChanged,
     UpdaterChanged,
     ShortcutStatus(String),
-    /// The desktop refused the dictation shortcut; the text says why.
-    ShortcutUnavailable(String),
+    /// The desktop refused the dictation shortcut; the text says why, and
+    /// the status tells the core whether another application holds it.
+    ShortcutUnavailable(String, i32),
+    /// Asks for the window's handle, which a portal takes as the parent of
+    /// its dialog. No answer when the window is closed or not on Wayland.
+    DialogParent(tokio::sync::oneshot::Sender<String>),
+    /// The dialog that had the window with this handle as its parent is over.
+    DialogParentReleased(String),
+    /// Asks for a token that lets another application raise its window.
+    ActivationToken(std::sync::mpsc::Sender<Option<String>>),
     Notice(String, String),
     Inhibit(Option<String>),
     Tray(tray::Command),

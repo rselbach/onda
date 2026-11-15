@@ -9,6 +9,7 @@ use onda_domain::{
     types::MicrophonePermission,
 };
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 pub struct Desktop {
     pub events: async_channel::Sender<Message>,
@@ -52,7 +53,7 @@ impl Power for Desktop {
 
 impl Files for Desktop {
     fn reveal(&self, path: &Path) -> Result<(), String> {
-        let Err(error) = show_item(path) else {
+        let Err(error) = show_item(path, &self.activation_token()) else {
             return Ok(());
         };
         tracing::debug!(%error, "no file manager selected the file; opening its folder");
@@ -63,16 +64,31 @@ impl Files for Desktop {
     }
 }
 
+impl Desktop {
+    /// The token that lets the file manager raise a window it already has
+    /// open. Only the main loop can ask the display for one. Empty when it
+    /// has none within a second, and the file manager then decides alone.
+    fn activation_token(&self) -> String {
+        let (reply, token) = std::sync::mpsc::channel();
+        send(&self.events, Message::ActivationToken(reply));
+        token
+            .recv_timeout(Duration::from_secs(1))
+            .ok()
+            .flatten()
+            .unwrap_or_default()
+    }
+}
+
 // asks the file manager to open the folder of `path` with the file selected;
 // the bus starts the file manager when it is not running
-fn show_item(path: &Path) -> Result<(), glib::Error> {
+fn show_item(path: &Path, activation_token: &str) -> Result<(), glib::Error> {
     let uri = gio::File::for_path(path).uri();
     gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE)?.call_sync(
         Some("org.freedesktop.FileManager1"),
         "/org/freedesktop/FileManager1",
         "org.freedesktop.FileManager1",
         "ShowItems",
-        Some(&(vec![uri.as_str()], "").to_variant()),
+        Some(&(vec![uri.as_str()], activation_token).to_variant()),
         None,
         gio::DBusCallFlags::NONE,
         -1,

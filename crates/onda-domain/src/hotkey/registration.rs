@@ -74,6 +74,13 @@ impl StreamReenablePolicy {
 /// Title of every registration-failure notification (HOT-19).
 pub const REGISTRATION_FAILURE_TITLE: &str = "Hotkey Registration Failed";
 
+/// The status a shell reports when the system refused the shortcut and no
+/// other application holds it: the user declined it, or the desktop has no
+/// service that grants one. It reads this way only on a platform whose
+/// status codes are not shown ([`Platform::error_code_term`]), where the
+/// shell chooses the status.
+pub const STATUS_NOT_GRANTED: i32 = -2;
+
 /// A non-critical notification to post about a registration failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegistrationFailureNotice {
@@ -88,6 +95,8 @@ impl RegistrationFailureNotice {
     /// The notice for `shortcut` failing with OS status `status` (HOT-19).
     /// The shortcut reads in `platform`'s key names. A lone modifier is
     /// explained by the typing permission only where the platform has one.
+    /// Another application is suggested as the cause unless the status is
+    /// [`STATUS_NOT_GRANTED`].
     pub fn new(shortcut: &Shortcut, status: i32, platform: Platform) -> Self {
         let display = shortcut.display(platform.key_names);
         let reason = match platform.typing_permission {
@@ -95,6 +104,11 @@ impl RegistrationFailureNotice {
                 "Could not register {display} as a global hotkey. {}",
                 naming.lone_modifier_requirement()
             ),
+            _ if platform.error_code_term.is_none() && status == STATUS_NOT_GRANTED => {
+                format!(
+                    "Could not register the global hotkey ({display}). The desktop did not grant it."
+                )
+            }
             _ => format!(
                 "Could not register the global hotkey ({display}). It may be in use by another application."
             ),
@@ -656,6 +670,20 @@ mod tests {
                 1,
                 Platform::linux(),
                 "Could not register the global hotkey (Ctrl+Alt+Space). It may be in use by another application.",
+            ),
+            (
+                "a refusal on Linux is not blamed on another application",
+                Shortcut::CONTROL_ALT_SPACE,
+                STATUS_NOT_GRANTED,
+                Platform::linux(),
+                "Could not register the global hotkey (Ctrl+Alt+Space). The desktop did not grant it.",
+            ),
+            (
+                "the same status on macOS is an OSStatus like any other",
+                Shortcut::OPTION_SPACE,
+                STATUS_NOT_GRANTED,
+                macos_26,
+                "Could not register the global hotkey (⌥ Space). It may be in use by another application. OSStatus: -2",
             ),
             (
                 "lone modifier on Linux has no typing permission to name",

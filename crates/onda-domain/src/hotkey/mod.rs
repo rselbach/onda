@@ -35,8 +35,8 @@ pub use recorder::{
 pub use registration::{
     ACCESSIBILITY_POLL_INTERVAL, CANCEL_HOTKEY_ID, DICTATION_HOTKEY_ID, FailureMailbox,
     HotkeyRoute, MAX_REENABLES, REENABLE_WINDOW, REGISTRATION_FAILURE_TITLE,
-    RegistrationFailureNotice, RegistrationRetry, StreamDisableDecision, StreamReenablePolicy,
-    cancel_hotkey_modifiers,
+    RegistrationFailureNotice, RegistrationRetry, STATUS_NOT_GRANTED, StreamDisableDecision,
+    StreamReenablePolicy, cancel_hotkey_modifiers,
 };
 pub use shortcut::{
     HeldModifiers, KeyCode, Modifier, ModifierKey, ModifierSet, Shortcut, ShortcutSettingError,

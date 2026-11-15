@@ -45,6 +45,7 @@ ksni = { version = "0.3", features = ["blocking"] }
 gio = { version = "0.22", features = ["v2_80"] }
 pangocairo = "0.22"
 gio-unix = "0.22"
+gdk4-wayland = { version = "0.11", features = ["v4_12"] }
 
 [dev-dependencies]
 tempfile = "3"

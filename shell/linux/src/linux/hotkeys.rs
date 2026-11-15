@@ -7,10 +7,11 @@ pub mod keys;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use ashpd::WindowIdentifier;
 use ashpd::desktop::global_shortcuts::{GlobalShortcuts, NewShortcut};
 use futures_util::StreamExt;
 use onda_app::{HotkeyEvent, ports::HotkeySource};
-use onda_domain::hotkey::{GlobeKeyAction, Modifier, ModifierSet, Shortcut};
+use onda_domain::hotkey::{GlobeKeyAction, Modifier, ModifierSet, STATUS_NOT_GRANTED, Shortcut};
 use tokio::sync::watch;
 
 use super::{Message, send};
@@ -51,9 +52,22 @@ impl HeldKeys {
     }
 }
 
-/// The status the core gets with a failed registration. The desktop gives
-/// no code for one, and the core's Linux copy shows none.
+/// The status the core gets when another application may hold the shortcut.
+/// The desktop gives no code for a failed registration, and the core's
+/// Linux copy shows none.
 pub const NO_STATUS: i32 = -1;
+
+/// The X server refused a grab that another client holds.
+#[derive(Debug)]
+struct Taken;
+
+impl std::fmt::Display for Taken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("another application already uses it")
+    }
+}
+
+impl std::error::Error for Taken {}
 
 pub struct Hotkeys {
     sender: watch::Sender<Option<Shortcut>>,
@@ -93,9 +107,15 @@ impl Hotkeys {
                             tracing::warn!(%error, "the global shortcut is unavailable");
                             send(
                                 &events,
-                                Message::ShortcutUnavailable(format!(
-                                    "Global shortcut unavailable: {error}. Bind onda --toggle in your desktop keyboard settings."
-                                )),
+                                Message::ShortcutUnavailable(
+                                    format!(
+                                        "Global shortcut unavailable: {error}. Bind onda --toggle in your desktop keyboard settings."
+                                    ),
+                                    match error.is::<Taken>() {
+                                        true => NO_STATUS,
+                                        false => STATUS_NOT_GRANTED,
+                                    },
+                                ),
                             );
                         }
                     }
@@ -206,10 +226,12 @@ async fn portal(
         let mut changed = portal.receive_shortcuts_changed().await?;
         let mut closed = session.receive_closed().await?;
         let shortcuts = [NewShortcut::new(format!("dictation-{trigger}"), "Dictate with Onda").preferred_trigger(trigger.as_str())];
+        let parent = DialogParent::ask(events).await;
         let bound = tokio::select! {
-            result = portal.bind_shortcuts(&session, &shortcuts, None, Default::default()) => result?.response()?,
+            result = portal.bind_shortcuts(&session, &shortcuts, parent.as_ref().map(|parent| &parent.window), Default::default()) => result?.response()?,
             _ = changes.changed() => return Ok(()),
         };
+        drop(parent);
         let describe = |shortcuts: &[ashpd::desktop::global_shortcuts::Shortcut]| {
             let description = shortcuts.first().map(|shortcut| shortcut.trigger_description()).filter(|value| !value.is_empty())
                 .unwrap_or("Assign Onda’s shortcut in desktop keyboard settings");
@@ -245,6 +267,42 @@ async fn portal(
         tracing::debug!(%error, "closing shortcut session");
     }
     result
+}
+
+/// Onda's window as the parent of a dialog the desktop shows, which then
+/// opens above the window and not behind it. The window stays exported
+/// until this is dropped.
+struct DialogParent {
+    window: WindowIdentifier,
+    handle: String,
+    events: async_channel::Sender<Message>,
+}
+
+impl DialogParent {
+    /// `None` when the window is closed, and after a second without an
+    /// answer, so a silent display does not hold the shortcut back.
+    async fn ask(events: &async_channel::Sender<Message>) -> Option<Self> {
+        let (reply, handle) = tokio::sync::oneshot::channel();
+        send(events, Message::DialogParent(reply));
+        let handle = tokio::time::timeout(Duration::from_secs(1), handle)
+            .await
+            .ok()?
+            .ok()?;
+        Some(Self {
+            window: WindowIdentifier::from_xdg_foreign_exported(handle.clone()),
+            handle,
+            events: events.clone(),
+        })
+    }
+}
+
+impl Drop for DialogParent {
+    fn drop(&mut self) {
+        send(
+            &self.events,
+            Message::DialogParentReleased(std::mem::take(&mut self.handle)),
+        );
+    }
 }
 
 fn x11(
@@ -314,7 +372,7 @@ fn x11(
             .check()
             .map_err(|error| match error {
                 ReplyError::X11Error(refusal) if refusal.error_kind == ErrorKind::Access => {
-                    anyhow::anyhow!("another application already uses it")
+                    anyhow::Error::new(Taken)
                 }
                 other => other.into(),
             })?;
