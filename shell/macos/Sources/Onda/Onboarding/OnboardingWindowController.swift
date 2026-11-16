@@ -227,6 +227,11 @@ private struct OnboardingFooter: View {
             .opacity(view.backVisible ? 1 : 0)
             .disabled(!view.backVisible)
             .accessibilityHidden(!view.backVisible)
+            if let download = view.download {
+                OnboardingDownloadStrip(download: download)
+                    .padding(.leading, 12)
+                    .transition(.opacity)
+            }
             Spacer()
             if let hint = view.hint {
                 Text(hint)
@@ -244,5 +249,27 @@ private struct OnboardingFooter: View {
             .disabled(!view.primaryEnabled)
         }
         .animation(.easeInOut(duration: 0.2), value: view.hint)
+        .animation(.easeInOut(duration: 0.2), value: view.download == nil)
+    }
+}
+
+/// The selected model's download while it runs past the model step.
+private struct OnboardingDownloadStrip: View {
+    let download: OnboardingDownload
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(download.label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .monospacedDigit()
+            ProgressView(value: download.progress)
+                .progressViewStyle(.linear)
+                .controlSize(.small)
+        }
+        .frame(width: 210)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(download.label)
     }
 }

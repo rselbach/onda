@@ -31,9 +31,9 @@ pub use history::{
 pub use hotkey::{ActivationOption, HotkeyPage, hotkey_page};
 pub use notice::{NoticeButtonView, UpdateNotice, update_notice};
 pub use onboarding::{
-    LanguageCardView, ModelCardAction, ModelCardView, OnboardingContent, OnboardingInputs,
-    OnboardingProgress, OnboardingView, OtherModelsView, PermissionCardView, PresetCardView,
-    onboarding_view,
+    LanguageCardView, ModelCardAction, ModelCardView, OnboardingContent, OnboardingDownload,
+    OnboardingInputs, OnboardingProgress, OnboardingView, OtherModelsView, PermissionCardView,
+    PresetCardView, onboarding_view,
 };
 pub use post_processing::{
     ApiKeyFieldView, CleanupModelGroup, CleanupModelOption, CleanupProviderOption,

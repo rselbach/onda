@@ -28,12 +28,13 @@ pub enum OnboardingStep {
     Welcome,
     /// Language pick (ONB-4).
     Language,
+    /// Speech model pick (ONB-8). It comes before the slower steps so the
+    /// download runs while the user works through them.
+    SpeechModel,
     /// Microphone and Typing Access (ONB-6).
     Permissions,
     /// Hotkey pick (ONB-7).
     Hotkey,
-    /// Speech model pick (ONB-8).
-    SpeechModel,
     /// Done, try it (ONB-9).
     Ready,
 }
@@ -43,9 +44,9 @@ impl OnboardingStep {
     pub const ALL: [Self; 6] = [
         Self::Welcome,
         Self::Language,
+        Self::SpeechModel,
         Self::Permissions,
         Self::Hotkey,
-        Self::SpeechModel,
         Self::Ready,
     ];
 
@@ -299,16 +300,13 @@ impl Onboarding {
                     )
                 })
             }
+            // a running download finishes on the later steps
             OnboardingStep::SpeechModel => match env.selected_model {
-                Some(model) if model.status.downloaded => None,
-                Some(SelectedModel {
-                    name,
-                    status:
-                        ModelStatus {
-                            download_progress: Some(progress),
-                            ..
-                        },
-                }) => Some(format!("Downloading {name} — {}%", percent(progress))),
+                Some(model)
+                    if model.status.downloaded || model.status.download_progress.is_some() =>
+                {
+                    None
+                }
                 Some(_) | None => Some("Download or choose a speech model to continue".to_owned()),
             },
         }
@@ -433,10 +431,22 @@ impl Onboarding {
                 filled: self.position,
             }),
         };
+        let download = match (step, env.selected_model) {
+            // the model's own card shows its progress there
+            (OnboardingStep::SpeechModel, _) | (_, None) => None,
+            (_, Some(model)) => model
+                .status
+                .download_progress
+                .map(|progress| DownloadStrip {
+                    progress,
+                    label: format!("Downloading {} — {}%", model.name, percent(progress)),
+                }),
+        };
         OnboardingFrame {
             step,
             navigating_forward: self.navigating_forward,
             progress,
+            download,
             back_visible: step != OnboardingStep::Welcome,
             primary_title: match step {
                 OnboardingStep::Welcome => "Get Started",
@@ -474,8 +484,18 @@ pub struct ProgressSegments {
     pub filled: usize,
 }
 
+/// The selected model's download, shown on every step but the model step
+/// while it runs (ONB-1).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DownloadStrip {
+    /// Fraction in `[0, 1]`.
+    pub progress: f64,
+    /// "Downloading Parakeet TDT v2 — 37%".
+    pub label: String,
+}
+
 /// The parts of the onboarding window every step shares (ONB-1).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct OnboardingFrame {
     /// Current step.
     pub step: OnboardingStep,
@@ -483,6 +503,8 @@ pub struct OnboardingFrame {
     pub navigating_forward: bool,
     /// Hidden on Welcome.
     pub progress: Option<ProgressSegments>,
+    /// The selected model's running download.
+    pub download: Option<DownloadStrip>,
     /// "Back" is shown (hidden on Welcome).
     pub back_visible: bool,
     /// Why the primary button is disabled.
@@ -1012,9 +1034,9 @@ mod tests {
         let want = [
             OnboardingStep::Welcome,
             OnboardingStep::Language,
+            OnboardingStep::SpeechModel,
             OnboardingStep::Permissions,
             OnboardingStep::Hotkey,
-            OnboardingStep::SpeechModel,
             OnboardingStep::Ready,
         ];
         assert_eq!(OnboardingStep::ALL, want);
@@ -1042,7 +1064,7 @@ mod tests {
             Case {
                 name: "Linux has no permission to grant",
                 platform: Platform::linux(),
-                want: vec![Welcome, Language, Hotkey, SpeechModel, Ready],
+                want: vec![Welcome, Language, SpeechModel, Hotkey, Ready],
             },
             Case {
                 name: "one permission is enough to keep the step",
@@ -1050,7 +1072,7 @@ mod tests {
                     microphone_permission: true,
                     ..Platform::linux()
                 },
-                want: vec![Welcome, Language, Permissions, Hotkey, SpeechModel, Ready],
+                want: vec![Welcome, Language, SpeechModel, Permissions, Hotkey, Ready],
             },
         ];
         for tc in cases {
@@ -1085,8 +1107,8 @@ mod tests {
             [
                 (OnboardingStep::Welcome, None),
                 (OnboardingStep::Language, Some((4, 1))),
-                (OnboardingStep::Hotkey, Some((4, 2))),
-                (OnboardingStep::SpeechModel, Some((4, 3))),
+                (OnboardingStep::SpeechModel, Some((4, 2))),
+                (OnboardingStep::Hotkey, Some((4, 3))),
                 (OnboardingStep::Ready, Some((4, 4))),
             ]
         );
@@ -1099,23 +1121,12 @@ mod tests {
         assert_eq!(
             back,
             [
-                OnboardingStep::SpeechModel,
                 OnboardingStep::Hotkey,
+                OnboardingStep::SpeechModel,
                 OnboardingStep::Language,
                 OnboardingStep::Welcome,
             ]
         );
-    }
-
-    #[test]
-    fn onb_5_leaving_language_starts_the_download_without_a_permissions_step() {
-        let mut onboarding = at_on(Platform::linux(), OnboardingStep::Language);
-        let effect = onboarding.advance(&OnboardingEnv {
-            recommended_model: MISSING,
-            ..env()
-        });
-        assert_eq!(effect, Some(OnboardingEffect::StartRecommendedDownload));
-        assert_eq!(onboarding.step(), OnboardingStep::Hotkey);
     }
 
     #[test]
@@ -1143,22 +1154,22 @@ mod tests {
                 want_primary: "Continue",
             },
             Case {
+                name: "speech model",
+                step: OnboardingStep::SpeechModel,
+                want_progress: Some((5, 2)),
+                want_back: true,
+                want_primary: "Continue",
+            },
+            Case {
                 name: "permissions",
                 step: OnboardingStep::Permissions,
-                want_progress: Some((5, 2)),
+                want_progress: Some((5, 3)),
                 want_back: true,
                 want_primary: "Continue",
             },
             Case {
                 name: "hotkey",
                 step: OnboardingStep::Hotkey,
-                want_progress: Some((5, 3)),
-                want_back: true,
-                want_primary: "Continue",
-            },
-            Case {
-                name: "speech model",
-                step: OnboardingStep::SpeechModel,
                 want_progress: Some((5, 4)),
                 want_back: true,
                 want_primary: "Continue",
@@ -1207,16 +1218,16 @@ mod tests {
                 want_effect: None,
             },
             Case {
-                name: "hotkey step moves to model step",
-                start: OnboardingStep::Hotkey,
+                name: "model step moves to permissions",
+                start: OnboardingStep::SpeechModel,
                 back: false,
-                want_step: OnboardingStep::SpeechModel,
+                want_step: OnboardingStep::Permissions,
                 want_forward: true,
                 want_effect: None,
             },
             Case {
-                name: "ONB-9 model step moves to ready",
-                start: OnboardingStep::SpeechModel,
+                name: "ONB-9 hotkey step moves to ready",
+                start: OnboardingStep::Hotkey,
                 back: false,
                 want_step: OnboardingStep::Ready,
                 want_forward: true,
@@ -1239,10 +1250,10 @@ mod tests {
                 want_effect: None,
             },
             Case {
-                name: "back from model step returns to hotkey",
-                start: OnboardingStep::SpeechModel,
+                name: "back from permissions returns to model step",
+                start: OnboardingStep::Permissions,
                 back: true,
-                want_step: OnboardingStep::Hotkey,
+                want_step: OnboardingStep::SpeechModel,
                 want_forward: false,
                 want_effect: None,
             },
@@ -1277,7 +1288,7 @@ mod tests {
 
     #[test]
     fn onb_9_returning_to_ready_reports_reaching_it_again() {
-        let mut onboarding = at(OnboardingStep::SpeechModel);
+        let mut onboarding = at(OnboardingStep::Hotkey);
         let mut reached = 0;
         for _ in 0..2 {
             if onboarding.advance(&env()) == Some(OnboardingEffect::ReachedReady) {
@@ -1321,7 +1332,71 @@ mod tests {
             assert_eq!(got, tc.want, "{}", tc.name);
             assert_eq!(
                 onboarding.step(),
-                OnboardingStep::Permissions,
+                OnboardingStep::SpeechModel,
+                "{}",
+                tc.name
+            );
+        }
+    }
+
+    #[test]
+    fn onb_1_the_selected_models_download_shows_beside_every_other_step() {
+        struct Case {
+            name: &'static str,
+            step: OnboardingStep,
+            selected: Option<ModelStatus>,
+            want: Option<(f64, &'static str)>,
+        }
+        let cases = [
+            Case {
+                name: "downloading on permissions",
+                step: OnboardingStep::Permissions,
+                selected: Some(downloading(0.37)),
+                want: Some((0.37, "Downloading Parakeet TDT v2 — 37%")),
+            },
+            Case {
+                name: "downloading on ready",
+                step: OnboardingStep::Ready,
+                selected: Some(downloading(0.9)),
+                want: Some((0.9, "Downloading Parakeet TDT v2 — 90%")),
+            },
+            Case {
+                name: "the model step's card shows it instead",
+                step: OnboardingStep::SpeechModel,
+                selected: Some(downloading(0.37)),
+                want: None,
+            },
+            Case {
+                name: "downloaded",
+                step: OnboardingStep::Hotkey,
+                selected: Some(DOWNLOADED),
+                want: None,
+            },
+            Case {
+                name: "not downloading",
+                step: OnboardingStep::Hotkey,
+                selected: Some(MISSING),
+                want: None,
+            },
+            Case {
+                name: "no selected model",
+                step: OnboardingStep::Hotkey,
+                selected: None,
+                want: None,
+            },
+        ];
+        for tc in cases {
+            let env = OnboardingEnv {
+                selected_model: tc.selected.map(|status| SelectedModel {
+                    name: "Parakeet TDT v2",
+                    status,
+                }),
+                ..env()
+            };
+            let got = at(tc.step).frame(&env).download;
+            assert_eq!(
+                got.as_ref().map(|d| (d.progress, d.label.as_str())),
+                tc.want,
                 "{}",
                 tc.name
             );
@@ -1450,7 +1525,7 @@ mod tests {
                 want_hint: None,
             },
             Case {
-                name: "ONB-8 selected model downloading",
+                name: "ONB-8 a running download continues",
                 step: OnboardingStep::SpeechModel,
                 env: OnboardingEnv {
                     selected_model: Some(SelectedModel {
@@ -1460,7 +1535,7 @@ mod tests {
                     ..env()
                 },
                 skip_accessibility: false,
-                want_hint: Some("Downloading Parakeet TDT v2 — 37%"),
+                want_hint: None,
             },
             Case {
                 name: "ONB-8 selected model missing",

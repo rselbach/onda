@@ -191,10 +191,12 @@ fn tag(step: OnboardingStep) -> &'static str {
 }
 
 /// One step's page: the header with the progress, the step's own content,
-/// and the footer with the hint and the primary button.
+/// and the footer with the model download, the hint, and the primary
+/// button.
 struct Step {
     page: adw::NavigationPage,
     progress: gtk::LevelBar,
+    download: gtk::ProgressBar,
     hint: gtk::Label,
     primary: gtk::Button,
     // what holds the keyboard focus when the step appears
@@ -216,6 +218,12 @@ impl Step {
         progress.update_property(&[accessible::Property::Label("Setup progress")]);
         let header = adw::HeaderBar::new();
         header.set_title_widget(Some(&progress));
+        let download = gtk::ProgressBar::builder()
+            .show_text(true)
+            .halign(gtk::Align::Center)
+            .width_request(280)
+            .visible(false)
+            .build();
         let hint = gtk::Label::builder()
             .wrap(true)
             .justify(gtk::Justification::Center)
@@ -236,6 +244,7 @@ impl Step {
         footer.set_margin_bottom(24);
         footer.set_margin_start(24);
         footer.set_margin_end(24);
+        footer.append(&download);
         footer.append(&hint);
         footer.append(&primary);
         let (body, content) = Body::new(owner, step);
@@ -255,6 +264,7 @@ impl Step {
                 .child(&toolbar)
                 .build(),
             progress,
+            download,
             hint,
             primary,
             focus,
@@ -269,6 +279,11 @@ impl Step {
         if let Some(progress) = view.progress {
             self.progress.set_max_value(progress.total.into());
             self.progress.set_value(progress.filled.into());
+        }
+        self.download.set_visible(view.download.is_some());
+        if let Some(download) = view.download {
+            self.download.set_fraction(download.progress);
+            self.download.set_text(Some(&download.label));
         }
         self.hint.set_visible(view.hint.is_some());
         self.hint.set_label(&view.hint.unwrap_or_default());
@@ -1158,9 +1173,28 @@ mod tests {
         capture_window(&window, "onboarding-language");
         button(&page, "Continue").emit_clicked();
 
+        let page = arrive(&window, "speech-model");
+        assert!(shown(&page, "Choose a speech model"));
+        assert_eq!(progress(&page).value(), 2.0);
+        assert_eq!(rows(&page).len(), 1);
+        assert!(shown(&page, "Recommended") && shown(&page, "Selected"));
+        let proceed = button(&page, "Continue");
+        assert!(proceed.is_sensitive());
+        button(&page, "Show other models").emit_clicked();
+        wait_for(|| rows(&page).len() > 1);
+        let downloads = widgets::<gtk::Button>(&page)
+            .iter()
+            .filter(|button| button.label().as_deref() == Some("Download"))
+            .count();
+        assert_eq!(downloads, rows(&page).len() - 1);
+        capture_window(&window, "onboarding-model");
+        button(&page, "Hide other models").emit_clicked();
+        wait_for(|| rows(&page).len() == 1);
+        proceed.emit_clicked();
+
         let page = arrive(&window, "hotkey");
         assert!(shown(&page, "Choose a hotkey"));
-        assert_eq!(progress(&page).value(), 2.0);
+        assert_eq!(progress(&page).value(), 3.0);
         let presets = rows(&page);
         let shortcuts: Vec<String> = presets.iter().map(|row| keycaps(row).join("+")).collect();
         assert_eq!(
@@ -1216,11 +1250,11 @@ mod tests {
         wait_for(|| recording(&record));
         // what the header's Back button, Escape, and Alt+Left do
         assert!(navigation(&window).pop());
-        let page = arrive(&window, "language");
+        let page = arrive(&window, "speech-model");
         wait_for(|| !recording(&record));
         button(&page, "Continue").emit_clicked();
         // the core went back with the window, or it would now show the
-        // model step
+        // ready step
         let page = arrive(&window, "hotkey");
         assert_eq!(button(&page, "Record Shortcut"), record);
 
@@ -1244,27 +1278,8 @@ mod tests {
         wait_for(|| recording(&record));
         button(&page, "Continue").emit_clicked();
 
-        let page = arrive(&window, "speech-model");
-        wait_for(|| !recording(&record));
-        assert!(shown(&page, "Choose a speech model"));
-        assert_eq!(progress(&page).value(), 3.0);
-        assert_eq!(rows(&page).len(), 1);
-        assert!(shown(&page, "Recommended") && shown(&page, "Selected"));
-        let proceed = button(&page, "Continue");
-        assert!(proceed.is_sensitive());
-        button(&page, "Show other models").emit_clicked();
-        wait_for(|| rows(&page).len() > 1);
-        let downloads = widgets::<gtk::Button>(&page)
-            .iter()
-            .filter(|button| button.label().as_deref() == Some("Download"))
-            .count();
-        assert_eq!(downloads, rows(&page).len() - 1);
-        capture_window(&window, "onboarding-model");
-        button(&page, "Hide other models").emit_clicked();
-        wait_for(|| rows(&page).len() == 1);
-        proceed.emit_clicked();
-
         let page = arrive(&window, "ready");
+        wait_for(|| !recording(&record));
         assert!(shown(&page, "You're all set"));
         assert_eq!(progress(&page).value(), 4.0);
         assert!(shown(&page, "Press") && shown(&page, "and start talking."));
@@ -1312,8 +1327,9 @@ mod tests {
             forward: true,
             progress: Some(OnboardingProgress {
                 total: 4,
-                filled: 3,
+                filled: 2,
             }),
+            download: None,
             back_visible: true,
             back_title: "Back".into(),
             hint: Some("Download or choose a speech model to continue".into()),
@@ -1373,8 +1389,15 @@ mod tests {
         assert!(!button(&page, "Continue").is_sensitive());
         capture_window(&window, "onboarding-model-download");
 
+        // the footer holds a hidden bar of its own for the later steps
+        let card_bars = || {
+            rows(&page)
+                .iter()
+                .flat_map(widgets::<gtk::ProgressBar>)
+                .collect::<Vec<_>>()
+        };
         show(model_step(downloading(0.42), None));
-        let bar = || widgets::<gtk::ProgressBar>(&page).remove(0);
+        let bar = || card_bars().remove(0);
         assert_eq!(bar().fraction(), 0.42);
         assert_eq!(bar().text().as_deref(), Some("Downloading — 42%"));
         let cancel = button(&page, "Cancel");
@@ -1396,7 +1419,7 @@ mod tests {
             .find(|label| label.text() == "Download failed: Greendale is offline")
             .unwrap();
         assert!(error.is_visible() && error.has_css_class("error"));
-        assert!(widgets::<gtk::ProgressBar>(&page).is_empty());
+        assert!(card_bars().is_empty());
         capture_window(&window, "onboarding-model-error");
 
         show(model_step(download(), None));

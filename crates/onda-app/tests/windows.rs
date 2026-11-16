@@ -229,8 +229,26 @@ async fn onb_1_to_10_first_run_from_welcome_to_start_dictating() {
     h.app.onboarding_continue();
     sleep(1).await;
     assert_eq!(h.log.with("download:"), vec!["download:parakeet-tdt-v2"]);
+    h.app
+        .download_event(download(V2, DownloadUpdateKind::Progress(0.42)));
+    sleep(1).await;
+    let view = onboarding(&h);
+    assert_eq!(view.step, OnboardingStep::SpeechModel);
+    assert_eq!(
+        view.hint, None,
+        "a running download does not block Continue"
+    );
+    assert!(view.primary_enabled);
+    assert_eq!(view.download, None, "the model's card shows the progress");
+
+    h.app.onboarding_continue();
+    sleep(1).await;
     let view = onboarding(&h);
     assert_eq!(view.step, OnboardingStep::Permissions);
+    assert_eq!(
+        view.download.map(|d| (d.progress, d.label)),
+        Some((0.42, "Downloading Parakeet TDT v2 — 42%".to_owned()))
+    );
     assert_eq!(
         view.hint.as_deref(),
         Some("Microphone access is required for dictation")
@@ -273,25 +291,13 @@ async fn onb_1_to_10_first_run_from_welcome_to_start_dictating() {
         h.log.with("settings:hotkey").is_empty(),
         "a disabled preset"
     );
-
-    h.app.onboarding_continue();
-    sleep(1).await;
-    h.app
-        .download_event(download(V2, DownloadUpdateKind::Progress(0.42)));
-    sleep(1).await;
-    let view = onboarding(&h);
-    assert_eq!(view.step, OnboardingStep::SpeechModel);
-    assert_eq!(
-        view.hint.as_deref(),
-        Some("Downloading Parakeet TDT v2 — 42%")
-    );
-    assert!(!view.primary_enabled);
+    assert!(onboarding(&h).download.is_some());
 
     lock(&h.models.downloaded).push(V2);
     h.app
         .download_event(download(V2, DownloadUpdateKind::Finished));
     sleep(10).await;
-    assert_eq!(onboarding(&h).hint, None);
+    assert_eq!(onboarding(&h).download, None);
     assert!(h.script.calls().contains(&EngineCall::Load(V2)), "ASR-9");
 
     h.app.onboarding_continue();
@@ -328,6 +334,36 @@ async fn onb_1_to_10_first_run_from_welcome_to_start_dictating() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn onb_9_ready_reached_mid_download_loads_once_the_download_finishes() {
+    let h = Harness::unstarted(first_run);
+    lock(&h.models.downloaded).clear();
+    h.app.ui_ready();
+    sleep(800).await;
+    for _ in 1..OnboardingStep::ALL.len() {
+        h.app.onboarding_continue();
+        sleep(1).await;
+        h.app
+            .download_event(download(V2, DownloadUpdateKind::Progress(0.6)));
+        sleep(1).await;
+    }
+    let view = onboarding(&h);
+    assert_eq!(view.step, OnboardingStep::Ready, "no step waited for it");
+    assert_eq!(
+        view.download.map(|d| d.label).as_deref(),
+        Some("Downloading Parakeet TDT v2 — 60%")
+    );
+    assert!(view.primary_enabled);
+    assert!(h.script.calls().is_empty(), "nothing to load yet");
+
+    lock(&h.models.downloaded).push(V2);
+    h.app
+        .download_event(download(V2, DownloadUpdateKind::Finished));
+    sleep(10).await;
+    assert_eq!(onboarding(&h).download, None);
+    assert_eq!(h.script.calls(), vec![EngineCall::Load(V2)]);
+}
+
+#[tokio::test(start_paused = true)]
 async fn onb_1_the_wizard_has_a_permissions_step_only_where_permissions_exist() {
     use OnboardingStep::{Hotkey, Language, Permissions, Ready, SpeechModel, Welcome};
     struct Case {
@@ -342,9 +378,9 @@ async fn onb_1_the_wizard_has_a_permissions_step_only_where_permissions_exist() 
             want: vec![
                 (Welcome, None),
                 (Language, Some((5, 1))),
-                (Permissions, Some((5, 2))),
-                (Hotkey, Some((5, 3))),
-                (SpeechModel, Some((5, 4))),
+                (SpeechModel, Some((5, 2))),
+                (Permissions, Some((5, 3))),
+                (Hotkey, Some((5, 4))),
                 (Ready, Some((5, 5))),
             ],
         },
@@ -354,8 +390,8 @@ async fn onb_1_the_wizard_has_a_permissions_step_only_where_permissions_exist() 
             want: vec![
                 (Welcome, None),
                 (Language, Some((4, 1))),
-                (Hotkey, Some((4, 2))),
-                (SpeechModel, Some((4, 3))),
+                (SpeechModel, Some((4, 2))),
+                (Hotkey, Some((4, 3))),
                 (Ready, Some((4, 4))),
             ],
         },
@@ -392,10 +428,10 @@ async fn onb_7_linux_offers_presets_it_can_register() {
     // permission the system does not have
     h.permissions.accessibility.store(false, Ordering::SeqCst);
     sleep(800).await;
-    h.app.onboarding_continue();
-    sleep(1).await;
-    h.app.onboarding_continue();
-    sleep(1).await;
+    for _ in 0..3 {
+        h.app.onboarding_continue();
+        sleep(1).await;
+    }
     let view = onboarding(&h);
     assert_eq!(view.step, OnboardingStep::Hotkey);
     let OnboardingContent::Hotkey { presets, .. } = view.content else {
@@ -544,9 +580,11 @@ async fn onb_2_onboarding_rereads_permissions_every_second() {
     *lock(&h.permissions.microphone) = MicrophonePermission::NotDetermined;
     h.app.ui_ready();
     sleep(800).await;
-    h.app.onboarding_continue();
-    h.app.onboarding_continue();
+    for _ in 0..3 {
+        h.app.onboarding_continue();
+    }
     sleep(1).await;
+    assert_eq!(onboarding(&h).step, OnboardingStep::Permissions);
     assert_eq!(
         onboarding(&h).hint.as_deref(),
         Some("Microphone access is required for dictation")

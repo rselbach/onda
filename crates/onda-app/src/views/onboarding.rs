@@ -25,6 +25,16 @@ pub struct OnboardingProgress {
     pub filled: u32,
 }
 
+/// The selected model's running download, beside every step but the model
+/// step (ONB-1).
+#[derive(Debug, Clone, PartialEq)]
+pub struct OnboardingDownload {
+    /// Fraction in `[0, 1]`.
+    pub progress: f64,
+    /// "Downloading Parakeet TDT v2 — 37%".
+    pub label: String,
+}
+
 /// One language card (ONB-4).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LanguageCardView {
@@ -232,6 +242,8 @@ pub struct OnboardingView {
     pub forward: bool,
     /// Segmented progress; hidden on Welcome.
     pub progress: Option<OnboardingProgress>,
+    /// The selected model's running download.
+    pub download: Option<OnboardingDownload>,
     /// "Back" is shown (`onboarding_back`).
     pub back_visible: bool,
     /// "Back".
@@ -290,6 +302,10 @@ pub fn onboarding_view(inputs: OnboardingInputs<'_>) -> OnboardingView {
         progress: frame.progress.map(|p| OnboardingProgress {
             total: u32::try_from(p.total).unwrap_or(u32::MAX),
             filled: u32::try_from(p.filled).unwrap_or(u32::MAX),
+        }),
+        download: frame.download.map(|d| OnboardingDownload {
+            progress: d.progress,
+            label: d.label,
         }),
         back_visible: frame.back_visible,
         back_title: "Back".to_owned(),

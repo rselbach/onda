@@ -12,11 +12,12 @@ use onda_app::views::{
     HistoryContent, HistoryDialog, HistoryMenuItem, HistoryPage, HistoryRow, HistorySection,
     HotkeyPage, InputOption, InputPickerView, LanguageCardView, LanguageOption, LoginCaptionView,
     MainWindowSection, ModelCardAction, ModelCardView, ModelRow, ModelRowControl, ModelsNotice,
-    NoteActionView, NoticeButtonView, OnboardingContent, OnboardingProgress, OnboardingView,
-    OtherModelsView, OutputModeOption, OutputModePicker, PermissionCardView, PermissionFixButton,
-    PermissionRowView, PostProcessingDetails, PostProcessingPage, PresetCardView, PromptEditorView,
-    PromptSummaryView, ProvidersDialog, ReplacementRowView, ReplacementsPage, RetentionOption,
-    SidebarGroup, SidebarPage, SpeechAlert, SpeechPage, ToggleView, UpdateNotice, sidebar,
+    NoteActionView, NoticeButtonView, OnboardingContent, OnboardingDownload, OnboardingProgress,
+    OnboardingView, OtherModelsView, OutputModeOption, OutputModePicker, PermissionCardView,
+    PermissionFixButton, PermissionRowView, PostProcessingDetails, PostProcessingPage,
+    PresetCardView, PromptEditorView, PromptSummaryView, ProvidersDialog, ReplacementRowView,
+    ReplacementsPage, RetentionOption, SidebarGroup, SidebarPage, SpeechAlert, SpeechPage,
+    ToggleView, UpdateNotice, sidebar,
 };
 use onda_domain::history::ContextMenuItem;
 use onda_domain::hotkey::HotkeyPreset;
@@ -1109,6 +1110,16 @@ pub struct OnboardingProgress {
     pub filled: u32,
 }
 
+/// The selected model's running download, beside every step but the model
+/// step (ONB-1).
+#[uniffi::remote(Record)]
+pub struct OnboardingDownload {
+    /// Fraction in `[0, 1]`.
+    pub progress: f64,
+    /// "Downloading Parakeet TDT v2 — 37%".
+    pub label: String,
+}
+
 /// One language card (ONB-4).
 #[uniffi::remote(Record)]
 pub struct LanguageCardView {
@@ -1304,6 +1315,8 @@ pub struct OnboardingView {
     pub forward: bool,
     /// Segmented progress; hidden on Welcome.
     pub progress: Option<OnboardingProgress>,
+    /// The selected model's running download.
+    pub download: Option<OnboardingDownload>,
     /// "Back" is shown (`onboarding_back`).
     pub back_visible: bool,
     /// "Back".
