@@ -46,6 +46,7 @@ impl HistoryDialog {
 #[derive(Clone, PartialEq)]
 struct ViewKey {
     entries: u64,
+    entries_current: bool,
     query: String,
     enabled: bool,
     keep_audio: bool,
@@ -66,6 +67,8 @@ pub(super) struct HistoryState {
     pub(super) generation: u64,
     // the latest page read; an earlier one landing after it is dropped
     page_read: u64,
+    // only the latest successful read can authorize a retention change
+    entries_read: Option<(u64, u64)>,
     pub(super) query: String,
     pub(super) dialog: Option<HistoryDialog>,
     pub(super) error: Option<String>,
@@ -73,6 +76,18 @@ pub(super) struct HistoryState {
     copied_generation: u64,
     copied_timer: Option<Task>,
     built: Option<(ViewKey, HistoryPage)>,
+}
+
+impl HistoryState {
+    fn entries_current(&self) -> bool {
+        self.entries_read == Some((self.generation, self.page_read))
+    }
+
+    fn cancel_retention_dialog(&mut self) {
+        if matches!(self.dialog, Some(HistoryDialog::Retention(..))) {
+            self.dialog = None;
+        }
+    }
 }
 
 impl Actor {
@@ -94,6 +109,7 @@ impl Actor {
         let messages = self.messages.clone();
         let generation = self.ui.history.generation;
         self.ui.history.page_read += 1;
+        self.ui.history.cancel_retention_dialog();
         let read = self.ui.history.page_read;
         tokio::spawn(async move {
             let loaded = spawn_blocking(move || {
@@ -139,9 +155,11 @@ impl Actor {
             Ok(entries) => {
                 self.ui.history.entries = entries;
                 self.ui.history.entries_version += 1;
+                self.ui.history.entries_read = Some((generation, read));
             }
             Err(error) => {
                 tracing::error!(%error, "could not read history");
+                self.ui.history.entries_read = None;
                 self.ui.history.error = Some(error);
             }
         }
@@ -152,6 +170,7 @@ impl Actor {
         op: impl FnOnce(&dyn HistorySink) -> Result<(), String> + Send + 'static,
     ) {
         self.ui.history.generation += 1;
+        self.ui.history.cancel_retention_dialog();
         let history = self.ports.history.clone();
         let messages = self.messages.clone();
         tokio::spawn(async move {
@@ -173,7 +192,10 @@ impl Actor {
 
     // HIS-17: ask before a shorter retention deletes entries
     pub(super) fn set_history_retention(&mut self, retention: HistoryRetention) {
-        if retention == self.settings.history_retention {
+        if !self.settings.history_enabled
+            || !self.ui.history.entries_current()
+            || retention == self.settings.history_retention
+        {
             return;
         }
         match retention_change_confirmation(&self.ui.history.entries, retention, Timestamp::now()) {
@@ -185,7 +207,16 @@ impl Actor {
     }
 
     fn apply_retention_setting(&mut self, retention: HistoryRetention) {
-        self.apply_setting(SettingChange::HistoryRetention(retention));
+        let saved = self
+            .ports
+            .settings
+            .apply(SettingChange::HistoryRetention(retention));
+        self.refresh_settings();
+        if let Err(error) = saved {
+            tracing::error!(%error, "could not save history retention");
+            self.ui.history.error = Some(error);
+            return;
+        }
         self.history_op(move |history| {
             history
                 .apply_retention(retention, Timestamp::now())
@@ -203,7 +234,11 @@ impl Actor {
 
     pub(super) fn confirm_history_dialog(&mut self) {
         match self.ui.history.dialog.take() {
-            Some(HistoryDialog::Retention(retention, _)) => self.apply_retention_setting(retention),
+            Some(HistoryDialog::Retention(retention, _)) => {
+                if self.ui.history.entries_current() {
+                    self.apply_retention_setting(retention);
+                }
+            }
             Some(HistoryDialog::Clear(_)) => self.history_op(|history| history.delete_all()),
             None => {}
         }
@@ -303,6 +338,7 @@ impl Actor {
         let history = &self.ui.history;
         let key = ViewKey {
             entries: history.entries_version,
+            entries_current: history.entries_current(),
             query: history.query.clone(),
             enabled: self.settings.history_enabled,
             keep_audio: self.settings.keep_audio,
@@ -324,6 +360,7 @@ impl Actor {
         }
         let view = history_page(HistoryInputs {
             entries: &history.entries,
+            entries_current: history.entries_current(),
             query: &history.query,
             history_enabled: self.settings.history_enabled,
             keep_audio: self.settings.keep_audio,

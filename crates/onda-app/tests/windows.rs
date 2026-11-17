@@ -2354,6 +2354,157 @@ async fn his_19_his_21_his_26_search_sections_and_empty_states() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn his_17_retention_waits_for_the_initial_history_read() {
+    let h = Harness::new().await;
+    *lock(&h.history.stored) = vec![entry("Troy Barnes", None, None, 240.hours())];
+    let held = h.history.hold_next_entries();
+    h.app.page_appeared(MainWindowSection::History);
+    eventually("the initial history read", || held.started()).await;
+    let loading = history(&h);
+    h.app.set_history_retention(HistoryRetention::Week);
+    h.app.search_history("Troy");
+    eventually("the retention request", || history(&h).query == "Troy").await;
+    held.release();
+    sleep(10).await;
+
+    assert!(!loading.retention_enabled);
+    assert_eq!(history(&h).retention, HistoryRetention::Month);
+    assert!(settings_log(&h, "HistoryRetention").is_empty());
+    assert_eq!(lock(&h.history.stored).len(), 1);
+    assert!(!lock(&h.history.ops).contains(&"retention Week".to_owned()));
+    assert!(history(&h).retention_enabled);
+    h.app.set_history_retention(HistoryRetention::Week);
+    sleep(1).await;
+    assert!(history(&h).dialog.is_some());
+}
+
+#[tokio::test(start_paused = true)]
+async fn his_17_retention_waits_for_a_refresh_of_cached_history() {
+    let h = Harness::new().await;
+    h.app.page_appeared(MainWindowSection::History);
+    sleep(10).await;
+    assert!(history(&h).retention_enabled);
+    *lock(&h.history.stored) = vec![entry("Troy Barnes", None, None, 240.hours())];
+    let held = h.history.hold_next_entries();
+    h.app.page_appeared(MainWindowSection::History);
+    eventually("the refreshed history read", || held.started()).await;
+    let loading = history(&h);
+    h.app.set_history_retention(HistoryRetention::Week);
+    h.app.search_history("Troy");
+    eventually("the retention request", || history(&h).query == "Troy").await;
+    held.release();
+    sleep(10).await;
+
+    assert!(!loading.retention_enabled);
+    assert_eq!(history(&h).retention, HistoryRetention::Month);
+    assert!(settings_log(&h, "HistoryRetention").is_empty());
+    assert_eq!(lock(&h.history.stored).len(), 1);
+    h.app.set_history_retention(HistoryRetention::Week);
+    sleep(1).await;
+    assert!(history(&h).dialog.is_some());
+}
+
+#[tokio::test(start_paused = true)]
+async fn his_17_retention_stays_disabled_after_a_failed_history_read() {
+    let h = Harness::new().await;
+    h.app.page_appeared(MainWindowSection::History);
+    sleep(10).await;
+    *lock(&h.history.stored) = vec![entry("Troy Barnes", None, None, 240.hours())];
+    *lock(&h.history.entries_error) = Some("Greendale disk is unavailable".to_owned());
+    h.app.page_appeared(MainWindowSection::History);
+    eventually("the failed history read", || history(&h).error.is_some()).await;
+    assert!(!history(&h).retention_enabled);
+    h.app.dismiss_history_error();
+    h.app.set_history_retention(HistoryRetention::Week);
+    sleep(10).await;
+    assert!(!history(&h).retention_enabled);
+    assert_eq!(history(&h).retention, HistoryRetention::Month);
+    assert!(settings_log(&h, "HistoryRetention").is_empty());
+    assert_eq!(lock(&h.history.stored).len(), 1);
+
+    *lock(&h.history.entries_error) = None;
+    h.app.page_appeared(MainWindowSection::History);
+    eventually("the recovered history read", || {
+        history(&h).retention_enabled
+    })
+    .await;
+    h.app.set_history_retention(HistoryRetention::Week);
+    sleep(1).await;
+    assert!(history(&h).dialog.is_some());
+}
+
+#[tokio::test(start_paused = true)]
+async fn his_17_a_retention_confirmation_does_not_survive_a_history_refresh() {
+    let h = Harness::new().await;
+    *lock(&h.history.stored) = vec![entry("Troy Barnes", None, None, 240.hours())];
+    h.app.page_appeared(MainWindowSection::History);
+    sleep(10).await;
+    h.app.set_history_retention(HistoryRetention::Week);
+    sleep(1).await;
+    assert!(history(&h).dialog.is_some());
+
+    lock(&h.history.stored).push(entry("Abed Nadir", None, None, 250.hours()));
+    let held = h.history.hold_next_entries();
+    h.app.page_appeared(MainWindowSection::History);
+    eventually("the changed history read", || held.started()).await;
+    let loading = history(&h);
+    h.app.confirm_history_dialog();
+    h.app.search_history("Troy");
+    eventually("the stale confirmation", || history(&h).query == "Troy").await;
+    held.release();
+    sleep(10).await;
+
+    assert!(!loading.retention_enabled);
+    assert!(loading.dialog.is_none());
+    assert_eq!(history(&h).retention, HistoryRetention::Month);
+    assert!(settings_log(&h, "HistoryRetention").is_empty());
+    assert_eq!(lock(&h.history.stored).len(), 2);
+    h.app.set_history_retention(HistoryRetention::Week);
+    sleep(1).await;
+    assert_eq!(
+        history(&h).dialog.expect("a current confirmation").title,
+        "Delete 2 transcripts older than 1 week?"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn his_17_retention_does_not_delete_when_the_setting_cannot_be_saved() {
+    for needs_confirmation in [true, false] {
+        let h = Harness::new().await;
+        let age = if needs_confirmation {
+            240.hours()
+        } else {
+            1.hours()
+        };
+        *lock(&h.history.stored) = vec![entry("Troy Barnes", None, None, age)];
+        h.app.page_appeared(MainWindowSection::History);
+        sleep(10).await;
+        *lock(&h.settings.fail_apply) = Some("Greendale disk is full".to_owned());
+        h.app.set_history_retention(HistoryRetention::Week);
+        if needs_confirmation {
+            sleep(1).await;
+            assert!(history(&h).dialog.is_some());
+            h.app.confirm_history_dialog();
+        }
+        sleep(10).await;
+
+        let page = history(&h);
+        assert_eq!(page.retention, HistoryRetention::Month);
+        assert!(page.dialog.is_none());
+        assert_eq!(
+            lock(&h.settings.settings).history_retention,
+            HistoryRetention::Month
+        );
+        assert!(settings_log(&h, "HistoryRetention").is_empty());
+        assert_eq!(lock(&h.history.stored).len(), 1);
+        assert!(!lock(&h.history.ops).contains(&"retention Week".to_owned()));
+        let error = page.error.expect("the setting failure");
+        assert_eq!(error.title, "History Error");
+        assert_eq!(error.message, "Greendale disk is full");
+    }
+}
+
+#[tokio::test(start_paused = true)]
 async fn his_17_shortening_retention_asks_first() {
     let h = Harness::new().await;
     *lock(&h.history.stored) = vec![
@@ -2611,6 +2762,7 @@ async fn his_27_a_page_read_older_than_a_failed_one_keeps_the_error() {
     held.release();
     sleep(10).await;
     let page = history(&h);
+    assert!(!page.retention_enabled);
     assert_eq!(
         page.error.map(|alert| alert.message).as_deref(),
         Some("Greendale's server is down"),

@@ -151,7 +151,7 @@ pub struct HistoryPage {
     pub retention_options: Vec<RetentionOption>,
     /// The selected option.
     pub retention: HistoryRetention,
-    /// The picker is enabled (history on).
+    /// The picker is enabled (history on and the latest entries are loaded).
     pub retention_enabled: bool,
     /// "Keep audio recordings".
     pub keep_audio: ToggleView,
@@ -188,6 +188,8 @@ pub struct HistoryPage {
 pub struct HistoryInputs<'a> {
     /// Entries, newest first.
     pub entries: &'a [HistoryEntry],
+    /// The latest history read succeeded without an intervening mutation.
+    pub entries_current: bool,
     /// Search query.
     pub query: &'a str,
     /// Save transcripts.
@@ -255,7 +257,7 @@ pub fn history_page(inputs: HistoryInputs<'_>) -> HistoryPage {
             })
             .collect(),
         retention: inputs.retention,
-        retention_enabled: inputs.history_enabled,
+        retention_enabled: inputs.history_enabled && inputs.entries_current,
         keep_audio: ToggleView::new(KEEP_AUDIO_TOGGLE, inputs.keep_audio, inputs.history_enabled),
         caption: settings_caption(inputs.history_enabled, inputs.keep_audio, inputs.platform),
         search_prompt: SEARCH_PROMPT.to_owned(),
