@@ -31,7 +31,7 @@ under test before driving. Run `cargo test` and the Swift tests separately.
   stop it. Hotkeys, microphone, TCC grants, and the pasteboard are global.
 - Never read or write `~/Library/Application Support/Onda`. Every run uses
   `/tmp/onda-verify-runs/<run-id>/data`.
-- Never enter a real OpenRouter or Fireworks AI API key, press "Test" on
+- Never enter a real cloud provider API key, press "Test" on
   Post-Processing, or enable post-processing with a key: the Keychain items
   are shared with the user's real install and requests cost money.
 - Leave Launch at Login, automatic updates, and "Check for Updates…" alone

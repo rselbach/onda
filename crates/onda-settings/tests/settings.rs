@@ -44,6 +44,7 @@ struct Snapshot {
     cleanup_provider: CleanupProvider,
     openrouter_model: String,
     fireworks_model: String,
+    deepseek_model: String,
     cleanup_prompt: CleanupPrompt,
     onboarding_completed: bool,
     did_show_first_run_setup: bool,
@@ -53,6 +54,10 @@ struct Snapshot {
 
 fn snapshot(settings: &Settings) -> Snapshot {
     Snapshot {
+        deepseek_model: settings
+            .cleanup_model(CleanupProvider::DeepSeek)
+            .slug
+            .into_owned(),
         selected_model: settings.selected_model(&Catalog::new(None), OS_LANGUAGE),
         selected_language: settings.selected_language(OS_LANGUAGE),
         recent_languages: settings.recent_languages(),
@@ -105,6 +110,7 @@ fn defaults() -> Snapshot {
         cleanup_provider: CleanupProvider::OpenRouter,
         openrouter_model: "~openai/gpt-luna-latest".to_owned(),
         fireworks_model: "accounts/fireworks/models/deepseek-v4p1-flash".to_owned(),
+        deepseek_model: "deepseek-flash".to_owned(),
         cleanup_prompt: CleanupPrompt::default(),
         onboarding_completed: false,
         did_show_first_run_setup: false,
@@ -226,6 +232,7 @@ fn key_names_match_prd_09() {
         "cleanupProvider",
         "openRouterModel",
         "fireworksModel",
+        "deepseekModel",
         "cleanupPrompt",
         "onboardingCompleted",
         "didShowFirstRunSetup",
@@ -295,6 +302,12 @@ fn every_setter_round_trips_through_the_file() {
         )
         .expect("set");
     settings.set_cleanup_prompt(&custom_prompt()).expect("set");
+    settings
+        .set_cleanup_model(
+            CleanupProvider::DeepSeek,
+            &CleanupProvider::DeepSeek.resolve_model(Some("deepseek-v4-pro")),
+        )
+        .expect("set");
     settings.complete_onboarding().expect("set");
     settings
         .set_last_model_migration_notice_key("parakeet-old->parakeet-ultra")
@@ -322,6 +335,7 @@ fn every_setter_round_trips_through_the_file() {
         cleanup_provider: CleanupProvider::Fireworks,
         openrouter_model: "~anthropic/claude-haiku-latest".to_owned(),
         fireworks_model: "accounts/fireworks/models/kimi-k3".to_owned(),
+        deepseek_model: "deepseek-v4-pro".to_owned(),
         cleanup_prompt: custom_prompt(),
         onboarding_completed: true,
         did_show_first_run_setup: true,
@@ -1277,6 +1291,36 @@ fn set_onboarding_flags_writes_both_flags_onb_11() {
             tc.name
         );
     }
+}
+
+#[test]
+fn deepseek_selection_survives_reopening_without_changing_other_models() {
+    let dir = TempDir::new().expect("temp dir");
+    let path = settings_path(&dir);
+    let settings = Settings::open(&path);
+    let provider = CleanupProvider::DeepSeek;
+    assert_eq!(settings.cleanup_model(provider).slug, "deepseek-flash");
+    settings
+        .set_cleanup_model(
+            CleanupProvider::OpenRouter,
+            &CleanupProvider::OpenRouter.resolve_model(Some("greendale/model")),
+        )
+        .expect("OpenRouter model");
+    settings
+        .set_cleanup_model(provider, &provider.resolve_model(Some("deepseek-v4-pro")))
+        .expect("DeepSeek model");
+    settings.set_cleanup_provider(provider).expect("provider");
+    let reopened = Settings::open(&path);
+    assert_eq!(reopened.cleanup_provider(), provider);
+    assert_eq!(reopened.cleanup_model(provider).slug, "deepseek-v4-pro");
+    assert_eq!(
+        reopened.cleanup_model(CleanupProvider::OpenRouter).slug,
+        "greendale/model"
+    );
+    assert_eq!(
+        reopened.cleanup_model(CleanupProvider::Fireworks),
+        *CleanupProvider::Fireworks.default_model()
+    );
 }
 
 #[test]

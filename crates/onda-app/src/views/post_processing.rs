@@ -26,6 +26,11 @@ fn caption(provider: CleanupProvider, platform: Platform) -> String {
              never leaves it. Falls back to the raw transcript if the model is unavailable or \
              the request fails."
         ),
+        CleanupProvider::DeepSeek => format!(
+            "Cloud post-processing sends your transcript to DeepSeek for processing. \
+             The API key is stored in your {store}, not in preferences. Falls back to the raw \
+             transcript if the request fails."
+        ),
         CleanupProvider::Fireworks => format!(
             "Cloud post-processing sends your transcript to Fireworks AI for processing. \
              Fireworks says it doesn't retain prompts or outputs from its serverless models. \
@@ -44,6 +49,7 @@ fn privacy_note(provider: CleanupProvider, platform: Platform) -> String {
              providers that don't retain it."
                 .to_owned()
         }
+        CleanupProvider::DeepSeek => "Your transcript goes to DeepSeek for processing.".to_owned(),
         CleanupProvider::Fireworks => {
             "Your transcript goes to Fireworks AI, which says it doesn't retain prompts or \
              outputs."

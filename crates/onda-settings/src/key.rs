@@ -41,6 +41,8 @@ pub enum Key {
     OpenRouterModel,
     /// `fireworksModel`: Fireworks AI cleanup model slug.
     FireworksModel,
+    /// `deepseekModel`: DeepSeek cleanup model slug.
+    DeepSeekModel,
     /// `cleanupPrompt`: the user's cleanup prompt; unset for Onda's default.
     CleanupPrompt,
     /// `onboardingCompleted` (SET-4).
@@ -55,7 +57,7 @@ pub enum Key {
 
 impl Key {
     /// Every key.
-    pub const ALL: [Key; 23] = [
+    pub const ALL: [Key; 24] = [
         Key::SelectedModel,
         Key::SelectedLanguage,
         Key::RecentLanguages,
@@ -74,6 +76,7 @@ impl Key {
         Key::CleanupProvider,
         Key::OpenRouterModel,
         Key::FireworksModel,
+        Key::DeepSeekModel,
         Key::CleanupPrompt,
         Key::OnboardingCompleted,
         Key::DidShowFirstRunSetup,
@@ -102,6 +105,7 @@ impl Key {
             Key::CleanupProvider => "cleanupProvider",
             Key::OpenRouterModel => "openRouterModel",
             Key::FireworksModel => "fireworksModel",
+            Key::DeepSeekModel => "deepseekModel",
             Key::CleanupPrompt => "cleanupPrompt",
             Key::OnboardingCompleted => "onboardingCompleted",
             Key::DidShowFirstRunSetup => "didShowFirstRunSetup",

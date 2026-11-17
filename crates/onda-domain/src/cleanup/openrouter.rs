@@ -1,6 +1,6 @@
 //! Chat-completions request and response shapes (CLN-4..CLN-11), with
-//! OpenRouter's body and model list. Fireworks AI's body lives in
-//! [`super::fireworks`]; both reply in OpenAI's shape.
+//! OpenRouter's body and model list. Fireworks AI and DeepSeek have their
+//! own request modules; all three reply in OpenAI's shape.
 //!
 //! The HTTP client lives outside the domain; it sends what
 //! [`build_request`] describes and hands `(status, body)` to
@@ -14,6 +14,7 @@ use serde_json::Value;
 use unicode_segmentation::UnicodeSegmentation;
 
 use super::catalog::{CleanupModel, ReasoningEffort};
+use super::deepseek;
 use super::fireworks;
 use super::prompt::CleanupPrompt;
 use super::provider::CleanupProvider;
@@ -142,6 +143,7 @@ pub struct RequestBody(Body);
 enum Body {
     OpenRouter(OpenRouterBody),
     Fireworks(fireworks::Body),
+    DeepSeek(deepseek::Body),
     OnDevice(OnDevicePrompt),
 }
 
@@ -161,7 +163,7 @@ impl CleanupRequest {
     pub fn on_device_prompt(&self) -> Option<&OnDevicePrompt> {
         match &self.body.0 {
             Body::OnDevice(prompt) => Some(prompt),
-            Body::OpenRouter(_) | Body::Fireworks(_) => None,
+            Body::OpenRouter(_) | Body::Fireworks(_) | Body::DeepSeek(_) => None,
         }
     }
 }
@@ -280,6 +282,16 @@ pub fn build_request(
                 stream: false,
                 temperature: 0,
                 reasoning_effort: model.reasoning_effort.map(ReasoningEffort::as_str),
+            });
+            (http_headers(key), body)
+        }
+        CleanupProvider::DeepSeek => {
+            let body = Body::DeepSeek(deepseek::Body {
+                model: model_slug,
+                messages: messages(),
+                stream: false,
+                temperature: 0,
+                thinking: deepseek::Thinking::Disabled,
             });
             (http_headers(key), body)
         }

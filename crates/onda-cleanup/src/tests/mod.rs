@@ -52,6 +52,85 @@ async fn refused_url() -> String {
 }
 
 #[tokio::test]
+async fn deepseek_sends_non_thinking_requests_and_reads_cleaned_text() {
+    let key = ApiKey::new("sk-troy-barnes").expect("key");
+    let provider = CleanupProvider::DeepSeek;
+    for slug in ["deepseek-flash", "deepseek-v4-pro", "greendale-model"] {
+        let mut server = Server::start(Reply::Respond {
+            status: 200,
+            body: success_body(),
+        })
+        .await;
+        let request = build_request(
+            provider,
+            Some(&key),
+            &provider.resolve_model(Some(slug)),
+            &CleanupPrompt::default(),
+            TEST_SAMPLE,
+            Some(APP),
+        );
+        assert_eq!(
+            request.provider.chat_endpoint(),
+            Some("https://api.deepseek.com/chat/completions")
+        );
+        assert_eq!(
+            client(&server.url).send(&request).await,
+            Ok(CLEANED.to_owned())
+        );
+        let captured = server.captured().await;
+        assert_eq!(captured.header("authorization"), ["Bearer sk-troy-barnes"]);
+        assert!(captured.header("x-title").is_empty());
+        assert!(captured.header("http-referer").is_empty());
+        let body: serde_json::Value = serde_json::from_slice(&captured.body).expect("body");
+        assert_eq!(
+            body,
+            json!({
+                "model": slug,
+                "messages": [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": format!("Dictating into: {APP}\n\n<transcript>\n{TEST_SAMPLE}\n</transcript>")}
+                ],
+                "stream": false,
+                "temperature": 0,
+                "thinking": {"type": "disabled"}
+            })
+        );
+    }
+}
+
+#[tokio::test]
+async fn deepseek_lists_models_with_its_key() {
+    let provider = CleanupProvider::DeepSeek;
+    assert_eq!(
+        models_request(provider, None, None),
+        Err(CleanupError::MissingKey)
+    );
+    let key = ApiKey::new("sk-troy-barnes").expect("key");
+    let request = models_request(provider, Some(&key), None)
+        .expect("request")
+        .expect("lists");
+    assert_eq!(request.url, "https://api.deepseek.com/models");
+    assert!(!format!("{request:?}").contains("troy-barnes"));
+    let mut server = Server::start(Reply::Respond {
+        status: 200,
+        body: json!({"data": [{"id": "deepseek-v4-pro"}, {"id": "deepseek-flash"}]}).to_string(),
+    })
+    .await;
+    let models = client(&server.url)
+        .list_models(provider, Some(&key))
+        .await
+        .expect("models");
+    let ids: Vec<_> = models.iter().map(|model| model.slug.as_ref()).collect();
+    assert_eq!(ids, ["deepseek-flash", "deepseek-v4-pro"]);
+    let captured = server.captured().await;
+    assert_eq!(
+        captured.request_line,
+        format!("GET {} HTTP/1.1", server::PATH)
+    );
+    assert_eq!(captured.header("authorization"), ["Bearer sk-troy-barnes"]);
+}
+
+#[tokio::test]
 async fn request_on_the_wire_cln_4_cln_5_cln_6() {
     let mut server = Server::start(Reply::Respond {
         status: 200,

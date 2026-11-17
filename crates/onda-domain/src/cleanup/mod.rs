@@ -1,4 +1,4 @@
-//! Optional transcript cleanup through OpenRouter, Fireworks AI, or Apple
+//! Optional transcript cleanup through OpenRouter, Fireworks AI, DeepSeek, or Apple
 //! Intelligence's on-device model.
 //!
 //! Everything here is pure: the prompt, the model catalog, request building,
@@ -8,6 +8,7 @@
 
 mod api_key_field;
 mod catalog;
+mod deepseek;
 mod fireworks;
 mod guardrails;
 mod listing;
@@ -21,6 +22,7 @@ pub use catalog::{
     APPLE_MODELS, CLEANUP_MODELS, CleanupModel, ReasoningEffort, custom_model_slug, default_model,
     model_for_slug, resolve_model,
 };
+pub use deepseek::DEEPSEEK_MODELS;
 pub use fireworks::FIREWORKS_MODELS;
 pub use guardrails::{GuardrailViolation, check_guardrails};
 pub use listing::{

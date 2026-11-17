@@ -612,6 +612,7 @@ fn model_key(provider: CleanupProvider) -> Option<Key> {
     match provider {
         CleanupProvider::OpenRouter => Some(Key::OpenRouterModel),
         CleanupProvider::Fireworks => Some(Key::FireworksModel),
+        CleanupProvider::DeepSeek => Some(Key::DeepSeekModel),
         CleanupProvider::AppleIntelligence => None,
     }
 }

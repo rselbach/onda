@@ -14,7 +14,7 @@ mod store;
 
 pub use key::Key;
 pub use secrets::{
-    FIREWORKS_ACCOUNT, KeychainSecretStore, MemorySecretStore, OPENROUTER_ACCOUNT, SERVICE,
-    SecretError, SecretOp, SecretStore, key_account,
+    DEEPSEEK_ACCOUNT, FIREWORKS_ACCOUNT, KeychainSecretStore, MemorySecretStore,
+    OPENROUTER_ACCOUNT, SERVICE, SecretError, SecretOp, SecretStore, key_account,
 };
 pub use store::{Settings, SettingsError};

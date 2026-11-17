@@ -186,7 +186,11 @@ async fn main_window() -> Harness {
     sleep(10).await;
     h.app.open_providers_dialog();
     sleep(10).await;
-    for provider in [CleanupProvider::Fireworks, CleanupProvider::OpenRouter] {
+    for provider in [
+        CleanupProvider::Fireworks,
+        CleanupProvider::OpenRouter,
+        CleanupProvider::DeepSeek,
+    ] {
         h.app.select_dialog_provider(provider);
         sleep(10).await;
     }

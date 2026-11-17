@@ -19,12 +19,16 @@ pub const OPENROUTER_ACCOUNT: &str = "openRouterApiKey";
 /// Credential-store account holding the Fireworks AI key.
 pub const FIREWORKS_ACCOUNT: &str = "fireworksApiKey";
 
+/// Credential-store account holding the DeepSeek key.
+pub const DEEPSEEK_ACCOUNT: &str = "deepseekApiKey";
+
 /// The credential-store account holding `provider`'s key. Keys are never
 /// shared between providers.
 pub const fn key_account(provider: CleanupProvider) -> Option<&'static str> {
     match provider {
         CleanupProvider::OpenRouter => Some(OPENROUTER_ACCOUNT),
         CleanupProvider::Fireworks => Some(FIREWORKS_ACCOUNT),
+        CleanupProvider::DeepSeek => Some(DEEPSEEK_ACCOUNT),
         // the on-device model needs no key
         CleanupProvider::AppleIntelligence => None,
     }
@@ -332,6 +336,10 @@ mod tests {
 
     #[test]
     fn every_provider_has_its_own_account() {
+        assert_eq!(
+            key_account(CleanupProvider::DeepSeek),
+            Some("deepseekApiKey")
+        );
         assert_eq!(key_account(OPENROUTER), Some("openRouterApiKey"));
         assert_eq!(
             key_account(CleanupProvider::Fireworks),
@@ -357,6 +365,9 @@ mod tests {
         let store = MemorySecretStore::new();
         store.save(OPENROUTER, "sk-or-troy").expect("save");
         store
+            .save(CleanupProvider::DeepSeek, "sk-annie")
+            .expect("save");
+        store
             .save(CleanupProvider::Fireworks, "fw-abed")
             .expect("save");
         let read = |provider| {
@@ -366,6 +377,11 @@ mod tests {
                 .map(|key| key.expose().to_owned())
         };
         assert_eq!(read(OPENROUTER).as_deref(), Some("sk-or-troy"));
+        assert_eq!(read(CleanupProvider::DeepSeek).as_deref(), Some("sk-annie"));
+        store
+            .delete(CleanupProvider::DeepSeek)
+            .expect("delete DeepSeek key");
+        assert_eq!(read(CleanupProvider::DeepSeek), None);
         assert_eq!(read(CleanupProvider::Fireworks).as_deref(), Some("fw-abed"));
         store.delete(OPENROUTER).expect("delete");
         assert_eq!(read(OPENROUTER), None);

@@ -1,6 +1,6 @@
 # Post-processing (cleanup)
 
-Optional OpenRouter, Fireworks AI, or on-device Apple Intelligence cleanup
+Optional OpenRouter, Fireworks AI, DeepSeek, or on-device Apple Intelligence cleanup
 of transcripts, configured on the Post-Processing
 page. Verify the UI only: no real API key, no requests.
 
@@ -58,7 +58,7 @@ Main window > Post-Processing.
 ## Gotchas
 
 - Each provider's API key has its own Keychain account (service
-  `com.rselbach.onda`: `openRouterApiKey`, `fireworksApiKey`), shared with
+  `com.rselbach.onda`: `openRouterApiKey`, `fireworksApiKey`, `deepseekApiKey`), shared with
   the user's Onda. If one is stored, every
   dictation with post-processing on sends a real request. `doctor` warns and
   `launch --setting postProcessingEnabled=true` refuses when it exists. With
@@ -73,6 +73,9 @@ Main window > Post-Processing.
   sheet shows "Enter your Fireworks AI API key to see its models." in
   secondary text, not red, and only the curated models. That is expected;
   do not add a key to get the list.
+- DeepSeek also lists models only with its key. Without one, its pane asks
+  for a DeepSeek API key and offers DeepSeek Flash and DeepSeek V4 Pro.
+  Selecting a model saves its ID in `deepseekModel`.
 - Never press "Get a key": it opens the provider's site in the browser.
 - The search field takes `llama-cu set-value`; background `type-text`
   does not reach it.
@@ -93,7 +96,7 @@ Main window > Post-Processing.
 
 ## On Linux
 
-The page offers OpenRouter and Fireworks AI. Apple Intelligence does not
+The page offers OpenRouter, Fireworks AI, and DeepSeek. Apple Intelligence does not
 exist on Linux. Verify the UI and the refusal, never a real request.
 
 What differs:

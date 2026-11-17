@@ -10,6 +10,7 @@ use std::fmt;
 use serde_json::Value;
 
 use super::catalog::CleanupModel;
+use super::deepseek;
 use super::fireworks;
 use super::openrouter::{self, ApiKey, CleanupError, error_message};
 use super::provider::CleanupProvider;
@@ -62,6 +63,13 @@ pub fn models_request(
             url: openrouter::MODELS_ENDPOINT.to_owned(),
             headers: Vec::new(),
         },
+        CleanupProvider::DeepSeek => {
+            let key = key.ok_or(CleanupError::MissingKey)?;
+            ModelsRequest {
+                url: deepseek::MODELS_ENDPOINT.to_owned(),
+                headers: vec![("Authorization", format!("Bearer {}", key.expose()))],
+            }
+        }
         CleanupProvider::Fireworks => {
             let key = key.ok_or(CleanupError::MissingKey)?;
             ModelsRequest {
@@ -89,6 +97,7 @@ pub fn parse_models_page(
     let (models, next_page_token) = match provider {
         CleanupProvider::OpenRouter => (openrouter::parse_models(&json)?, None),
         CleanupProvider::Fireworks => fireworks::parse_models(&json)?,
+        CleanupProvider::DeepSeek => (deepseek::parse_models(&json)?, None),
         CleanupProvider::AppleIntelligence => (Vec::new(), None),
     };
     Ok(ModelsPage {

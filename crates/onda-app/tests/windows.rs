@@ -3244,77 +3244,77 @@ async fn the_model_sheet_picks_the_model_in_one_click() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn fireworks_lists_its_models_only_with_its_key() {
-    use onda_domain::cleanup::{CleanupModel, CleanupProvider, FIREWORKS_MODELS};
+async fn keyed_providers_list_models_only_with_their_key() {
+    use onda_domain::cleanup::{CleanupModel, CleanupProvider};
 
-    let fireworks = CleanupProvider::Fireworks;
-    let sheet = |h: &Harness| {
-        post_processing(h)
-            .details
-            .expect("details")
-            .dialog
-            .expect("sheet")
-    };
-    let h = Harness::with(|s| {
-        s.cleanup_enabled = true;
-        s.cleanup_provider = CleanupProvider::Fireworks;
-        s.cleanup_model = FIREWORKS_MODELS[0].clone();
-    })
-    .await;
-    *lock(&h.cleanup.listed) = Some(Ok(vec![CleanupModel::listed(
-        "accounts/fireworks/models/kimi-k3",
-        "Kimi K3",
-    )]));
-
-    // the page reads no key, so it lists nothing for Fireworks
-    h.app.page_appeared(MainWindowSection::PostProcessing);
-    sleep(10).await;
-    let details = post_processing(&h).details.expect("details");
-    assert_eq!(details.provider_name, "Fireworks AI");
-    assert_eq!(details.model_name, "DeepSeek V4.1 Flash");
-    assert!(lock(&h.secrets.2).is_empty(), "no keychain read");
-    assert_eq!(h.cleanup.list_calls.load(Ordering::SeqCst), 0);
-
-    // the sheet lists with the stored key
-    h.app.open_providers_dialog();
-    sleep(10).await;
-    assert_eq!(
-        *lock(&h.cleanup.list_requests),
-        [(fireworks, Some("sk-or-greendale".to_owned()))]
-    );
-    let dialog = sheet(&h);
-    assert_eq!(
-        dialog.key.map(|key| key.placeholder).as_deref(),
-        Some("Fireworks AI API key")
-    );
-    assert_eq!(
-        dialog.model_groups.last().map(|g| g.title.as_str()),
-        Some("All models")
-    );
-    assert!(
-        lock(&h.secrets.2).iter().all(|(_, p)| *p == fireworks),
-        "every keychain call is Fireworks'"
-    );
-
-    // saving a new key lists again with it
-    h.app.api_key_edited("fw-annie-edison");
-    h.app.api_key_commit();
-    sleep(10).await;
-    assert_eq!(
-        lock(&h.cleanup.list_requests).last(),
-        Some(&(fireworks, Some("fw-annie-edison".to_owned())))
-    );
-
-    // with no key, the sheet asks for one
-    h.app.api_key_edited("");
-    h.app.api_key_commit();
-    sleep(10).await;
-    assert_eq!(
-        sheet(&h).models_notice,
-        Some(ModelsNotice::NeedsKey {
-            text: "Enter your Fireworks AI API key to see its models.".to_owned()
+    for provider in [CleanupProvider::Fireworks, CleanupProvider::DeepSeek] {
+        let sheet = |h: &Harness| {
+            post_processing(h)
+                .details
+                .expect("details")
+                .dialog
+                .expect("sheet")
+        };
+        let h = Harness::with(|s| {
+            s.cleanup_enabled = true;
+            s.cleanup_provider = provider;
+            s.cleanup_model = provider.default_model().clone();
         })
-    );
+        .await;
+        *lock(&h.cleanup.listed) = Some(Ok(vec![CleanupModel::listed(
+            "greendale-model",
+            "Greendale Model",
+        )]));
+
+        h.app.page_appeared(MainWindowSection::PostProcessing);
+        sleep(10).await;
+        let details = post_processing(&h).details.expect("details");
+        assert_eq!(details.provider_name, provider.display_name());
+        assert_eq!(details.model_name, provider.default_model().display_name);
+        assert!(lock(&h.secrets.2).is_empty(), "no keychain read");
+        assert_eq!(h.cleanup.list_calls.load(Ordering::SeqCst), 0);
+
+        h.app.open_providers_dialog();
+        sleep(10).await;
+        assert_eq!(
+            *lock(&h.cleanup.list_requests),
+            [(provider, Some("sk-or-greendale".to_owned()))]
+        );
+        let dialog = sheet(&h);
+        assert_eq!(
+            dialog.key.map(|key| key.placeholder).as_deref(),
+            Some(format!("{} API key", provider.display_name()).as_str())
+        );
+        assert_eq!(
+            dialog.model_groups.last().map(|g| g.title.as_str()),
+            Some("All models")
+        );
+        assert!(
+            lock(&h.secrets.2).iter().all(|(_, p)| *p == provider),
+            "every keychain call is for {provider:?}"
+        );
+
+        h.app.api_key_edited("sk-annie-edison");
+        h.app.api_key_commit();
+        sleep(10).await;
+        assert_eq!(
+            lock(&h.cleanup.list_requests).last(),
+            Some(&(provider, Some("sk-annie-edison".to_owned())))
+        );
+
+        h.app.api_key_edited("");
+        h.app.api_key_commit();
+        sleep(10).await;
+        assert_eq!(
+            sheet(&h).models_notice,
+            Some(ModelsNotice::NeedsKey {
+                text: format!(
+                    "Enter your {} API key to see its models.",
+                    provider.display_name()
+                )
+            })
+        );
+    }
 }
 
 #[tokio::test(start_paused = true)]
@@ -3373,7 +3373,7 @@ async fn apple_intelligence_shows_only_where_it_can_run() {
     h.app.page_appeared(MainWindowSection::PostProcessing);
     h.app.open_providers_dialog();
     sleep(10).await;
-    assert_eq!(sidebar(&h), ["openrouter", "fireworks"]);
+    assert_eq!(sidebar(&h), ["openrouter", "fireworks", "deepseek"]);
 
     // turned off: listed, with the way to turn it on, and no key field
     *lock(&h.cleanup.on_device) = Some(OnDeviceStatus::NotEnabled);
@@ -3381,7 +3381,7 @@ async fn apple_intelligence_shows_only_where_it_can_run() {
     sleep(10).await;
     assert_eq!(
         sidebar(&h),
-        ["openrouter", "fireworks", "apple-intelligence"]
+        ["openrouter", "fireworks", "deepseek", "apple-intelligence"]
     );
     let dialog = sheet(&h);
     assert_eq!(dialog.key, None);

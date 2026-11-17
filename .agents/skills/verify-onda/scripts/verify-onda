@@ -166,7 +166,7 @@ clone_model() {
 # only; the secret is never read); one account per provider
 has_stored_api_key() {
   local account
-  for account in openRouterApiKey fireworksApiKey; do
+  for account in openRouterApiKey fireworksApiKey deepseekApiKey; do
     if security find-generic-password -s com.rselbach.onda -a "${account}" \
       >/dev/null 2>&1; then
       return 0

@@ -1,6 +1,7 @@
 //! The services cleanup can run through.
 
 use super::catalog::{self, APPLE_MODELS, CLEANUP_MODELS, CleanupModel};
+use super::deepseek::{self, DEEPSEEK_MODELS};
 use super::fireworks::{self, FIREWORKS_MODELS};
 use super::openrouter;
 
@@ -15,6 +16,8 @@ pub enum CleanupProvider {
     OpenRouter,
     /// Fireworks AI's serverless chat-completions API.
     Fireworks,
+    /// DeepSeek's chat-completions API.
+    DeepSeek,
     /// Apple Intelligence's on-device model, through the shell; offered
     /// only when the Mac supports it.
     AppleIntelligence,
@@ -72,9 +75,10 @@ pub enum ModelListing {
 
 impl CleanupProvider {
     /// Every provider, in picker order.
-    pub const ALL: [CleanupProvider; 3] = [
+    pub const ALL: [CleanupProvider; 4] = [
         CleanupProvider::OpenRouter,
         CleanupProvider::Fireworks,
+        CleanupProvider::DeepSeek,
         CleanupProvider::AppleIntelligence,
     ];
 
@@ -83,6 +87,7 @@ impl CleanupProvider {
         match self {
             Self::OpenRouter => "openrouter",
             Self::Fireworks => "fireworks",
+            Self::DeepSeek => "deepseek",
             Self::AppleIntelligence => "apple-intelligence",
         }
     }
@@ -97,6 +102,7 @@ impl CleanupProvider {
         match self {
             Self::OpenRouter => "OpenRouter",
             Self::Fireworks => "Fireworks AI",
+            Self::DeepSeek => "DeepSeek",
             Self::AppleIntelligence => "Apple Intelligence",
         }
     }
@@ -107,6 +113,7 @@ impl CleanupProvider {
         match self {
             Self::OpenRouter => Some(openrouter::ENDPOINT),
             Self::Fireworks => Some(fireworks::ENDPOINT),
+            Self::DeepSeek => Some(deepseek::ENDPOINT),
             Self::AppleIntelligence => None,
         }
     }
@@ -114,7 +121,7 @@ impl CleanupProvider {
     /// Whether requests need an API key from the credential store.
     pub const fn uses_key(self) -> bool {
         match self {
-            Self::OpenRouter | Self::Fireworks => true,
+            Self::OpenRouter | Self::Fireworks | Self::DeepSeek => true,
             Self::AppleIntelligence => false,
         }
     }
@@ -125,6 +132,7 @@ impl CleanupProvider {
         match self {
             Self::OpenRouter => Some("https://openrouter.ai/workspaces/default/keys"),
             Self::Fireworks => Some("https://app.fireworks.ai/settings/users/api-keys"),
+            Self::DeepSeek => Some("https://platform.deepseek.com/api_keys"),
             Self::AppleIntelligence => None,
         }
     }
@@ -134,7 +142,7 @@ impl CleanupProvider {
     pub fn short_model_id(self, slug: &str) -> &str {
         match self {
             Self::Fireworks => fireworks::short_id(slug),
-            Self::OpenRouter | Self::AppleIntelligence => slug,
+            Self::OpenRouter | Self::DeepSeek | Self::AppleIntelligence => slug,
         }
     }
 
@@ -147,7 +155,7 @@ impl CleanupProvider {
     pub const fn model_listing(self) -> ModelListing {
         match self {
             Self::OpenRouter => ModelListing::Public,
-            Self::Fireworks => ModelListing::WithKey,
+            Self::Fireworks | Self::DeepSeek => ModelListing::WithKey,
             Self::AppleIntelligence => ModelListing::None,
         }
     }
@@ -157,6 +165,7 @@ impl CleanupProvider {
         match self {
             Self::OpenRouter => &CLEANUP_MODELS,
             Self::Fireworks => &FIREWORKS_MODELS,
+            Self::DeepSeek => &DEEPSEEK_MODELS,
             Self::AppleIntelligence => &APPLE_MODELS,
         }
     }
@@ -171,6 +180,7 @@ impl CleanupProvider {
         match self {
             Self::OpenRouter => catalog::resolve_model(stored),
             Self::Fireworks => fireworks::resolve_model(stored),
+            Self::DeepSeek => deepseek::resolve_model(stored),
             // one model; any stored value means it
             Self::AppleIntelligence => APPLE_MODELS[0].clone(),
         }
