@@ -1099,6 +1099,8 @@ mod tests {
         pick(&english);
         wait_for(|| picked(&english));
         button(&page, "Continue").emit_clicked();
+        let page = arrive(window, "speech-model");
+        button(&page, "Continue").emit_clicked();
         arrive(window, "hotkey")
     }
 
