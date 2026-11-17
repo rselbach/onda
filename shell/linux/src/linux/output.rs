@@ -12,7 +12,7 @@ use onda_app::ports::{CopyOutcome, Delivery, FieldText, InsertOutcome, Target, T
 use onda_settings::Settings;
 use tokio::sync::OwnedMutexGuard;
 
-use super::{field, hotkeys::HeldKeys, process, target};
+use super::{clipboard::Paste, field, hotkeys::HeldKeys, process, target};
 
 pub struct Output {
     runtime: tokio::runtime::Handle,
@@ -74,7 +74,20 @@ impl Output {
         .map(|opened| opened.map(Keyboard::Portal))
     }
 
-    fn press(&self, keyboard: Keyboard, shift: bool) -> anyhow::Result<()> {
+    fn press(&self, keyboard: Keyboard, shift: bool, paste: &Paste<'_>) -> anyhow::Result<bool> {
+        if matches!(keyboard, Keyboard::Portal(_)) {
+            // The selection must reach the target; a consent dialog may also have just closed.
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        if !paste
+            .ready_to_paste()
+            .inspect_err(
+                |error| tracing::debug!(%error, "clipboard could not be checked before paste"),
+            )
+            .unwrap_or(false)
+        {
+            return Ok(false);
+        }
         let mut grant = match keyboard {
             Keyboard::Xdotool => {
                 process::run(
@@ -82,19 +95,17 @@ impl Output {
                     &["key", if shift { "ctrl+shift+v" } else { "ctrl+v" }],
                     &[],
                 )?;
-                return Ok(());
+                return Ok(true);
             }
             Keyboard::Wtype => {
                 let keys = wtype_arguments(shift);
                 let args: Vec<&str> = keys.iter().map(String::as_str).collect();
                 process::run("wtype", &args, &[])?;
-                return Ok(());
+                return Ok(true);
             }
             Keyboard::Portal(grant) => grant,
         };
         self.runtime.block_on(async {
-            // The selection must reach the target; a consent dialog may also have just closed.
-            tokio::time::sleep(Duration::from_millis(250)).await;
             let current = grant
                 .as_mut()
                 .ok_or_else(|| anyhow::anyhow!("keyboard session missing"))?;
@@ -145,7 +156,7 @@ impl Output {
             if let Some(error) = release_error {
                 return Err(error.into());
             }
-            Ok(())
+            Ok(true)
         })
     }
 }
@@ -289,21 +300,11 @@ impl TextOutput for Output {
         let Some(keyboard) = self.keyboard(delivery) else {
             return InsertOutcome::Cancelled;
         };
-        let previous = match super::clipboard::Snapshot::read() {
-            Ok(previous) => Some(previous),
-            Err(error) => {
-                tracing::debug!(%error, "clipboard cannot be preserved");
-                None
-            }
-        };
+        let mut paste = Paste::prepare(text);
         if !delivery.commit() {
             return InsertOutcome::Cancelled;
         }
-        let copied = match &previous {
-            Some(snapshot) => snapshot.copy_for_paste(text),
-            None => super::clipboard::copy_text(text),
-        };
-        if let Err(error) = copied {
+        if let Err(error) = paste.copy_for_paste() {
             tracing::warn!(%error, "clipboard write failed");
             return InsertOutcome::CopyFailed;
         }
@@ -312,18 +313,19 @@ impl TextOutput for Output {
         if target.is_some_and(target::left) {
             return InsertOutcome::TargetLeft;
         }
-        match keyboard
-            .and_then(|keyboard| self.press(keyboard, self.settings.terminal_paste_shortcut()))
-        {
-            Ok(()) => {
-                if let Some(previous) = previous {
+        match keyboard.and_then(|keyboard| {
+            self.press(keyboard, self.settings.terminal_paste_shortcut(), &paste)
+        }) {
+            Ok(true) => {
+                if paste.can_restore() {
                     std::thread::sleep(Duration::from_millis(500));
-                    if let Err(error) = previous.restore_if_unchanged() {
+                    if let Err(error) = paste.restore_if_unchanged() {
                         tracing::debug!(%error, "clipboard restoration unavailable");
                     }
                 }
                 InsertOutcome::Inserted
             }
+            Ok(false) => InsertOutcome::PasteInterrupted,
             Err(error) => {
                 tracing::warn!(%error, "automatic paste failed; transcript remains on clipboard");
                 InsertOutcome::PasteFailed
@@ -429,6 +431,30 @@ mod tests {
         assert_eq!(
             copying.join().expect("copying thread"),
             CopyOutcome::Cancelled
+        );
+    }
+
+    #[test]
+    #[ignore = "uses the private Wayland clipboard"]
+    fn a_changed_clipboard_stops_the_portal_paste() {
+        assert!(process::wayland());
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let output = Output::new(
+            runtime.handle().clone(),
+            Path::new("/nonexistent/greendale"),
+            Arc::default(),
+            Arc::new(Settings::open("/nonexistent/greendale/settings.json")),
+        );
+        let mut paste = Paste::prepare("Troy Barnes");
+        paste.copy_for_paste().unwrap();
+        assert!(paste.ready_to_paste().unwrap());
+        super::super::clipboard::copy_text("Greendale").unwrap();
+
+        let grant = runtime.block_on(output.portal.clone().lock_owned());
+        assert!(
+            !output
+                .press(Keyboard::Portal(grant), false, &paste)
+                .unwrap()
         );
     }
 

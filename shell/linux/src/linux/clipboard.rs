@@ -9,9 +9,12 @@ use x11rb::protocol::{Event, xfixes, xproto};
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
 
-pub struct Snapshot {
-    formats: Vec<(String, Vec<u8>)>,
-    selection: Selection,
+const WAYLAND_TEXT_TYPE: &str = "text/plain;charset=utf-8";
+
+pub struct Paste<'a> {
+    text: &'a str,
+    previous: Option<Vec<(String, Vec<u8>)>>,
+    selection: Option<Selection>,
 }
 
 enum Selection {
@@ -87,11 +90,7 @@ impl Selection {
 
 pub(super) fn copy_text(text: &str) -> anyhow::Result<()> {
     if process::wayland() {
-        process::write(
-            "wl-copy",
-            &["--type", "text/plain;charset=utf-8"],
-            text.as_bytes(),
-        )?;
+        process::write("wl-copy", &["--type", WAYLAND_TEXT_TYPE], text.as_bytes())?;
     } else {
         process::write(
             "xclip",
@@ -122,9 +121,24 @@ fn offer_wayland(formats: Vec<(String, Vec<u8>)>) -> anyhow::Result<()> {
     Ok(())
 }
 
-impl Snapshot {
-    pub fn read() -> anyhow::Result<Self> {
-        let selection = Selection::watch()?;
+impl<'a> Paste<'a> {
+    pub fn prepare(text: &'a str) -> Self {
+        let selection = Selection::watch()
+            .inspect_err(|error| tracing::debug!(%error, "clipboard cannot be monitored"))
+            .ok();
+        let previous = selection.as_ref().and_then(|_| {
+            Self::read_formats()
+                .inspect_err(|error| tracing::debug!(%error, "clipboard cannot be preserved"))
+                .ok()
+        });
+        Self {
+            text,
+            previous,
+            selection,
+        }
+    }
+
+    fn read_formats() -> anyhow::Result<Vec<(String, Vec<u8>)>> {
         let deadline = Instant::now() + Duration::from_secs(1);
         let read = |args: &[&str]| {
             process::run_for(
@@ -168,39 +182,62 @@ impl Snapshot {
                 "X11 clipboard contains non-text formats; preserving the transcript instead"
             );
         }
-        Ok(Self { formats, selection })
+        Ok(formats)
     }
 
-    pub fn copy_for_paste(&self, text: &str) -> anyhow::Result<()> {
-        match &self.selection {
-            Selection::Wayland(marker) => offer_wayland(vec![
-                ("text/plain;charset=utf-8".into(), text.as_bytes().to_vec()),
+    pub fn copy_for_paste(&mut self) -> anyhow::Result<()> {
+        if let Some(Selection::Wayland(marker)) = &self.selection {
+            match offer_wayland(vec![
+                (WAYLAND_TEXT_TYPE.into(), self.text.as_bytes().to_vec()),
                 (marker.clone(), Vec::new()),
-            ])
-            .or_else(|error| {
-                tracing::debug!(%error, "copying without a Wayland restoration marker");
-                copy_text(text)
-            }),
-            Selection::X11(_) => copy_text(text),
+            ]) {
+                Ok(()) => return Ok(()),
+                Err(error) => {
+                    tracing::debug!(%error, "copying without a Wayland restoration marker");
+                    self.selection = None;
+                }
+            }
         }
+        copy_text(self.text)
+    }
+
+    pub fn ready_to_paste(&self) -> anyhow::Result<bool> {
+        match &self.selection {
+            Some(selection @ Selection::Wayland(_)) => selection.still_ours(),
+            None if process::wayland() => {
+                let contents = process::run(
+                    "wl-paste",
+                    &["--no-newline", "--type", WAYLAND_TEXT_TYPE],
+                    &[],
+                )?;
+                Ok(contents == self.text.as_bytes())
+            }
+            _ => Ok(true),
+        }
+    }
+
+    pub fn can_restore(&self) -> bool {
+        self.previous.is_some() && self.selection.is_some()
     }
 
     pub fn restore_if_unchanged(self) -> anyhow::Result<()> {
-        if !self.selection.still_ours()? {
+        let (Some(formats), Some(selection)) = (self.previous, self.selection) else {
+            return Ok(());
+        };
+        if !selection.still_ours()? {
             return Ok(());
         }
-        if matches!(self.selection, Selection::Wayland(_)) {
-            if self.formats.is_empty() {
+        if matches!(selection, Selection::Wayland(_)) {
+            if formats.is_empty() {
                 wl_clipboard_rs::copy::clear(ClipboardType::Regular, Seat::All)?;
             } else {
-                offer_wayland(self.formats)?;
+                offer_wayland(formats)?;
             }
         } else {
-            let text = self
-                .formats
+            let text = formats
                 .iter()
                 .find(|(mime, _)| mime == "UTF8_STRING")
-                .or_else(|| self.formats.first())
+                .or_else(|| formats.first())
                 .map(|(_, data)| data.as_slice())
                 .unwrap_or_default();
             process::write("xclip", &["-selection", "clipboard", "-in"], text)?;
@@ -220,7 +257,7 @@ mod tests {
             if process::wayland() {
                 process::run(
                     "wl-paste",
-                    &["--no-newline", "--type", "text/plain;charset=utf-8"],
+                    &["--no-newline", "--type", WAYLAND_TEXT_TYPE],
                     &[],
                 )
             } else {
@@ -230,13 +267,15 @@ mod tests {
         };
         for copied_again in [false, true] {
             copy_text("Greendale").unwrap();
-            let snapshot = Snapshot::read().unwrap();
-            snapshot.copy_for_paste("Troy Barnes").unwrap();
+            let mut paste = Paste::prepare("Troy Barnes");
+            assert!(paste.can_restore());
+            paste.copy_for_paste().unwrap();
             assert_eq!(read(), b"Troy Barnes");
+            assert!(paste.ready_to_paste().unwrap());
             if copied_again {
                 if process::wayland() {
                     offer_wayland(vec![
-                        ("text/plain;charset=utf-8".into(), b"Troy Barnes".to_vec()),
+                        (WAYLAND_TEXT_TYPE.into(), b"Troy Barnes".to_vec()),
                         ("text/html".into(), b"<b>Troy Barnes</b>".to_vec()),
                     ])
                     .unwrap();
@@ -244,7 +283,10 @@ mod tests {
                     copy_text("Troy Barnes").unwrap();
                 }
             }
-            snapshot.restore_if_unchanged().unwrap();
+            if copied_again && process::wayland() {
+                assert!(!paste.ready_to_paste().unwrap());
+            }
+            paste.restore_if_unchanged().unwrap();
             if copied_again && process::wayland() {
                 let html = process::run("wl-paste", &["--no-newline", "--type", "text/html"], &[])
                     .unwrap();
@@ -260,5 +302,25 @@ mod tests {
                 .as_bytes()
             );
         }
+    }
+
+    #[test]
+    #[ignore = "uses the private Wayland clipboard"]
+    fn a_paste_without_a_marker_checks_the_current_text() {
+        assert!(process::wayland());
+        let mut paste = Paste {
+            text: "Troy Barnes\n",
+            previous: None,
+            selection: None,
+        };
+        paste.copy_for_paste().unwrap();
+        assert!(paste.ready_to_paste().unwrap());
+        copy_text("Greendale").unwrap();
+        assert!(!paste.ready_to_paste().unwrap());
+        paste.restore_if_unchanged().unwrap();
+        assert_eq!(
+            process::run("wl-paste", &["--no-newline"], &[]).unwrap(),
+            b"Greendale"
+        );
     }
 }

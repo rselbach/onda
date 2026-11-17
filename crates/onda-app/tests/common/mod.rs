@@ -783,8 +783,8 @@ pub fn download(model: ModelId, kind: DownloadUpdateKind) -> DownloadUpdate {
 
 // --- history, cleanup, secrets, settings ---
 
-#[derive(Default)]
 pub struct FakeHistory {
+    settings: Arc<FakeSettings>,
     pub entries: Mutex<Vec<(NewEntry, Option<usize>)>>,
     /// What the History page lists, newest first.
     pub stored: Mutex<Vec<HistoryEntry>>,
@@ -823,16 +823,17 @@ impl FakeHistory {
 }
 
 impl HistorySink for FakeHistory {
-    fn save(&self, entry: NewEntry, audio: Option<Arc<[f32]>>) -> Result<(), String> {
-        lock(&self.entries).push((entry, audio.map(|a| a.len())));
-        let hold = lock(&self.hold_save).take();
-        if let Some(hold) = hold {
-            hold.wait();
+    fn save(&self, entry: NewEntry, samples: &[f32]) -> Result<bool, String> {
+        wait_at(&self.hold_save);
+        let settings = lock(&self.settings.settings);
+        if !settings.history_enabled {
+            return Ok(false);
         }
         if self.fail.load(Ordering::SeqCst) {
             return Err("disk full at Greendale".to_owned());
         }
-        Ok(())
+        lock(&self.entries).push((entry, settings.keep_audio.then_some(samples.len())));
+        Ok(true)
     }
 
     fn recent_transcripts(&self) -> Vec<RecentTranscript> {
@@ -1278,7 +1279,6 @@ impl Harness {
             hold_delete: Mutex::default(),
             system_speech: Mutex::default(),
         });
-        let history = Arc::new(FakeHistory::default());
         let cleanup = Arc::new(FakeCleanup::default());
         let secrets = Arc::new(FakeSecrets(
             Mutex::new(Ok(Some("sk-or-greendale".to_owned()))),
@@ -1290,6 +1290,18 @@ impl Harness {
             log: log.clone(),
             invalid_language: Mutex::default(),
             fail_apply: Mutex::default(),
+        });
+        let history = Arc::new(FakeHistory {
+            settings: settings.clone(),
+            entries: Mutex::default(),
+            stored: Mutex::default(),
+            ops: Mutex::default(),
+            op_error: Mutex::default(),
+            hold_save: Mutex::default(),
+            hold_entries: Mutex::default(),
+            hold_recent: Mutex::default(),
+            entries_error: Mutex::default(),
+            fail: AtomicBool::default(),
         });
         let system = Arc::new(FakeSystem {
             log: log.clone(),

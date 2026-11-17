@@ -5,7 +5,6 @@
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::Arc;
 
 use jiff::Timestamp;
 use onda_asr::SpeechEngine;
@@ -186,11 +185,10 @@ pub trait CleanupTransport: Send + Sync {
 
 /// Transcript history (`onda-history` in the app).
 pub trait HistorySink: Send + Sync {
-    /// Saves one entry (HIS-2). `audio` is the session's 16 kHz samples when
-    /// "Keep audio recordings" is on; the store encodes the WAV and fills in
-    /// [`NewEntry::audio_byte_count`], which arrives as `None`. Blocking. An
-    /// error is logged and never blocks delivery.
-    fn save(&self, entry: NewEntry, audio: Option<Arc<[f32]>>) -> Result<(), String>;
+    /// Saves one entry with the current history preferences (HIS-1, HIS-2).
+    /// `samples` holds the session's 16 kHz audio. Returns whether the entry
+    /// was saved. Blocking. An error is logged and never blocks delivery.
+    fn save(&self, entry: NewEntry, samples: &[f32]) -> Result<bool, String>;
 
     /// Up to five newest entries with text, for the tray menu (HIS-28).
     fn recent_transcripts(&self) -> Vec<RecentTranscript>;

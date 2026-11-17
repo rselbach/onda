@@ -321,7 +321,8 @@ fn next_message(message: Option<&UserMessage>) -> Option<UserMessage> {
         Some(AudioProcessingError { .. }) => TranscriptCopiedToClipboard,
         Some(TranscriptCopiedToClipboard) => TargetLeft,
         Some(TargetLeft) => PasteFailed,
-        Some(PasteFailed) => ClipboardRestoreFailed,
+        Some(PasteFailed) => PasteInterrupted,
+        Some(PasteInterrupted) => ClipboardRestoreFailed,
         Some(ClipboardRestoreFailed) => CopyFailed,
         Some(CopyFailed) => Cleanup {
             notice: CleanupNotice::CouldNotRefine {
@@ -376,7 +377,7 @@ fn no_linux_message_names_a_mac_term() {
     let platform = Platform::linux();
     let messages: Vec<UserMessage> =
         std::iter::successors(next_message(None), |message| next_message(Some(message))).collect();
-    assert_eq!(messages.len(), 23, "every message and its variations");
+    assert_eq!(messages.len(), 24, "every message and its variations");
     for message in messages {
         let title = message.title(platform.privacy_naming());
         let body = message.body(platform.tray_term, platform.privacy_naming());

@@ -478,17 +478,23 @@ async fn delete_and_redownload_dl_9_dl_11() {
 }
 
 #[tokio::test]
-async fn delete_refuses_symlink_out_of_models_dir_arch_12() {
-    let f = Fixture::new().await;
+async fn model_removal_refuses_symlink_out_of_models_dir_arch_12() {
+    let mut f = Fixture::new().await;
     let outside = f._temp.path().join("dean-pelton");
     std::fs::create_dir_all(&outside).expect("mkdir");
     std::fs::write(outside.join("costume.txt"), "dalmatian").expect("write");
     std::fs::create_dir_all(&f.models_dir).expect("mkdir");
     symlink(&outside, f.model_dir()).expect("symlink");
 
+    let error = Error::UnsafePath(f.model_dir());
+    assert_eq!(f.manager.delete(MODEL), Err(error.clone()));
+    assert!(f.drain().is_empty());
+    assert_eq!(f.manager.redownload(MODEL).await, Err(error.clone()));
     assert_eq!(
-        f.manager.delete(MODEL),
-        Err(Error::UnsafePath(f.model_dir()))
+        f.drain(),
+        vec![DownloadEventKind::Failed {
+            error: error.to_string(),
+        }]
     );
     assert!(outside.join("costume.txt").exists());
     assert!(f.model_dir().symlink_metadata().is_ok(), "link removed");

@@ -186,6 +186,8 @@ pub enum UserMessage {
     TargetLeft,
     /// OUT-4: paste could not be simulated.
     PasteFailed,
+    /// Clipboard contents could not be confirmed before paste.
+    PasteInterrupted,
     /// OUT-5: the previous clipboard could not be restored.
     ClipboardRestoreFailed,
     /// OUT-6: copying failed.
@@ -243,6 +245,7 @@ impl UserMessage {
                 "Transcript Copied to Clipboard"
             }
             Self::PasteFailed => "Paste Failed",
+            Self::PasteInterrupted => "Paste Interrupted",
             Self::ClipboardRestoreFailed => "Clipboard Restore Failed",
             Self::CopyFailed => "Copy Failed",
             Self::Cleanup { notice, .. } => notice.title(),
@@ -279,6 +282,10 @@ impl UserMessage {
                     .to_owned()
             }
             Self::PasteFailed => "Could not simulate paste command. Text is in clipboard.".to_owned(),
+            Self::PasteInterrupted => {
+                "Onda skipped the paste because it couldn't confirm that the clipboard still held the transcript."
+                    .to_owned()
+            }
             Self::ClipboardRestoreFailed => {
                 "Could not restore your previous clipboard contents. They may have been lost."
                     .to_owned()
@@ -334,6 +341,7 @@ impl UserMessage {
             | Self::TranscriptCopiedToClipboard
             | Self::TargetLeft
             | Self::PasteFailed
+            | Self::PasteInterrupted
             | Self::ClipboardRestoreFailed
             | Self::CopyFailed
             | Self::Cleanup { .. } => MessageClass::Feedback,

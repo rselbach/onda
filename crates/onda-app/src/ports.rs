@@ -51,6 +51,8 @@ pub enum InsertOutcome {
     /// The paste key event could not be created; the text stays on the
     /// clipboard (OUT-4).
     PasteFailed,
+    /// The clipboard could no longer be confirmed before sending the paste.
+    PasteInterrupted,
     /// The text was pasted but the previous clipboard could not be restored
     /// (OUT-5).
     ClipboardRestoreFailed,
@@ -67,6 +69,7 @@ impl InsertOutcome {
             Self::Inserted | Self::Cancelled => None,
             Self::TargetLeft => Some(UserMessage::TargetLeft),
             Self::PasteFailed => Some(UserMessage::PasteFailed),
+            Self::PasteInterrupted => Some(UserMessage::PasteInterrupted),
             Self::ClipboardRestoreFailed => Some(UserMessage::ClipboardRestoreFailed),
             Self::CopyFailed => Some(UserMessage::CopyFailed),
         }

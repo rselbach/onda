@@ -34,11 +34,10 @@ impl History {
 }
 
 impl HistorySink for History {
-    fn save(&self, entry: NewEntry, audio: Option<Arc<[f32]>>) -> Result<(), String> {
-        let samples = audio.as_deref().unwrap_or(&[]);
+    fn save(&self, entry: NewEntry, samples: &[f32]) -> Result<bool, String> {
         self.store
             .save(entry, samples, self.preferences(), Timestamp::now())
-            .map(|_| ())
+            .map(|saved| saved.is_some())
             .map_err(|error| error.to_string())
     }
 

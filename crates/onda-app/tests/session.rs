@@ -1863,6 +1863,14 @@ async fn delivery_outcomes_show_their_notices() {
             want_notices: vec!["Paste Failed"],
         },
         Case {
+            name: "clipboard changed before paste",
+            output_mode: OutputMode::Type,
+            accessibility_at_delivery: true,
+            insert: InsertOutcome::PasteInterrupted,
+            copy_ok: true,
+            want_notices: vec!["Paste Interrupted"],
+        },
+        Case {
             name: "restore failed (OUT-5)",
             output_mode: OutputMode::Type,
             accessibility_at_delivery: true,
@@ -2265,6 +2273,22 @@ async fn his_1_history_preferences_are_read_at_save_time() {
         assert_eq!(h.history.audio_lengths(), tc.want_audio, "{}", tc.name);
         assert_eq!(h.typed(), vec!["hello world"], "{}", tc.name);
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn enabling_audio_while_history_save_waits_keeps_the_recording() {
+    let h = Harness::with(|s| s.activation_mode = ActivationMode::Toggle).await;
+    let hold = common::Hold::new();
+    *lock(&h.history.hold_save) = Some(hold.clone());
+    h.tap();
+    sleep(500).await;
+    h.stop_now();
+    eventually("history save", || hold.started()).await;
+    h.update(|s| s.keep_audio = true);
+    hold.release();
+
+    eventually("dictation delivered", || !h.typed().is_empty()).await;
+    assert_eq!(h.history.audio_lengths(), vec![Some(16_000)]);
 }
 
 #[tokio::test(start_paused = true)]

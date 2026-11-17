@@ -264,11 +264,21 @@ impl ModelManager {
     }
 
     /// Deletes the folder of `model`, if any, and downloads it again
-    /// (DL-11).
+    /// (DL-11). A deletion failure also reports a failed download. If a
+    /// download is already running, its own task reports the outcome.
     pub async fn redownload(&self, model: ModelId) -> Result<PathBuf, Error> {
         match self.delete(model) {
             Ok(()) | Err(Error::Model(ModelError::NotFound { .. })) => {}
-            Err(error) => return Err(error),
+            Err(error @ Error::Downloading(_)) => return Err(error),
+            Err(error) => {
+                self.inner.emit(
+                    model,
+                    DownloadEventKind::Failed {
+                        error: error.to_string(),
+                    },
+                );
+                return Err(error);
+            }
         }
         self.download(model).await
     }

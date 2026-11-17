@@ -1311,26 +1311,19 @@ impl Actor {
                 output_mode: settings.output_mode,
             });
         }
-        // history preferences are read at save time (HIS-1)
-        let fresh = self.ports.settings.snapshot();
-        if !fresh.history_enabled {
-            self.saved(id, false);
-            return;
-        }
         let entry = NewEntry {
             model_name: self.catalog.model(model).map(|info| info.name.to_owned()),
             ..entry
         };
         let history = self.ports.history.clone();
-        let audio = fresh.keep_audio.then_some(audio);
         let started = Instant::now();
         if let Some((head, _, _)) = self.pipeline_mut(id) {
             head.timings.history = Some((started, started));
         }
         // a save cannot be interrupted, so it is not tied to the session
         tokio::spawn(blocking_send(self.messages.clone(), move || {
-            let saved = match history.save(entry, audio) {
-                Ok(()) => true,
+            let saved = match history.save(entry, &audio) {
+                Ok(saved) => saved,
                 Err(error) => {
                     // never blocks delivery (HIS-2)
                     tracing::error!(%error, "could not save history");
