@@ -47,23 +47,6 @@ impl Output {
         }
     }
 
-    fn copy_text(&self, text: &str) -> anyhow::Result<()> {
-        if process::wayland() {
-            process::write(
-                "wl-copy",
-                &["--type", "text/plain;charset=utf-8"],
-                text.as_bytes(),
-            )?;
-        } else {
-            process::write(
-                "xclip",
-                &["-selection", "clipboard", "-in"],
-                text.as_bytes(),
-            )?;
-        }
-        Ok(())
-    }
-
     // Everything that waits comes before the commit: the held shortcut
     // keys and, without a virtual keyboard, the RemoteDesktop consent
     // prompt. None when the delivery was cancelled during the prompt.
@@ -74,7 +57,13 @@ impl Output {
         if !process::wayland() {
             return Some(Ok(Keyboard::Xdotool));
         }
-        if virtual_keyboard() && process::available("wtype") {
+        if process::available("wtype")
+            && process::wayland_globals_match(|globals| {
+                globals
+                    .iter()
+                    .any(|g| g.interface == "zwp_virtual_keyboard_manager_v1")
+            })
+        {
             return Some(Ok(Keyboard::Wtype));
         }
         unless_cancelled(
@@ -310,7 +299,11 @@ impl TextOutput for Output {
         if !delivery.commit() {
             return InsertOutcome::Cancelled;
         }
-        if let Err(error) = self.copy_text(text) {
+        let copied = match &previous {
+            Some(snapshot) => snapshot.copy_for_paste(text),
+            None => super::clipboard::copy_text(text),
+        };
+        if let Err(error) = copied {
             tracing::warn!(%error, "clipboard write failed");
             return InsertOutcome::CopyFailed;
         }
@@ -325,7 +318,7 @@ impl TextOutput for Output {
             Ok(()) => {
                 if let Some(previous) = previous {
                     std::thread::sleep(Duration::from_millis(500));
-                    if let Err(error) = previous.restore_if_unchanged(text) {
+                    if let Err(error) = previous.restore_if_unchanged() {
                         tracing::debug!(%error, "clipboard restoration unavailable");
                     }
                 }
@@ -343,7 +336,7 @@ impl TextOutput for Output {
         if !delivery.commit() {
             return CopyOutcome::Cancelled;
         }
-        match self.copy_text(text) {
+        match super::clipboard::copy_text(text) {
             Ok(()) => CopyOutcome::Copied,
             Err(error) => {
                 tracing::warn!(%error, "clipboard write failed");
@@ -375,32 +368,6 @@ fn wtype_arguments(shift: bool) -> Vec<String> {
     // GTK 3 skips the last keycode during reverse lookup; leave V before it.
     args.extend(["-m", "ctrl", "-p", "VoidSymbol"].map(String::from));
     args
-}
-
-fn virtual_keyboard() -> bool {
-    use wayland_client::{Connection, Dispatch, QueueHandle, globals::registry_queue_init};
-    use wayland_client::{globals::GlobalListContents, protocol::wl_registry};
-    struct Registry;
-    impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Registry {
-        fn event(
-            _: &mut Self,
-            _: &wl_registry::WlRegistry,
-            _: wl_registry::Event,
-            _: &GlobalListContents,
-            _: &Connection,
-            _: &QueueHandle<Self>,
-        ) {
-        }
-    }
-    Connection::connect_to_env()
-        .ok()
-        .and_then(|connection| registry_queue_init::<Registry>(&connection).ok())
-        .is_some_and(|(globals, _)| {
-            globals.contents().with_list(|list| {
-                list.iter()
-                    .any(|global| global.interface == "zwp_virtual_keyboard_manager_v1")
-            })
-        })
 }
 
 #[cfg(test)]

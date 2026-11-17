@@ -890,7 +890,7 @@ fn concurrent_saves_all_land() {
     let f = Fixture::new();
     std::thread::scope(|scope| {
         for thread in 0..4u128 {
-            let store = &f.store;
+            let store = HistoryStore::new(&f.history, Hooks(f.recorder.clone()));
             scope.spawn(move || {
                 for i in 0..5u128 {
                     let n = thread * 100 + i;
@@ -910,4 +910,55 @@ fn concurrent_saves_all_land() {
     assert_eq!(f.store.entries().expect("entries").len(), 20);
     assert_eq!(f.reopen().entries().expect("reload").len(), 20);
     assert_eq!(f.changes(), 20);
+}
+
+#[test]
+fn another_store_refreshes_entries_and_retention_after_external_changes() {
+    let f = Fixture::new();
+    let other = f.reopen();
+    assert!(other.entries().unwrap().is_empty());
+    f.save(1, DAY * 10, true, HistoryRetention::Month);
+    assert_eq!(ids(&other.entries().unwrap()), [1]);
+    assert!(
+        other
+            .apply_retention(HistoryRetention::Week, at(NOW))
+            .unwrap()
+    );
+    assert!(f.store.entries().unwrap().is_empty());
+
+    f.save(2, DAY, true, HistoryRetention::Month);
+    other.delete_all().unwrap();
+    assert!(f.store.entries().unwrap().is_empty());
+    f.save(3, DAY, false, HistoryRetention::Month);
+    assert_eq!(ids(&other.entries().unwrap()), [3]);
+}
+
+#[test]
+fn only_finished_entries_are_visible_in_the_history_directory() {
+    let f = Fixture::new();
+    std::fs::create_dir_all(&f.history).unwrap();
+    let entry = new_entry(1, DAY).into_entry();
+    let destination = f.history.join(entry.directory_name.as_str());
+    f.store
+        .write_entry_folder(&destination, |staged| {
+            std::fs::write(staged.join(AUDIO_FILENAME), b"RIFF").unwrap();
+            assert!(!destination.exists());
+            assert!(
+                staged
+                    .file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .starts_with('.')
+            );
+            std::fs::write(
+                staged.join(METADATA_FILENAME),
+                encode_metadata(&entry).unwrap(),
+            )
+            .unwrap();
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(ids(&f.reopen().entries().unwrap()), [1]);
+    assert!(destination.join(AUDIO_FILENAME).is_file());
 }

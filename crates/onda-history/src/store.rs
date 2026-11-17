@@ -1,4 +1,6 @@
-use std::io::ErrorKind;
+use std::fs::{File, OpenOptions};
+use std::io::{ErrorKind, Read, Seek, Write};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
@@ -13,6 +15,9 @@ use uuid::Uuid;
 
 use crate::error::{HistoryError, io_error};
 use crate::fs::{remove_descendant, resolve_descendant, write_atomic};
+
+const STAGING_PREFIX: &str = ".onda-pending-";
+const STAGING_SUFFIX_LEN: usize = 16;
 
 /// History settings as read at save time (HIS-1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,7 +48,7 @@ pub trait HistoryHooks: Send + Sync {
 ///
 /// The list is loaded from disk on first use, pruning bad entry folders
 /// (HIS-8), then kept in step with every change, so saving never rescans the
-/// folder (HIS-9). All methods are synchronous and serialized by one lock.
+/// folder after its own writes (HIS-9). Other writers invalidate the cache.
 pub struct HistoryStore {
     directory: PathBuf,
     hooks: Box<dyn HistoryHooks>,
@@ -52,6 +57,7 @@ pub struct HistoryStore {
 
 #[derive(Default)]
 struct State {
+    generation: u64,
     // `None` until the first load.
     entries: Option<Vec<HistoryEntry>>,
     // the folder exists and backup exclusion was requested.
@@ -80,7 +86,7 @@ impl HistoryStore {
     /// Entries, newest first (HIS-9). Loads and prunes the folder on first
     /// call (HIS-8).
     pub fn entries(&self) -> Result<Vec<HistoryEntry>, HistoryError> {
-        self.with_state(|state| {
+        self.with_state(false, |state| {
             self.load_once(&mut state.entries)
                 .map(|entries| entries.clone())
         })
@@ -106,8 +112,9 @@ impl HistoryStore {
         if !preferences.enabled {
             return Ok(None);
         }
-        let result =
-            self.with_state(|state| self.save_locked(state, new, samples, preferences, now));
+        let result = self.with_state(true, |state| {
+            self.save_locked(state, new, samples, preferences, now)
+        });
         match result {
             Ok(entry) => Ok(Some(entry)),
             Err(err) => {
@@ -126,12 +133,14 @@ impl HistoryStore {
         retention: HistoryRetention,
         now: Timestamp,
     ) -> Result<bool, HistoryError> {
-        self.with_state(|state| self.enforce_retention(state, retention, now, None))
+        self.with_state(true, |state| {
+            self.enforce_retention(state, retention, now, None)
+        })
     }
 
     /// Deletes one entry's folder. An unknown id is not an error.
     pub fn delete(&self, id: Uuid) -> Result<(), HistoryError> {
-        self.with_state(|state| {
+        self.with_state(true, |state| {
             let State {
                 entries, changed, ..
             } = state;
@@ -152,7 +161,7 @@ impl HistoryStore {
     /// history folder is refused rather than unlinked, since unlinking would
     /// leave the transcripts on disk (ARCH-12).
     pub fn delete_all(&self) -> Result<(), HistoryError> {
-        self.with_state(|state| {
+        self.with_state(true, |state| {
             let removal = match std::fs::symlink_metadata(&self.directory) {
                 Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
                 Err(err) => return Err(io_error("read", &self.directory, &err)),
@@ -181,7 +190,7 @@ impl HistoryStore {
     /// with [`HistoryError::UnsafePath`] when the file resolves outside the
     /// history folder or is a symlink.
     pub fn audio_path(&self, id: Uuid) -> Result<PathBuf, HistoryError> {
-        self.with_state(|state| {
+        self.with_state(false, |state| {
             let entries = self.load_once(&mut state.entries)?;
             let audio = entries
                 .iter()
@@ -201,9 +210,14 @@ impl HistoryStore {
     }
 
     // runs `op` under the lock, then reports a change with the lock released.
-    fn with_state<T>(&self, op: impl FnOnce(&mut State) -> T) -> T {
+    fn with_state<T>(
+        &self,
+        may_write: bool,
+        op: impl FnOnce(&mut State) -> Result<T, HistoryError>,
+    ) -> Result<T, HistoryError> {
         let (result, changed) = {
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            let _lock = self.lock_history(&mut state, may_write)?;
             let result = op(&mut state);
             (result, std::mem::take(&mut state.changed))
         };
@@ -211,6 +225,45 @@ impl HistoryStore {
             self.hooks.history_changed();
         }
         result
+    }
+
+    // The lock survives Clear History. Advance its generation before a mutation
+    // so even a writer that exits mid-operation invalidates other caches.
+    fn lock_history(&self, state: &mut State, may_write: bool) -> Result<File, HistoryError> {
+        let path = self.directory.with_added_extension("lock");
+        let mut acquire = || -> std::io::Result<File> {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let mut file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+                .mode(0o600)
+                .open(&path)?;
+            file.lock()?;
+            let mut bytes = [0u8; 8];
+            let generation = match file.read_exact(&mut bytes) {
+                Ok(()) => u64::from_le_bytes(bytes),
+                Err(error) if error.kind() == ErrorKind::UnexpectedEof => 0,
+                Err(error) => return Err(error),
+            };
+            if state.generation != generation {
+                state.entries = None;
+                state.directory_prepared = false;
+            }
+            state.generation = generation;
+            if may_write {
+                let next = generation.wrapping_add(1);
+                file.rewind()?;
+                file.write_all(&next.to_le_bytes())?;
+                state.generation = next;
+            }
+            Ok(file)
+        };
+        acquire().map_err(|err| io_error("lock", &path, &err))
     }
 
     fn save_locked(
@@ -253,27 +306,28 @@ impl HistoryStore {
         Ok(entry)
     }
 
-    // creates the folder (failing if it already exists, so a folder this
-    // store did not create is never removed), runs `write`, and removes the
-    // folder again when `write` fails (HIS-7).
+    // Older readers also skip hidden folders while the entry is being written.
     pub(crate) fn write_entry_folder(
         &self,
         folder: &Path,
         write: impl FnOnce(&Path) -> Result<(), HistoryError>,
     ) -> Result<(), HistoryError> {
-        std::fs::create_dir(folder).map_err(|err| io_error("create", folder, &err))?;
-        let Err(err) = write(folder) else {
-            return Ok(());
-        };
-        tracing::error!(path = %folder.display(), error = %err, "could not write history entry");
-        if let Err(cleanup) = remove_descendant(&self.directory, folder) {
-            tracing::error!(
-                path = %folder.display(),
-                error = %cleanup,
-                "could not remove partial history entry"
-            );
-        }
-        Err(err)
+        let staged = tempfile::Builder::new()
+            .prefix(STAGING_PREFIX)
+            .rand_bytes(STAGING_SUFFIX_LEN)
+            .tempdir_in(&self.directory)
+            .map_err(|err| io_error("create", folder, &err))?;
+        write(staged.path())?;
+        rustix::fs::renameat_with(
+            rustix::fs::CWD,
+            staged.path(),
+            rustix::fs::CWD,
+            folder,
+            rustix::fs::RenameFlags::NOREPLACE,
+        )
+        .map_err(|err| io_error("publish", folder, &err.into()))?;
+        let _ = staged.keep();
+        Ok(())
     }
 
     fn prepare_directory(&self, state: &mut State) -> Result<(), HistoryError> {
@@ -364,6 +418,15 @@ impl HistoryStore {
             let Some(name) = file_name.to_str() else {
                 continue;
             };
+            if is_dir
+                && name.strip_prefix(STAGING_PREFIX).is_some_and(|suffix| {
+                    suffix.len() == STAGING_SUFFIX_LEN
+                        && suffix.bytes().all(|byte| byte.is_ascii_alphanumeric())
+                })
+            {
+                remove_descendant(&self.directory, &path)?;
+                continue;
+            }
             if !is_dir || name.starts_with('.') {
                 continue;
             }

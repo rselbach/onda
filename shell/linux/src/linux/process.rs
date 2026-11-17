@@ -162,6 +162,29 @@ pub fn wayland() -> bool {
     std::env::var_os("WAYLAND_DISPLAY").is_some_and(|value| !value.is_empty())
 }
 
+pub(super) fn wayland_globals_match(
+    check: impl FnOnce(&[wayland_client::globals::Global]) -> bool,
+) -> bool {
+    use wayland_client::{Connection, Dispatch, QueueHandle, globals::registry_queue_init};
+    use wayland_client::{globals::GlobalListContents, protocol::wl_registry};
+    struct Registry;
+    impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Registry {
+        fn event(
+            _: &mut Self,
+            _: &wl_registry::WlRegistry,
+            _: wl_registry::Event,
+            _: &GlobalListContents,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+    Connection::connect_to_env()
+        .ok()
+        .and_then(|connection| registry_queue_init::<Registry>(&connection).ok())
+        .is_some_and(|(globals, _)| globals.contents().with_list(check))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

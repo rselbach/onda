@@ -2680,6 +2680,7 @@ version = "0.1.0"
 dependencies = [
  "jiff",
  "onda-domain",
+ "rustix",
  "serde_json",
  "tempfile",
  "tracing",
