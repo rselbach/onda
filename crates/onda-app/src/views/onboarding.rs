@@ -240,7 +240,7 @@ pub struct OnboardingView {
     pub step: OnboardingStep,
     /// Slide in from the trailing edge (forward) or the leading edge.
     pub forward: bool,
-    /// Segmented progress; hidden on Welcome.
+    /// Segmented progress; hidden on the first step.
     pub progress: Option<OnboardingProgress>,
     /// The selected model's running download.
     pub download: Option<OnboardingDownload>,
@@ -250,7 +250,7 @@ pub struct OnboardingView {
     pub back_title: String,
     /// Why the primary button is disabled.
     pub hint: Option<String>,
-    /// "Get Started", "Continue", or "Start Dictating"
+    /// "Get Started", "Continue", "Start Dictating", or "Done"
     /// (`onboarding_continue`); the default action on Return.
     pub primary_title: String,
     /// The primary button is enabled.

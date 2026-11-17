@@ -11,6 +11,7 @@ use onda_domain::languages::LanguageSetting;
 use onda_domain::messages::{LoginItemError, LoginItemRegistryStatus, LoginItemStatus};
 use onda_domain::migration::{Migration, NoticeChoice};
 use onda_domain::models::ModelId;
+use onda_domain::onboarding::OnboardingOrigin;
 use onda_domain::setup::{PermissionFix, SetupAction, base_model_to_download};
 use onda_domain::types::{ActivationMode, HistoryRetention, MicrophonePermission, OutputMode};
 use onda_domain::updates::UpdateAction;
@@ -366,7 +367,7 @@ impl Actor {
             UiMsg::ConfirmHistoryDialog => self.confirm_history_dialog(),
             UiMsg::CancelHistoryDialog => self.ui.history.dialog = None,
             UiMsg::DismissHistoryError => self.ui.history.error = None,
-            UiMsg::RunSetupAgain => self.open_onboarding(true),
+            UiMsg::RunSetupAgain => self.open_onboarding(OnboardingOrigin::RunSetupAgain),
             UiMsg::OnboardingContinue => self.onboarding_continue(),
             UiMsg::OnboardingBack => self.onboarding_back(),
             UiMsg::OnboardingClosed => self.onboarding_closed(),
@@ -398,7 +399,7 @@ impl Actor {
                 self.ui.launch_onboarding = None;
                 self.refresh_settings();
                 if self.settings.first_run_pending {
-                    self.open_onboarding(false);
+                    self.open_onboarding(OnboardingOrigin::Automatic);
                 }
             }
             UiMsg::ShowNotice => self.show_pending_notice(),
@@ -624,9 +625,9 @@ impl Actor {
                 PermissionFix::OpenMicrophoneSettings => {
                     permissions.open_settings(PrivacyPane::Microphone);
                 }
+                // no system prompt: the window's guide beside the pane offers
+                // Onda to drag into the list (ONB-6)
                 PermissionFix::OpenAccessibilitySettings => {
-                    // the prompt adds Onda to the list, then the pane opens
-                    permissions.prompt_accessibility();
                     permissions.open_settings(PrivacyPane::Accessibility);
                 }
             }

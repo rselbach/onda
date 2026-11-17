@@ -8,12 +8,15 @@ mod common;
 use std::sync::atomic::Ordering;
 
 use common::{Harness, lock, sleep};
-use onda_app::HotkeyEvent;
+use onda_app::views::{OnboardingContent, OnboardingView};
+use onda_app::{Event, HotkeyEvent};
 use onda_domain::hotkey::{
     GlobeKeyAction, HeldModifiers, KeyCode, Modifier, ModifierFlagsChange, ModifierKey,
     ModifierSet, RecorderEvent, Shortcut,
 };
+use onda_domain::onboarding::{OnboardingFlags, OnboardingStep};
 use onda_domain::platform::Platform;
+use onda_domain::setup::PermissionFix;
 use onda_domain::tray::TrayIcon;
 use onda_domain::types::ActivationMode;
 
@@ -53,6 +56,25 @@ fn starts(h: &Harness) -> u64 {
 
 fn registrations(h: &Harness) -> usize {
     h.log.with("hotkey:register").len()
+}
+
+fn wizard_opened(h: &Harness) -> usize {
+    h.count(|e| matches!(e, Event::OpenOnboarding))
+}
+
+fn wizard(h: &Harness) -> OnboardingView {
+    h.last(|e| match e {
+        Event::OnboardingChanged(view) => Some(*view),
+        _ => None,
+    })
+    .expect("an onboarding view")
+}
+
+fn typing_access_granted(view: &OnboardingView) -> bool {
+    let OnboardingContent::Permissions { typing_access, .. } = &view.content else {
+        panic!("the permissions step: {view:?}");
+    };
+    typing_access.granted
 }
 
 fn recording(h: &Harness) -> bool {
@@ -365,7 +387,11 @@ async fn hot_18_unregistering_while_held_delivers_the_key_up() {
 #[tokio::test(start_paused = true)]
 async fn hot_19_lone_modifier_failure_polls_and_retries_once_trusted() {
     let h = failing_lone(1, false).await;
-    assert_eq!(h.notifications(), vec!["Hotkey Registration Failed"]);
+    assert_eq!(wizard_opened(&h), 1, "where Typing Access is granted");
+    assert!(h.notifications().is_empty());
+    let view = wizard(&h);
+    assert_eq!(view.step, OnboardingStep::Permissions);
+    assert!(!typing_access_granted(&view));
     let reads = h.permissions.trust_reads.load(Ordering::SeqCst);
     sleep(4_100).await;
     assert_eq!(registrations(&h), 1, "no retry while untrusted");
@@ -376,7 +402,14 @@ async fn hot_19_lone_modifier_failure_polls_and_retries_once_trusted() {
     h.permissions.accessibility.store(true, Ordering::SeqCst);
     sleep(2_100).await;
     assert_eq!(registrations(&h), 2, "retried once trusted");
-    assert_eq!(h.notifications().len(), 1);
+    assert!(
+        typing_access_granted(&wizard(&h)),
+        "the card follows the grant"
+    );
+    assert_eq!(wizard_opened(&h), 1);
+    // the open wizard re-reads permissions every second (ONB-2)
+    h.app.onboarding_continue();
+    sleep(10).await;
     let reads = h.permissions.trust_reads.load(Ordering::SeqCst);
     sleep(10_000).await;
     assert_eq!(
@@ -392,7 +425,12 @@ async fn hot_19_lone_modifier_failure_polls_and_retries_once_trusted() {
 #[tokio::test(start_paused = true)]
 async fn hot_19_failure_while_trusted_waits_for_a_trust_toggle() {
     let h = failing_lone(2, true).await;
-    assert_eq!(h.notifications().len(), 1);
+    assert_eq!(
+        h.notifications().len(),
+        1,
+        "trusted: the cause is elsewhere"
+    );
+    assert_eq!(wizard_opened(&h), 0);
     sleep(6_100).await;
     assert_eq!(registrations(&h), 1, "trusted to trusted never retries");
     h.permissions.accessibility.store(false, Ordering::SeqCst);
@@ -424,7 +462,71 @@ async fn hot_19_explicit_registration_starts_a_new_episode() {
     h.app.set_hotkey(Shortcut::lone(ModifierKey::AltRight));
     sleep(10).await;
     assert_eq!(registrations(&h), 2);
-    assert_eq!(h.notifications().len(), 2, "each episode notifies once");
+    assert_eq!(
+        wizard_opened(&h),
+        2,
+        "each episode brings the Permissions step forward"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn hot_19_the_permissions_step_alone_closes_on_done() {
+    let h = failing_lone(1, false).await;
+    let view = wizard(&h);
+    assert_eq!(view.primary_title, "Done");
+    assert!(view.primary_enabled, "Done never waits for the grant");
+    assert_eq!(view.progress, None);
+    assert!(!view.back_visible);
+    let OnboardingContent::Permissions { clipboard_link, .. } = view.content else {
+        panic!("the permissions step");
+    };
+    assert_eq!(
+        clipboard_link, None,
+        "clipboard output would leave the hotkey unregistered"
+    );
+    let loads = h.script.calls().len();
+    h.app.onboarding_continue();
+    sleep(10).await;
+    assert_eq!(h.count(|e| matches!(e, Event::CloseOnboarding)), 1);
+    assert!(
+        h.log.with("settings:Onboarding").is_empty(),
+        "setup stays as it was"
+    );
+    assert_eq!(h.script.calls().len(), loads, "no model load");
+}
+
+#[tokio::test(start_paused = true)]
+async fn onb_6_open_settings_opens_the_pane_without_a_system_prompt() {
+    let h = failing_lone(1, false).await;
+    h.app
+        .fix_permission(PermissionFix::OpenAccessibilitySettings);
+    sleep(10).await;
+    assert_eq!(
+        h.log.with("permissions:"),
+        vec!["permissions:open-settings Accessibility"]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn hot_19_first_run_leaves_typing_access_to_the_wizard() {
+    let h = Harness::unstarted(|s| {
+        s.hotkey = Shortcut::lone(ModifierKey::AltRight);
+        s.onboarding = OnboardingFlags::default();
+    });
+    h.permissions.accessibility.store(false, Ordering::SeqCst);
+    h.shell.fail_registrations(1, STREAM_STATUS);
+    h.app.ui_ready();
+    sleep(800).await;
+    assert_eq!(wizard_opened(&h), 1);
+    assert_eq!(
+        wizard(&h).step,
+        OnboardingStep::Welcome,
+        "the whole first-run wizard"
+    );
+    assert!(h.notifications().is_empty());
+    h.permissions.accessibility.store(true, Ordering::SeqCst);
+    sleep(2_100).await;
+    assert_eq!(registrations(&h), 2, "the episode still retries");
 }
 
 #[tokio::test(start_paused = true)]
@@ -433,8 +535,8 @@ async fn hot_19_combo_failure_ends_a_lone_modifier_episode() {
     h.app.set_hotkey(Shortcut::OPTION_SPACE);
     sleep(10).await;
     assert_eq!(
-        h.notifications().len(),
-        2,
+        h.notifications(),
+        vec!["Hotkey Registration Failed"],
         "a combo failure always notifies"
     );
     h.permissions.accessibility.store(true, Ordering::SeqCst);

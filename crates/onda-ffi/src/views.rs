@@ -16,8 +16,8 @@ use onda_app::views::{
     OnboardingView, OtherModelsView, OutputModeOption, OutputModePicker, PermissionCardView,
     PermissionFixButton, PermissionRowView, PostProcessingDetails, PostProcessingPage,
     PresetCardView, PromptEditorView, PromptSummaryView, ProvidersDialog, ReplacementRowView,
-    ReplacementsPage, RetentionOption, SidebarGroup, SidebarPage, SpeechAlert, SpeechPage,
-    ToggleView, UpdateNotice, sidebar,
+    ReplacementsPage, RetentionOption, SettingsGuideView, SidebarGroup, SidebarPage, SpeechAlert,
+    SpeechPage, ToggleView, UpdateNotice, sidebar,
 };
 use onda_domain::history::ContextMenuItem;
 use onda_domain::hotkey::HotkeyPreset;
@@ -306,6 +306,17 @@ pub struct PermissionFixButton {
     pub title: String,
     /// What it does; pass to `fix_permission`.
     pub fix: PermissionFix,
+    /// How to walk the user through System Settings once it opens.
+    pub guide: Option<SettingsGuideView>,
+}
+
+/// What the window shows beside System Settings during a grant (ONB-6).
+#[uniffi::remote(Record)]
+pub struct SettingsGuideView {
+    /// Replaces the card's detail until the permission is granted.
+    pub hint: String,
+    /// Offer Onda's icon to drag into the pane's list.
+    pub accepts_dropped_app: bool,
 }
 
 /// One General page permission row (WIN-8).
@@ -1313,7 +1324,7 @@ pub struct OnboardingView {
     pub step: OnboardingStep,
     /// Slide in from the trailing edge (forward) or the leading edge.
     pub forward: bool,
-    /// Segmented progress; hidden on Welcome.
+    /// Segmented progress; hidden on the first step.
     pub progress: Option<OnboardingProgress>,
     /// The selected model's running download.
     pub download: Option<OnboardingDownload>,
@@ -1323,7 +1334,7 @@ pub struct OnboardingView {
     pub back_title: String,
     /// Why the primary button is disabled.
     pub hint: Option<String>,
-    /// "Get Started", "Continue", or "Start Dictating"
+    /// "Get Started", "Continue", "Start Dictating", or "Done"
     /// (`onboarding_continue`); the default action on Return.
     pub primary_title: String,
     /// The primary button is enabled.

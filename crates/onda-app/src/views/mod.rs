@@ -198,6 +198,17 @@ pub struct PermissionFixButton {
     pub title: String,
     /// What it does; pass to `fix_permission`.
     pub fix: PermissionFix,
+    /// How to walk the user through System Settings once it opens.
+    pub guide: Option<SettingsGuideView>,
+}
+
+/// What the window shows beside System Settings during a grant (ONB-6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingsGuideView {
+    /// Replaces the card's detail until the permission is granted.
+    pub hint: String,
+    /// Offer Onda's icon to drag into the pane's list.
+    pub accepts_dropped_app: bool,
 }
 
 impl From<PermissionFix> for PermissionFixButton {
@@ -205,6 +216,10 @@ impl From<PermissionFix> for PermissionFixButton {
         Self {
             title: fix.title().to_owned(),
             fix,
+            guide: fix.settings_guide().map(|guide| SettingsGuideView {
+                hint: guide.hint.to_owned(),
+                accepts_dropped_app: guide.accepts_dropped_app,
+            }),
         }
     }
 }

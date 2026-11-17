@@ -202,9 +202,6 @@ pub trait Permissions: Send + Sync {
     /// Whether Accessibility is granted, read fresh.
     fn accessibility_trusted(&self) -> bool;
 
-    /// Shows the system Accessibility prompt.
-    fn prompt_accessibility(&self);
-
     /// Opens the privacy settings pane for `pane`, falling back to the
     /// general privacy pane (PERM-3).
     fn open_settings(&self, pane: PrivacyPane);

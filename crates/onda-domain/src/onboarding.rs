@@ -125,6 +125,9 @@ pub enum OnboardingOrigin {
     Automatic,
     /// "Run Setup Again" (WIN-4).
     RunSetupAgain,
+    /// A lone-modifier hotkey could not register without the typing
+    /// permission (HOT-19): only the Permissions step, closed by "Done".
+    TypingAccessLost,
 }
 
 /// A model's download status.
@@ -175,6 +178,9 @@ pub enum OnboardingEffect {
     /// "Start Dictating": save [`OnboardingFlags::finished`], close the
     /// window, and load the model unless a load is in flight (ONB-10).
     Finish,
+    /// "Done" on the Permissions step alone: close the window as its close
+    /// button would ([`Onboarding::close`]).
+    Close,
 }
 
 /// What picking a language changes (ONB-4).
@@ -215,6 +221,7 @@ pub struct CloseOutcome {
 /// The onboarding wizard's own state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Onboarding {
+    origin: OnboardingOrigin,
     previously_completed: bool,
     steps: Vec<OnboardingStep>,
     // always indexes `steps`: it starts at 0 and moves one step at a time
@@ -240,10 +247,18 @@ impl Onboarding {
             OnboardingOrigin::RunSetupAgain => {
                 flags.onboarding_completed || flags.did_show_first_run_setup
             }
+            OnboardingOrigin::TypingAccessLost => flags.onboarding_completed,
+        };
+        let steps = match origin {
+            OnboardingOrigin::TypingAccessLost => vec![OnboardingStep::Permissions],
+            OnboardingOrigin::Automatic | OnboardingOrigin::RunSetupAgain => {
+                OnboardingStep::on_platform(platform)
+            }
         };
         Self {
+            origin,
             previously_completed,
-            steps: OnboardingStep::on_platform(platform),
+            steps,
             position: 0,
             navigating_forward: true,
             language: stored_language.filter(|code| !code.is_empty()),
@@ -260,6 +275,12 @@ impl Onboarding {
     /// The selected language, if any.
     pub fn language(&self) -> Option<&str> {
         self.language.as_deref()
+    }
+
+    // clipboard output cannot stand in for the permission a lone-modifier
+    // hotkey needs, and "Done" never has to wait for it
+    fn permissions_only(&self) -> bool {
+        self.origin == OnboardingOrigin::TypingAccessLost
     }
 
     /// The user chose "Use the clipboard instead".
@@ -285,6 +306,7 @@ impl Onboarding {
                 .language
                 .is_none()
                 .then(|| "Select a language to continue".to_owned()),
+            OnboardingStep::Permissions if self.permissions_only() => None,
             OnboardingStep::Permissions => {
                 if env.microphone != MicrophonePermission::Granted {
                     return Some("Microphone access is required for dictation".to_owned());
@@ -319,7 +341,10 @@ impl Onboarding {
             return None;
         }
         let Some(next) = self.steps.get(self.position + 1).copied() else {
-            return Some(OnboardingEffect::Finish);
+            return Some(match self.permissions_only() {
+                true => OnboardingEffect::Close,
+                false => OnboardingEffect::Finish,
+            });
         };
         let leaving = self.step();
         self.position += 1;
@@ -424,13 +449,10 @@ impl Onboarding {
     pub fn frame(&self, env: &OnboardingEnv<'_>) -> OnboardingFrame {
         let hint = self.continue_hint(env);
         let step = self.step();
-        let progress = match step {
-            OnboardingStep::Welcome => None,
-            _ => Some(ProgressSegments {
-                total: self.steps.len() - 1,
-                filled: self.position,
-            }),
-        };
+        let progress = (self.position > 0).then(|| ProgressSegments {
+            total: self.steps.len() - 1,
+            filled: self.position,
+        });
         let download = match (step, env.selected_model) {
             // the model's own card shows its progress there
             (OnboardingStep::SpeechModel, _) | (_, None) => None,
@@ -447,10 +469,11 @@ impl Onboarding {
             navigating_forward: self.navigating_forward,
             progress,
             download,
-            back_visible: step != OnboardingStep::Welcome,
+            back_visible: self.position > 0,
             primary_title: match step {
                 OnboardingStep::Welcome => "Get Started",
                 OnboardingStep::Ready => "Start Dictating",
+                OnboardingStep::Permissions if self.permissions_only() => "Done",
                 OnboardingStep::Language
                 | OnboardingStep::Permissions
                 | OnboardingStep::Hotkey
@@ -469,8 +492,10 @@ impl Onboarding {
                 env.accessibility_granted,
                 self.skipped_accessibility,
             ),
-            clipboard_link: (!env.accessibility_granted && !self.skipped_accessibility)
-                .then_some("Use the clipboard instead"),
+            clipboard_link: (!env.accessibility_granted
+                && !self.skipped_accessibility
+                && !self.permissions_only())
+            .then_some("Use the clipboard instead"),
         }
     }
 }
@@ -501,15 +526,15 @@ pub struct OnboardingFrame {
     pub step: OnboardingStep,
     /// Slide in from the trailing edge (forward) or the leading edge (back).
     pub navigating_forward: bool,
-    /// Hidden on Welcome.
+    /// Hidden on the first step.
     pub progress: Option<ProgressSegments>,
     /// The selected model's running download.
     pub download: Option<DownloadStrip>,
-    /// "Back" is shown (hidden on Welcome).
+    /// "Back" is shown (hidden on the first step).
     pub back_visible: bool,
     /// Why the primary button is disabled.
     pub hint: Option<String>,
-    /// "Get Started", "Continue", or "Start Dictating".
+    /// "Get Started", "Continue", "Start Dictating", or "Done".
     pub primary_title: &'static str,
     /// The primary button is enabled; it is the default action.
     pub primary_enabled: bool,
@@ -1126,6 +1151,40 @@ mod tests {
                 OnboardingStep::Language,
                 OnboardingStep::Welcome,
             ]
+        );
+    }
+
+    #[test]
+    fn hot_19_typing_access_lost_shows_the_permissions_step_alone() {
+        let completed = OnboardingFlags::default().finished();
+        let mut onboarding = Onboarding::open(
+            OnboardingOrigin::TypingAccessLost,
+            completed,
+            Some("en".to_owned()),
+            macos(),
+        );
+        let env = OnboardingEnv {
+            accessibility_granted: false,
+            ..env()
+        };
+        let frame = onboarding.frame(&env);
+        assert_eq!(frame.step, OnboardingStep::Permissions);
+        assert_eq!(frame.progress, None);
+        assert!(!frame.back_visible);
+        assert_eq!(frame.primary_title, "Done");
+        assert!(frame.primary_enabled, "Done never waits for the grant");
+        assert_eq!(frame.hint, None);
+        assert_eq!(
+            onboarding.permissions(&env).clipboard_link,
+            None,
+            "clipboard output does not register a lone-modifier hotkey"
+        );
+        assert!(!onboarding.go_back());
+        assert_eq!(onboarding.advance(&env), Some(OnboardingEffect::Close));
+        assert_eq!(
+            onboarding.close(completed, true, true, false).flags,
+            completed,
+            "setup stays complete"
         );
     }
 

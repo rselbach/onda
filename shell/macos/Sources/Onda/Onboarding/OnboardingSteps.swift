@@ -7,6 +7,8 @@ struct OnboardingStepView: View {
     let content: OnboardingContent
     let hotkey: HotkeyState?
     let core: OndaCore
+    let guiding: PermissionFix?
+    let fix: (PermissionFixButton) -> Void
 
     var body: some View {
         switch content {
@@ -27,6 +29,8 @@ struct OnboardingStepView: View {
                 microphone: microphone,
                 typingAccess: typingAccess,
                 clipboardLink: clipboardLink,
+                guiding: guiding,
+                fix: fix,
                 core: core
             )
         case let .hotkey(title, subtitle, presets, customSelected, customKeycaps, customLabel, settingsTitle):
@@ -200,14 +204,20 @@ private struct OnboardingPermissionsStep: View {
     let microphone: PermissionCardView
     let typingAccess: PermissionCardView
     let clipboardLink: String?
+    let guiding: PermissionFix?
+    let fix: (PermissionFixButton) -> Void
     let core: OndaCore
 
     var body: some View {
         VStack(spacing: 16) {
             OnboardingStepHeader(title: title)
             VStack(spacing: 12) {
-                OnboardingPermissionCard(card: microphone, symbol: "mic.fill", tint: .blue, core: core)
-                OnboardingPermissionCard(card: typingAccess, symbol: "keyboard.fill", tint: .purple, core: core)
+                OnboardingPermissionCard(
+                    card: microphone, symbol: "mic.fill", tint: .blue, guiding: guiding, fix: fix
+                )
+                OnboardingPermissionCard(
+                    card: typingAccess, symbol: "keyboard.fill", tint: .purple, guiding: guiding, fix: fix
+                )
                 if let clipboardLink {
                     Button(clipboardLink) {
                         core.onboardingUseClipboard()
@@ -228,23 +238,43 @@ private struct OnboardingPermissionCard: View {
     let card: PermissionCardView
     let symbol: String
     let tint: Color
-    let core: OndaCore
+    let guiding: PermissionFix?
+    let fix: (PermissionFixButton) -> Void
+
+    /// the walk through System Settings this card's fix started
+    private var guide: SettingsGuideView? {
+        guard let button = card.button, button.fix == guiding else { return nil }
+        return button.guide
+    }
 
     var body: some View {
         HStack(spacing: 14) {
-            Image(systemName: symbol)
-                .font(.title3)
-                .foregroundStyle(.white)
-                .frame(width: 38, height: 38)
-                .background(
-                    RoundedRectangle(cornerRadius: OnboardingRadius.medium)
-                        .fill(tint.gradient)
-                )
-                .accessibilityHidden(true)
+            if guide?.acceptsDroppedApp == true {
+                // System Settings takes Onda into the list from a drag of this
+                DraggableAppIcon()
+                    .frame(width: 44, height: 44)
+                    .padding(-3)
+                    .transition(.scale.combined(with: .opacity))
+            } else {
+                Image(systemName: symbol)
+                    .font(.title3)
+                    .foregroundStyle(.white)
+                    .frame(width: 38, height: 38)
+                    .background(
+                        RoundedRectangle(cornerRadius: OnboardingRadius.medium)
+                            .fill(tint.gradient)
+                    )
+                    .accessibilityHidden(true)
+            }
             VStack(alignment: .leading, spacing: 2) {
                 Text(card.title)
                     .font(.headline)
-                if let detail = card.detail {
+                if let hint = guide?.hint {
+                    Text(hint)
+                        .font(.callout)
+                        .foregroundStyle(Color.accentColor)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if let detail = card.detail {
                     Text(detail)
                         .font(.callout)
                         .foregroundStyle(.secondary)
@@ -265,18 +295,19 @@ private struct OnboardingPermissionCard: View {
         .padding(16)
         .onboardingCard()
         .animation(.spring(duration: 0.3), value: card.granted)
+        .animation(.spring(duration: 0.3), value: guide)
     }
 
     @ViewBuilder
     private func fixButton(_ button: PermissionFixButton) -> some View {
-        let fix = Button(button.title) {
-            core.fixPermission(fix: button.fix)
+        let action = Button(button.title) {
+            fix(button)
         }
         switch button.fix {
         case .requestMicrophone:
-            fix.buttonStyle(.borderedProminent)
+            action.buttonStyle(.borderedProminent)
         case .openMicrophoneSettings, .openAccessibilitySettings:
-            fix.buttonStyle(.bordered)
+            action.buttonStyle(.bordered)
         }
     }
 }

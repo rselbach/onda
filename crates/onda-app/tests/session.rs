@@ -359,14 +359,12 @@ async fn dict_1_start_checks_in_order() {
         name: &'static str,
         setup: fn(&Harness),
         want_notice: &'static str,
-        want_prompts: usize,
     }
     let cases = [
         Case {
             name: "microphone denied",
             setup: |h| *lock(&h.permissions.microphone) = MicrophonePermission::Denied,
             want_notice: "Microphone Permission Required",
-            want_prompts: 0,
         },
         Case {
             name: "microphone refused at the prompt",
@@ -377,13 +375,11 @@ async fn dict_1_start_checks_in_order() {
                     .store(false, Ordering::SeqCst);
             },
             want_notice: "Microphone Permission Required",
-            want_prompts: 0,
         },
         Case {
             name: "accessibility missing for typed output",
             setup: |h| h.permissions.accessibility.store(false, Ordering::SeqCst),
             want_notice: "Accessibility Permission Required",
-            want_prompts: 1,
         },
     ];
     for tc in cases {
@@ -397,12 +393,6 @@ async fn dict_1_start_checks_in_order() {
         assert!(
             h.notices().contains(&tc.want_notice.to_owned()),
             "{}",
-            tc.name
-        );
-        assert_eq!(
-            h.log.count("permissions:prompt-accessibility"),
-            tc.want_prompts,
-            "{}: the Accessibility prompt shows once per run",
             tc.name
         );
         assert!(h.idle(), "{}", tc.name);

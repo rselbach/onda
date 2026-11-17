@@ -241,9 +241,6 @@ pub trait PermissionsPort: Send + Sync {
     /// Whether Accessibility is granted.
     fn accessibility_trusted(&self) -> bool;
 
-    /// Shows the Accessibility prompt.
-    fn prompt_accessibility(&self);
-
     /// Opens the privacy pane for `pane`, falling back to the general
     /// privacy pane (PERM-3).
     fn open_settings(&self, pane: PrivacyPane);
@@ -507,10 +504,6 @@ impl Permissions for Shell {
 
     fn accessibility_trusted(&self) -> bool {
         self.permissions.accessibility_trusted()
-    }
-
-    fn prompt_accessibility(&self) {
-        self.permissions.prompt_accessibility();
     }
 
     fn open_settings(&self, pane: PrivacyPane) {

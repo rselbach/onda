@@ -501,8 +501,6 @@ mod tests {
             true
         }
 
-        fn prompt_accessibility(&self) {}
-
         fn open_settings(&self, _: PrivacyPane) {}
     }
 

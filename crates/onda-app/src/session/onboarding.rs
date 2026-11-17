@@ -75,9 +75,11 @@ fn ticker(every: Duration, messages: mpsc::UnboundedSender<Msg>) -> Task {
 }
 
 impl Actor {
-    /// Shows onboarding, automatically (first run, setup guidance) or for
-    /// "Run Setup Again", which first clears `onboardingCompleted` (WIN-4).
-    pub(super) fn open_onboarding(&mut self, rerun: bool) {
+    /// Shows onboarding, automatically (first run, setup guidance), for
+    /// "Run Setup Again", which first clears `onboardingCompleted` (WIN-4),
+    /// or as its Permissions step alone when a lone-modifier hotkey lost
+    /// Typing Access (HOT-19).
+    pub(super) fn open_onboarding(&mut self, origin: OnboardingOrigin) {
         if self.ui.onboarding.is_some() {
             self.events.emit(Event::OpenOnboarding);
             return;
@@ -85,11 +87,7 @@ impl Actor {
         self.ui.launch_onboarding = None;
         self.refresh_settings();
         let flags = self.settings.onboarding;
-        let origin = match rerun {
-            true => OnboardingOrigin::RunSetupAgain,
-            false => OnboardingOrigin::Automatic,
-        };
-        if rerun {
+        if origin == OnboardingOrigin::RunSetupAgain {
             self.apply_setting(SettingChange::Onboarding(flags.rerun()));
         }
         let wizard = Onboarding::open(
@@ -194,6 +192,11 @@ impl Actor {
             }
             Some(OnboardingEffect::Finish) => {
                 self.finish_onboarding();
+                return;
+            }
+            Some(OnboardingEffect::Close) => {
+                self.onboarding_closed();
+                self.events.emit(Event::CloseOnboarding);
                 return;
             }
             None => {}

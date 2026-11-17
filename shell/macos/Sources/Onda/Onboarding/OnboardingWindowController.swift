@@ -11,6 +11,8 @@ final class OnboardingModel {
     var view: OnboardingView?
     var forward = true
     var hotkey: HotkeyState?
+    /// the fix whose grant the window is walking through in System Settings
+    var guiding: PermissionFix?
 }
 
 /// The onboarding wizard window (ONB-1..ONB-13). Renders
@@ -22,6 +24,7 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
 
     private let core: OndaCore
     private let model = OnboardingModel()
+    private let settingsGuide = SystemSettingsGuide()
     private var window: NSWindow?
     private var closingFromCore = false
     /// a step change waiting for its slide direction to render first
@@ -49,6 +52,7 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_: Notification) {
+        endGuide()
         guard !closingFromCore else { return }
         // ONB-11: the core decides what an early close means, and ends a
         // running shortcut capture (HOT-8)
@@ -77,6 +81,10 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
     /// steps slide in from the edge `forward` names (ONB-1); the direction
     /// renders before the step so the outgoing step leaves the same way
     private func render(_ view: OnboardingView) {
+        // a granted card drops its button, which ends the walk
+        if let guiding = model.guiding, !view.offers(guiding) {
+            endGuide()
+        }
         if deferred != nil {
             deferred = view
             return
@@ -105,8 +113,24 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
         }
     }
 
+    private func fix(_ button: PermissionFixButton) {
+        core.fixPermission(fix: button.fix)
+        guard let guide = button.guide, let window else { return }
+        model.guiding = button.fix
+        Task {
+            await settingsGuide.begin(beside: window, dropsApp: guide.acceptsDroppedApp)
+        }
+    }
+
+    private func endGuide() {
+        model.guiding = nil
+        settingsGuide.end()
+    }
+
     private func makeWindow() -> NSWindow {
-        let root = OnboardingRootView(model: model, core: core)
+        let root = OnboardingRootView(model: model, core: core) { [weak self] button in
+            self?.fix(button)
+        }
         let hosting = NSHostingController(rootView: root)
         hosting.sizingOptions = []
         let window = NSWindow(
@@ -133,6 +157,7 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
 struct OnboardingRootView: View {
     let model: OnboardingModel
     let core: OndaCore
+    let fix: (PermissionFixButton) -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -143,7 +168,9 @@ struct OnboardingRootView: View {
                 OnboardingStepView(
                     content: view.content,
                     hotkey: model.hotkey,
-                    core: core
+                    core: core,
+                    guiding: model.guiding,
+                    fix: fix
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding(.horizontal, 48)
@@ -271,5 +298,13 @@ private struct OnboardingDownloadStrip: View {
         .frame(width: 210)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(download.label)
+    }
+}
+
+private extension OnboardingView {
+    /// some card on screen still offers `fix`
+    func offers(_ fix: PermissionFix) -> Bool {
+        guard case let .permissions(_, microphone, typingAccess, _) = content else { return false }
+        return [microphone, typingAccess].contains { $0.button?.fix == fix }
     }
 }

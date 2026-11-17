@@ -314,6 +314,34 @@ impl PermissionFix {
             Self::OpenMicrophoneSettings | Self::OpenAccessibilitySettings => "Open Settings",
         }
     }
+
+    /// How the window walks the user through the grant once this fix opens
+    /// System Settings (ONB-6). A system prompt needs no guide.
+    pub fn settings_guide(self) -> Option<SettingsGuide> {
+        match self {
+            Self::RequestMicrophone => None,
+            // the list shows only apps that already asked
+            Self::OpenMicrophoneSettings => Some(SettingsGuide {
+                hint: "Turn on Onda in the list in System Settings.",
+                accepts_dropped_app: false,
+            }),
+            Self::OpenAccessibilitySettings => Some(SettingsGuide {
+                hint: "Drag the Onda icon into the list in System Settings, or turn on Onda if it's listed.",
+                accepts_dropped_app: true,
+            }),
+        }
+    }
+}
+
+/// What the window shows beside System Settings while the user grants a
+/// permission there (ONB-6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SettingsGuide {
+    /// Replaces the card's detail until the permission is granted.
+    pub hint: &'static str,
+    /// The pane's list takes Onda dropped onto it: offer Onda's icon to
+    /// drag there.
+    pub accepts_dropped_app: bool,
 }
 
 /// One General page permission row (WIN-8).
@@ -1108,6 +1136,44 @@ mod tests {
                 "{}",
                 tc.name
             );
+        }
+    }
+
+    #[test]
+    fn onb_6_settings_guide_per_fix() {
+        struct Case {
+            name: &'static str,
+            fix: PermissionFix,
+            want: Option<bool>,
+        }
+        let cases = [
+            Case {
+                name: "a system prompt needs no guide",
+                fix: PermissionFix::RequestMicrophone,
+                want: None,
+            },
+            Case {
+                name: "the microphone list shows only apps that asked",
+                fix: PermissionFix::OpenMicrophoneSettings,
+                want: Some(false),
+            },
+            Case {
+                name: "the Accessibility list takes a dropped app",
+                fix: PermissionFix::OpenAccessibilitySettings,
+                want: Some(true),
+            },
+        ];
+        for tc in cases {
+            let got = tc.fix.settings_guide();
+            assert_eq!(
+                got.map(|guide| guide.accepts_dropped_app),
+                tc.want,
+                "{}",
+                tc.name
+            );
+            if let Some(guide) = got {
+                assert!(guide.hint.contains("System Settings"), "{}", tc.name);
+            }
         }
     }
 }

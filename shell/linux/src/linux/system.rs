@@ -27,7 +27,6 @@ impl Permissions for Desktop {
     fn accessibility_trusted(&self) -> bool {
         true
     }
-    fn prompt_accessibility(&self) {}
     fn open_settings(&self, _: PrivacyPane) {}
 }
 

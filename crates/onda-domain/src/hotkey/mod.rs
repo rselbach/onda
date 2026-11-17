@@ -34,7 +34,7 @@ pub use recorder::{
 };
 pub use registration::{
     ACCESSIBILITY_POLL_INTERVAL, CANCEL_HOTKEY_ID, DICTATION_HOTKEY_ID, FailureMailbox,
-    HotkeyRoute, MAX_REENABLES, REENABLE_WINDOW, REGISTRATION_FAILURE_TITLE,
+    FailureReport, HotkeyRoute, MAX_REENABLES, REENABLE_WINDOW, REGISTRATION_FAILURE_TITLE,
     RegistrationFailureNotice, RegistrationRetry, STATUS_NOT_GRANTED, StreamDisableDecision,
     StreamReenablePolicy, cancel_hotkey_modifiers,
 };

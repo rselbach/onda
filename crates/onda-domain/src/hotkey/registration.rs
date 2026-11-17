@@ -124,6 +124,16 @@ impl RegistrationFailureNotice {
     }
 }
 
+/// What to tell the user about a registration failure (HOT-19).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FailureReport {
+    /// Post the notice.
+    Notice(RegistrationFailureNotice),
+    /// The shortcut needs the typing permission and it is missing: show
+    /// where to grant it. The episode registers again once it is granted.
+    GrantTypingAccess,
+}
+
 /// Tracks a lone-modifier registration-failure episode and decides when to
 /// notify and when to retry (HOT-19).
 ///
@@ -150,19 +160,27 @@ impl RegistrationRetry {
     }
 
     /// Records that registering `shortcut` failed with `status` while
-    /// Accessibility trust was `trusted`. Returns the notice to post, if
-    /// any: always for a combo (which also ends any lone-modifier episode),
-    /// and only for the first failure of a lone-modifier episode.
-    /// `platform` words the notice.
+    /// Accessibility trust was `trusted`. Returns what to tell the user, if
+    /// anything: always for a combo (which also ends any lone-modifier
+    /// episode), and only for the first failure of a lone-modifier episode.
+    /// A shortcut that needs the missing typing permission asks for it
+    /// instead of posting a notice. `platform` words the notice.
     pub fn record_failure(
         &mut self,
         shortcut: &Shortcut,
         status: i32,
         trusted: bool,
         platform: Platform,
-    ) -> Option<RegistrationFailureNotice> {
-        let notify = self.record(shortcut.is_lone_modifier(), trusted);
-        notify.then(|| RegistrationFailureNotice::new(shortcut, status, platform))
+    ) -> Option<FailureReport> {
+        if !self.record(shortcut.is_lone_modifier(), trusted) {
+            return None;
+        }
+        Some(match shortcut.needs_accessibility(platform) && !trusted {
+            true => FailureReport::GrantTypingAccess,
+            false => {
+                FailureReport::Notice(RegistrationFailureNotice::new(shortcut, status, platform))
+            }
+        })
     }
 
     /// Records a trust check. Returns true when the caller should register
@@ -621,6 +639,66 @@ mod tests {
             }
             assert_eq!(got, tc.want, "{}", tc.name);
             assert_eq!(retry.is_pending(), tc.want_pending, "{}", tc.name);
+        }
+    }
+
+    #[test]
+    fn failure_report_asks_for_a_missing_typing_permission_hot_19() {
+        struct Case {
+            name: &'static str,
+            shortcut: Shortcut,
+            trusted: bool,
+            platform: Platform,
+            want_grant: bool,
+        }
+        let macos = Platform::macos(PrivacyNaming::Accessibility);
+        let lone = Shortcut::lone(ModifierKey::AltRight);
+        let cases = [
+            Case {
+                name: "lone modifier without trust",
+                shortcut: lone.clone(),
+                trusted: false,
+                platform: macos,
+                want_grant: true,
+            },
+            Case {
+                name: "lone modifier with trust fails for another reason",
+                shortcut: lone.clone(),
+                trusted: true,
+                platform: macos,
+                want_grant: false,
+            },
+            Case {
+                name: "a combo needs no typing permission",
+                shortcut: Shortcut::OPTION_SPACE,
+                trusted: false,
+                platform: macos,
+                want_grant: false,
+            },
+            Case {
+                name: "a system without the permission",
+                shortcut: lone,
+                trusted: false,
+                platform: Platform::linux(),
+                want_grant: false,
+            },
+        ];
+        for tc in cases {
+            let got = RegistrationRetry::new().record_failure(
+                &tc.shortcut,
+                -9874,
+                tc.trusted,
+                tc.platform,
+            );
+            let want = match tc.want_grant {
+                true => FailureReport::GrantTypingAccess,
+                false => FailureReport::Notice(RegistrationFailureNotice::new(
+                    &tc.shortcut,
+                    -9874,
+                    tc.platform,
+                )),
+            };
+            assert_eq!(got, Some(want), "{}", tc.name);
         }
     }
 

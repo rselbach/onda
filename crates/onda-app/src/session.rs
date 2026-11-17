@@ -38,6 +38,7 @@ use onda_domain::model_selection::{
 };
 use onda_domain::models::{Catalog, ModelId};
 use onda_domain::non_dictation_ui::{self, DownloadOverlay, DownloadOverlayView, DownloadTracker};
+use onda_domain::onboarding::OnboardingOrigin;
 use onda_domain::overlay::{ClockDisplay, Notice, Overlay, OverlayView, TranscribingEntry};
 use onda_domain::preview_text::menu_preview;
 use onda_domain::replacements;
@@ -395,7 +396,6 @@ pub(crate) struct Actor {
     reload_when_idle: Option<ModelId>,
     pending: PendingSelection,
     permissions: PermissionSnapshot,
-    accessibility_prompted: bool,
     failed_audio: Option<Arc<[f32]>>,
     // a restart to update was accepted and has not been declined: no
     // dictation may start (UPD-8)
@@ -470,7 +470,6 @@ impl Actor {
                 microphone: MicrophonePermission::NotDetermined,
                 accessibility: false,
             },
-            accessibility_prompted: false,
             failed_audio: None,
             restarting: false,
             last_transcript: None,
@@ -904,12 +903,9 @@ impl Actor {
         if !requires_accessibility(settings.output_mode) || accessibility {
             return true;
         }
+        // no system prompt: setup guidance leads to the grant (ONB-6)
         if self.notify(UserMessage::AccessibilityPermissionRequired) {
             self.setup_guidance();
-        }
-        if !self.accessibility_prompted {
-            self.accessibility_prompted = true;
-            self.effects.send(Effect::PromptAccessibility);
         }
         false
     }
@@ -1812,7 +1808,7 @@ impl Actor {
             self.declined(),
         );
         match guidance {
-            Some(SetupGuidance::Onboarding) => self.open_onboarding(false),
+            Some(SetupGuidance::Onboarding) => self.open_onboarding(OnboardingOrigin::Automatic),
             Some(SetupGuidance::GettingStarted) => {
                 self.open_section(MainWindowSection::GettingStarted);
             }

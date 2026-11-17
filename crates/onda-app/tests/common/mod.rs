@@ -256,10 +256,6 @@ impl Permissions for FakePermissions {
         self.accessibility.load(Ordering::SeqCst)
     }
 
-    fn prompt_accessibility(&self) {
-        self.log.push("permissions:prompt-accessibility");
-    }
-
     fn open_settings(&self, pane: PrivacyPane) {
         self.log.push(format!("permissions:open-settings {pane:?}"));
     }

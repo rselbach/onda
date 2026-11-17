@@ -33,15 +33,6 @@ final class Permissions: PermissionsPort, Sendable {
         AXIsProcessTrusted()
     }
 
-    func promptAccessibility() {
-        // kAXTrustedCheckOptionPrompt's value; the global is not
-        // concurrency-safe to read
-        let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
-        DispatchQueue.main.async {
-            _ = AXIsProcessTrustedWithOptions(options)
-        }
-    }
-
     /// PERM-3: the specific privacy pane, else the general one.
     func openSettings(pane: PrivacyPane) {
         let anchor = switch pane {

@@ -7,12 +7,13 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
 use onda_domain::hotkey::{
-    ACCESSIBILITY_POLL_INTERVAL, FailureMailbox, GestureAction, GestureInput, GlobeKeyAction,
-    HotkeyView, LoneModifierGesture, ModifierKey, RegistrationRetry, Shortcut, ShortcutRecorder,
-    StreamDisableDecision, StreamReenablePolicy, gesture_input_for_flags_change,
+    ACCESSIBILITY_POLL_INTERVAL, FailureMailbox, FailureReport, GestureAction, GestureInput,
+    GlobeKeyAction, HotkeyView, LoneModifierGesture, ModifierKey, RegistrationRetry, Shortcut,
+    ShortcutRecorder, StreamDisableDecision, StreamReenablePolicy, gesture_input_for_flags_change,
     gesture_input_for_key_down,
 };
 use onda_domain::messages::UserMessage;
+use onda_domain::onboarding::OnboardingOrigin;
 use tokio::sync::oneshot;
 
 use super::{Actor, Msg, Task, blocking_send};
@@ -263,17 +264,28 @@ impl Actor {
         }
     }
 
-    // HOT-19: a combo failure always notifies and ends any lone-modifier
-    // episode; a lone-modifier episode notifies on its first failure only
+    // HOT-19: a combo failure always reports and ends any lone-modifier
+    // episode; a lone-modifier episode reports on its first failure only.
+    // A missing typing permission opens the wizard's Permissions step
+    // alone, and the episode registers again once it is granted.
     fn deliver_hotkey_failure(&mut self, status: i32, trusted: bool) {
         let hotkey = self.settings.hotkey.clone();
         let platform = self.ports.platform;
-        if let Some(notice) = self
+        let report = self
             .hotkeys
             .retry
-            .record_failure(&hotkey, status, trusted, platform)
-        {
-            self.notify(UserMessage::HotkeyRegistrationFailed(notice));
+            .record_failure(&hotkey, status, trusted, platform);
+        match report {
+            Some(FailureReport::Notice(notice)) => {
+                self.notify(UserMessage::HotkeyRegistrationFailed(notice));
+            }
+            // the first-run wizard, due at launch, asks for it itself; an
+            // open wizard only comes forward
+            Some(FailureReport::GrantTypingAccess) if self.settings.first_run_pending => {}
+            Some(FailureReport::GrantTypingAccess) => {
+                self.open_onboarding(OnboardingOrigin::TypingAccessLost);
+            }
+            None => {}
         }
         self.update_trust_polling();
     }

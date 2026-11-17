@@ -41,7 +41,6 @@ pub(crate) enum Effect {
     ReenableStream,
     RegisterCancel(Vec<ModifierSet>),
     UnregisterCancel,
-    PromptAccessibility,
     /// Ask for notification permission (ONB-12).
     RequestNotifications,
     /// Open keyboard settings (HOT-35).
@@ -142,7 +141,6 @@ fn run(ports: &EffectPorts, effect: Effect, fallback: &(dyn Fn(UserMessage) + Se
             }
         }
         Effect::UnregisterCancel => ports.hotkeys.unregister_cancel(),
-        Effect::PromptAccessibility => ports.permissions.prompt_accessibility(),
         Effect::RequestNotifications => ports.notifier.request_authorization(),
         Effect::OpenKeyboardSettings => ports.hotkeys.open_keyboard_settings(),
         Effect::OpenLoginItems => ports.login_item.open_settings(),

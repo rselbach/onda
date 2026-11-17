@@ -453,8 +453,6 @@ impl Permissions for Terminal {
         true
     }
 
-    fn prompt_accessibility(&self) {}
-
     fn open_settings(&self, pane: PrivacyPane) {
         self.console.say(&format!("open {pane:?} privacy settings"));
     }
