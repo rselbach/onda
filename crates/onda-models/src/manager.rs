@@ -140,10 +140,24 @@ impl ModelManager {
     /// missing, corrupt, or unreadable, so the user is offered "Re-download
     /// Model" (DL-11).
     pub fn verify(&self, model: ModelId, progress: &mut dyn FnMut(f64)) -> Result<(), Error> {
+        self.check_hashes(model, true, progress)
+    }
+
+    /// Hashes the installed files even if their verification marker is current.
+    pub fn verify_contents(&self, model: ModelId) -> Result<(), Error> {
+        self.check_hashes(model, false, &mut |_| {})
+    }
+
+    fn check_hashes(
+        &self,
+        model: ModelId,
+        use_marker: bool,
+        progress: &mut dyn FnMut(f64),
+    ) -> Result<(), Error> {
         let Some(manifest) = (self.inner.manifests)(model) else {
             return Ok(());
         };
-        verify_folder(&self.model_dir(model), manifest, progress).map_err(|details| {
+        verify_folder(&self.model_dir(model), manifest, use_marker, progress).map_err(|details| {
             tracing::error!(%model, %details, "model failed verification");
             ModelError::IncompleteInstallation {
                 model_id: model.as_str().to_string(),
@@ -179,13 +193,22 @@ impl ModelManager {
     }
 
     /// Downloads `model` and returns its folder once every file is on disk
-    /// and verified (DL-1..DL-4). A model that already passes validation
-    /// returns at once. A request for a model already downloading joins that
+    /// and verified (DL-1..DL-4). An installed model returns at once.
+    /// A request for a model already downloading joins that
     /// download. Progress and the outcome are also reported as events.
     ///
     /// Dropping the returned future does not stop the download; use
     /// [`ModelManager::cancel`].
     pub async fn download(&self, model: ModelId) -> Result<PathBuf, Error> {
+        self.fetch(model, false).await
+    }
+
+    /// Checks and repairs installed files even when their sizes already match.
+    pub async fn download_verified(&self, model: ModelId) -> Result<PathBuf, Error> {
+        self.fetch(model, true).await
+    }
+
+    async fn fetch(&self, model: ModelId, check_existing: bool) -> Result<PathBuf, Error> {
         let manifest = (self.inner.manifests)(model).ok_or_else(|| ModelError::NotFound {
             model_id: model.as_str().to_string(),
         })?;
@@ -196,7 +219,7 @@ impl ModelManager {
                     Some(running) => (running.outcome.clone(), !running.token.is_cancelled()),
                     None => {
                         let folder = self.model_dir(model);
-                        if validate_folder(&folder, manifest).is_complete() {
+                        if !check_existing && validate_folder(&folder, manifest).is_complete() {
                             return Ok(folder);
                         }
                         let token = CancellationToken::new();

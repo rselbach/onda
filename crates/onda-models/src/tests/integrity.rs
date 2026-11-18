@@ -144,6 +144,30 @@ fn corrupt_folder_error_copy_is_the_domains() {
 }
 
 #[test]
+fn explicit_validation_rechecks_bytes_and_invalidates_a_stale_marker() {
+    let f = installed();
+    f.manager.verify_contents(MODEL).expect("valid folder");
+    corrupt_in_place(&f.folder.join(WEIGHTS));
+    assert_eq!(verify(&f.manager), (Ok(()), vec![]));
+    let want = Err(incomplete(&format!("corrupt files: {WEIGHTS}")));
+    assert_eq!(f.manager.verify_contents(MODEL), want);
+    assert_eq!(verify(&f.manager).0, want);
+}
+
+#[tokio::test]
+async fn download_repairs_only_the_corrupt_file_in_a_complete_folder() {
+    let f = Fixture::new().await;
+    let dir = f.manager.download(MODEL).await.expect("install");
+    corrupt_in_place(&dir.join(WEIGHTS));
+    f.manager.download_verified(MODEL).await.expect("repair");
+    super::assert_installed(&dir);
+    for (file, _) in fixture_files() {
+        let want = if file == WEIGHTS { 2 } else { 1 };
+        assert_eq!(f.server.requests_for(file).len(), want, "{file}");
+    }
+}
+
+#[test]
 fn marker_skips_rehash_until_a_file_changes() {
     struct Case {
         name: &'static str,

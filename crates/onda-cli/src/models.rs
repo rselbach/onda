@@ -102,7 +102,7 @@ async fn download(
             ctrl_c_manager.cancel(model);
         }
     });
-    let download = manager.download(model);
+    let download = manager.download_verified(model);
     tokio::pin!(download);
     let result = loop {
         tokio::select! {
@@ -119,17 +119,13 @@ async fn download(
 }
 
 fn validate(manager: &ModelManager, model: ModelId) -> Result<()> {
-    let Some(validation) = manager.validate(model) else {
+    if manifest(model).is_none() {
         bail!("{model} downloads nothing");
-    };
-    match validation.failure_details() {
-        None => {
-            println!(
-                "{model}: complete in {}",
-                manager.model_dir(model).display()
-            );
-            Ok(())
-        }
-        Some(details) => bail!("{model}: incomplete: {details}"),
     }
+    manager.verify_contents(model)?;
+    println!(
+        "{model}: complete in {}",
+        manager.model_dir(model).display()
+    );
+    Ok(())
 }

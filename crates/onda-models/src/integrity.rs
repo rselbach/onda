@@ -36,6 +36,7 @@ const PROGRESS_STEP: f64 = 0.01;
 pub(crate) fn verify_folder(
     folder: &Path,
     manifest: &ModelManifest,
+    use_marker: bool,
     progress: &mut dyn FnMut(f64),
 ) -> Result<(), String> {
     if let Some(details) = validate_folder(folder, manifest).failure_details() {
@@ -43,7 +44,7 @@ pub(crate) fn verify_folder(
     }
     let before =
         marker_text(folder, manifest).map_err(|e| format!("could not read folder: {e}"))?;
-    if marker_is_current(folder, &before) {
+    if use_marker && marker_is_current(folder, &before) {
         tracing::debug!("model folder unchanged since verification");
         return Ok(());
     }
@@ -91,6 +92,11 @@ pub(crate) fn verify_folder(
             corrupt = corrupt.len(),
             "model folder failed verification"
         );
+        if let Err(error) = std::fs::remove_file(folder.join(VERIFIED_MARKER))
+            && error.kind() != io::ErrorKind::NotFound
+        {
+            tracing::warn!(%error, "could not invalidate the verification marker");
+        }
         return Err(format!("corrupt files: {}", corrupt.join(", ")));
     }
     tracing::info!(elapsed_ms, bytes = total, "model folder verified");
