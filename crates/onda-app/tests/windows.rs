@@ -3029,6 +3029,51 @@ async fn cln_25_a_failed_reload_blanks_the_field_and_saves_nothing() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn switching_provider_clears_the_key_field_before_the_new_load_completes() {
+    let h = Harness::with(|s| s.cleanup_enabled = true).await;
+    h.app.page_appeared(MainWindowSection::PostProcessing);
+    h.app.open_providers_dialog();
+    sleep(10).await;
+    let field = || {
+        post_processing(&h)
+            .details
+            .unwrap()
+            .dialog
+            .unwrap()
+            .key
+            .unwrap()
+    };
+    struct ReleaseOnDrop(Arc<common::Hold>);
+    impl Drop for ReleaseOnDrop {
+        fn drop(&mut self) {
+            self.0.release();
+        }
+    }
+    let old_revision = field().revision;
+    let hold = ReleaseOnDrop(h.secrets.hold_save());
+    h.app.api_key_edited("key-for-troy");
+    h.app
+        .select_dialog_provider(onda_domain::cleanup::CleanupProvider::DeepSeek);
+    eventually("new key field", || hold.0.started() && field().loading).await;
+    let pending = field();
+    assert!(pending.text.is_empty());
+    assert!(pending.revision > old_revision);
+
+    h.app
+        .select_dialog_provider(onda_domain::cleanup::CleanupProvider::OpenRouter);
+    h.app.close_providers_dialog();
+    eventually("closed provider sheet", || {
+        post_processing(&h).details.unwrap().dialog.is_none()
+    })
+    .await;
+    drop(hold);
+    sleep(10).await;
+    h.app.api_key_commit();
+    sleep(10).await;
+    assert_eq!(h.secrets.stored().as_deref(), Some("key-for-troy"));
+}
+
+#[tokio::test(start_paused = true)]
 async fn cln_25_a_reload_waits_for_the_save_in_flight() {
     let h = Harness::with(|s| s.cleanup_enabled = true).await;
     h.app.page_appeared(MainWindowSection::PostProcessing);

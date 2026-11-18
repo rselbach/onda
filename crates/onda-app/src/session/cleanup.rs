@@ -359,6 +359,10 @@ impl Actor {
         let secrets = self.ports.secrets.clone();
         let loaded = self.key_queue().run(move || secrets.api_key(provider));
         let page = &mut self.ui.cleanup;
+        if page.key_provider.is_some_and(|old| old != provider) {
+            page.text.clear();
+            page.revision += 1;
+        }
         page.key_provider = Some(provider);
         page.load_generation += 1;
         page.baseline = KeyBaseline::Loading;
@@ -416,6 +420,7 @@ impl Actor {
         let Some(write) = key_write(&page.baseline, &page.text) else {
             return;
         };
+        let generation = page.load_generation;
         let value = written_value(write);
         let secrets = self.ports.secrets.clone();
         let saving = value.clone();
@@ -425,6 +430,7 @@ impl Actor {
         tokio::spawn(send_when(self.messages.clone(), async move {
             let result = saved.await.unwrap_or_else(lost);
             Msg::Ui(UiMsg::KeySaved {
+                generation,
                 provider,
                 value,
                 result,
@@ -434,37 +440,31 @@ impl Actor {
 
     pub(super) fn key_saved(
         &mut self,
+        generation: u64,
         provider: CleanupProvider,
         value: String,
         result: Result<(), String>,
     ) {
         let page = &mut self.ui.cleanup;
-        // the field moved on to another provider's key
-        if page.key_provider != Some(provider) {
-            if let Err(error) = result {
-                tracing::error!(%error, provider = provider.id(), "could not save a cleanup API key");
+        let current = page.load_generation == generation && page.key_provider == Some(provider);
+        if let Err(error) = result {
+            tracing::error!(%error, provider = provider.id(), "could not save a cleanup API key");
+            if current {
+                page.error = Some(error);
             }
             return;
         }
-        match result {
-            Ok(()) => {
-                // show the trimmed value saved, unless typing moved on (CLN-24)
-                if page.text != value && page.text.trim() == value {
-                    page.text.clone_from(&value);
-                    page.revision += 1;
-                }
-                page.baseline = KeyBaseline::Known(value);
-                page.error = None;
-                // a new key may unlock, or change, what the provider lists
-                let with_key = provider.model_listing() == ModelListing::WithKey;
-                if with_key && page.dialog == Some(provider) {
-                    self.list_cleanup_models(provider);
-                }
+        if current {
+            // show the trimmed value saved, unless typing moved on (CLN-24)
+            if page.text != value && page.text.trim() == value {
+                page.text.clone_from(&value);
+                page.revision += 1;
             }
-            Err(error) => {
-                tracing::error!(%error, provider = provider.id(), "could not save a cleanup API key");
-                page.error = Some(error);
-            }
+            page.baseline = KeyBaseline::Known(value);
+            page.error = None;
+        }
+        if provider.model_listing() == ModelListing::WithKey && page.dialog == Some(provider) {
+            self.list_cleanup_models(provider);
         }
     }
 
@@ -586,6 +586,7 @@ impl Actor {
         page.test_error = None;
         page.test_generation += 1;
         let generation = page.test_generation;
+        let field_generation = page.load_generation;
         // a just-typed key is saved for its own provider; the test then uses
         // the selected provider's stored key
         let write = page
@@ -613,6 +614,7 @@ impl Actor {
             if let Some((saved_for, value, saved)) = saved {
                 let result = saved.await.unwrap_or_else(lost);
                 let _ = messages.send(Msg::Ui(UiMsg::KeySaved {
+                    generation: field_generation,
                     provider: saved_for,
                     value,
                     result,
