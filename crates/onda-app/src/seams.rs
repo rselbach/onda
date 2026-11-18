@@ -20,6 +20,7 @@ use onda_domain::models::ModelId;
 use onda_domain::onboarding::OnboardingFlags;
 use onda_domain::replacements::ReplacementRule;
 use onda_domain::types::{ActivationMode, HistoryRetention, OutputMode};
+use tokio::sync::oneshot;
 use uuid::Uuid;
 
 /// A boxed, sendable future, so async seams stay object-safe.
@@ -130,8 +131,10 @@ pub trait SettingsSource: Send + Sync {
     /// The current settings. Cheap; called once per command and per session.
     fn snapshot(&self) -> Settings;
 
-    /// Whether the provider selection is readable now, including changes from other processes.
-    fn cleanup_provider_available(&self) -> BoxFuture<'_, bool>;
+    /// Hands off `request` under the lock that protects the fresh settings read.
+    /// Denial closes the channel without sending. Admission occurs at the
+    /// handoff. Later settings writes do not revoke an admitted request.
+    fn admit_cleanup(&self, request: CleanupRequest) -> oneshot::Receiver<CleanupRequest>;
 
     /// Persists `selectedModel` after a model switch (DL-7).
     fn set_selected_model(&self, model: ModelId);

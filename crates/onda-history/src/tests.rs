@@ -1,7 +1,9 @@
+use std::fs::File;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use jiff::Timestamp;
 use onda_domain::history::{
@@ -91,7 +93,7 @@ impl Fixture {
             .save(
                 new_entry(n, age),
                 &SAMPLES,
-                prefs(keep_audio, retention),
+                || prefs(keep_audio, retention),
                 at(NOW),
             )
             .expect("save")
@@ -284,7 +286,7 @@ fn audio_kept_only_when_preference_on_his_1_his_5() {
             .save(
                 new,
                 &SAMPLES,
-                prefs(tc.keep_audio, HistoryRetention::Month),
+                || prefs(tc.keep_audio, HistoryRetention::Month),
                 at(NOW),
             )
             .expect("save")
@@ -311,7 +313,7 @@ fn history_off_saves_nothing_his_1() {
         .save(
             new_entry(1, DAY),
             &SAMPLES,
-            HistoryPreferences {
+            || HistoryPreferences {
                 enabled: false,
                 keep_audio: true,
                 retention: HistoryRetention::Month,
@@ -321,6 +323,45 @@ fn history_off_saves_nothing_his_1() {
         .expect("save");
     assert_eq!(got, None);
     assert!(!f.history.exists(), "folder not created");
+    assert!(!f.history.with_added_extension("lock").exists());
+    assert_eq!(f.changes(), 0);
+}
+
+#[test]
+fn opt_out_wins_while_save_waits_for_history_lock() {
+    let f = Fixture::new();
+    let lock_path = f.history.with_added_extension("lock");
+    std::fs::create_dir(f.history.parent().unwrap()).unwrap();
+    let preferences = Mutex::new(prefs(true, HistoryRetention::Month));
+
+    let saved = std::thread::scope(|scope| {
+        let lock = File::create(&lock_path).unwrap();
+        lock.lock().unwrap();
+        let save = scope.spawn(|| {
+            f.store.save(
+                new_entry(1, DAY),
+                &SAMPLES,
+                || *preferences.lock().unwrap(),
+                at(NOW),
+            )
+        });
+        // The save holds its local mutex while waiting for the file lock.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while f.store.state.try_lock().is_ok() {
+            assert!(
+                Instant::now() < deadline,
+                "save did not queue for History.lock"
+            );
+            std::thread::yield_now();
+        }
+        preferences.lock().unwrap().enabled = false;
+        drop(lock);
+        save.join().unwrap().unwrap()
+    });
+
+    assert_eq!(saved, None);
+    assert!(!f.history.exists());
+    assert!(std::fs::read(&lock_path).unwrap().is_empty());
     assert_eq!(f.changes(), 0);
 }
 
@@ -350,7 +391,7 @@ fn save_never_removes_a_folder_it_did_not_create_his_7() {
     let got = f.store.save(
         new_entry(1, DAY),
         &SAMPLES,
-        prefs(true, HistoryRetention::Month),
+        || prefs(true, HistoryRetention::Month),
         at(NOW),
     );
     assert!(matches!(got, Err(HistoryError::Io(_))), "{got:?}");
@@ -898,7 +939,7 @@ fn concurrent_saves_all_land() {
                         .save(
                             new_entry(n, n as i64),
                             &SAMPLES,
-                            prefs(false, HistoryRetention::Month),
+                            || prefs(false, HistoryRetention::Month),
                             at(NOW),
                         )
                         .expect("save");

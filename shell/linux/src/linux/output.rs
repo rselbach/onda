@@ -55,7 +55,7 @@ impl Output {
             return Some(Err(error));
         }
         if !process::wayland() {
-            return Some(Ok(Keyboard::Xdotool));
+            return Some(Ok(Keyboard::X11));
         }
         if process::available("wtype")
             && process::wayland_globals_match(|globals| {
@@ -75,35 +75,33 @@ impl Output {
     }
 
     fn press(&self, keyboard: Keyboard, shift: bool, paste: &Paste<'_>) -> anyhow::Result<bool> {
-        if matches!(keyboard, Keyboard::Portal(_)) {
-            // The selection must reach the target; a consent dialog may also have just closed.
-            std::thread::sleep(Duration::from_millis(250));
-        }
-        if !paste
-            .ready_to_paste()
-            .inspect_err(
-                |error| tracing::debug!(%error, "clipboard could not be checked before paste"),
-            )
-            .unwrap_or(false)
-        {
-            return Ok(false);
-        }
+        let ready = || {
+            paste
+                .ready_to_paste()
+                .inspect_err(
+                    |error| tracing::debug!(%error, "clipboard could not be checked before paste"),
+                )
+                .unwrap_or(false)
+        };
         let mut grant = match keyboard {
-            Keyboard::Xdotool => {
-                process::run(
-                    "xdotool",
-                    &["key", if shift { "ctrl+shift+v" } else { "ctrl+v" }],
-                    &[],
-                )?;
-                return Ok(true);
-            }
+            Keyboard::X11 => return paste.paste_on_x11(shift),
             Keyboard::Wtype => {
+                if !ready() {
+                    return Ok(false);
+                }
                 let keys = wtype_arguments(shift);
                 let args: Vec<&str> = keys.iter().map(String::as_str).collect();
                 process::run("wtype", &args, &[])?;
                 return Ok(true);
             }
-            Keyboard::Portal(grant) => grant,
+            Keyboard::Portal(grant) => {
+                // The selection must reach the target; a consent dialog may also have just closed.
+                std::thread::sleep(Duration::from_millis(250));
+                if !ready() {
+                    return Ok(false);
+                }
+                grant
+            }
         };
         self.runtime.block_on(async {
             let current = grant
@@ -183,7 +181,7 @@ fn unless_cancelled<T: Send + 'static>(
 }
 
 enum Keyboard {
-    Xdotool,
+    X11,
     Wtype,
     Portal(OwnedMutexGuard<Option<Grant>>),
 }
@@ -436,7 +434,7 @@ mod tests {
 
     #[test]
     #[ignore = "uses the private Wayland clipboard"]
-    fn a_changed_clipboard_stops_the_portal_paste() {
+    fn wayland_changed_clipboard_stops_the_portal_paste() {
         assert!(process::wayland());
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let output = Output::new(

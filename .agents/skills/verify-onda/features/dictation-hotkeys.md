@@ -75,9 +75,11 @@ What differs:
 - `dict-escape` works on X11 only. Onda claims Escape for the length of a
   session and logs `claimed Escape for the session`, then
   `Escape cancelled the session`.
-- `dict-type-output` copies the transcript, sends Ctrl+V with `xdotool`,
-  and restores the clipboard. General has a Linux-only "Terminal paste
-  shortcut" switch that sends Ctrl+Shift+V.
+- `dict-type-output` copies the transcript and sends Ctrl+V through XTEST.
+  General has a Linux-only "Terminal paste shortcut" switch that sends
+  Ctrl+Shift+V. If Onda cannot send the shortcut safely on the active layout,
+  the transcript stays on the clipboard for manual paste. After an automatic paste, Onda
+  tries to restore the previous clipboard.
 - The joiner reads the focused field over the accessibility bus, which a
   run has. A password field is never read.
 - General > Media pauses MPRIS players and mutes other audio while

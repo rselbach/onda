@@ -10,8 +10,5 @@ mod error;
 mod fs;
 mod store;
 
-#[cfg(test)]
-mod tests;
-
 pub use error::HistoryError;
 pub use store::{HistoryHooks, HistoryPreferences, HistoryStore};

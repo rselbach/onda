@@ -4,8 +4,8 @@
 //! The terminal stands in for the shell. Delivered text prints to stdout;
 //! overlay, tray, and cue changes print to stderr. The hotkey is simulated:
 //!
-//! - `--hold-ms N` presses the hotkey, holds it N ms, releases it, waits for
-//!   the transcript, and exits. Works in every activation mode.
+//! - `--hold-ms N` presses the hotkey, holds it N ms, releases it, and exits
+//!   when the session ends. Works in every activation mode.
 //! - Otherwise Enter drives the hotkey: in toggle and automatic modes each
 //!   Enter is a quick tap (start, then stop); in hold mode the first Enter
 //!   presses and the next one releases. `q` then Enter quits.
@@ -15,11 +15,11 @@
 //! OpenRouter key comes from `ONDA_OPENROUTER_KEY` when set (kept in memory
 //! only), else from the Keychain.
 
+use std::future::{Future, pending};
 use std::io::BufRead;
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -33,7 +33,7 @@ use onda_app::ports::{
 };
 use onda_app::seams::{ModelStore, SecretSource, SettingsSource};
 use onda_app::views::UpdaterState;
-use onda_app::{App, Event, EventSink, HotkeyEvent, Ports};
+use onda_app::{App, DictationPressState as PressState, Event, EventSink, HotkeyEvent, Ports};
 use onda_asr::SpeechEngine;
 use onda_asr_coreml::ParakeetEngine;
 use onda_asr_coreml::manifest::manifest;
@@ -50,6 +50,8 @@ use onda_domain::types::{ActivationMode, MicrophonePermission};
 use onda_history::{HistoryHooks, HistoryStore};
 use onda_models::ModelManager;
 use onda_settings::{KeychainSecretStore, MemorySecretStore, SecretStore, Settings};
+use tokio::runtime::Runtime;
+use tokio::time::{Instant as TokioInstant, sleep_until};
 
 use crate::models::parse_model;
 
@@ -57,6 +59,8 @@ const KEY_VARIABLE: &str = "ONDA_OPENROUTER_KEY";
 const READY_LABEL: &str = "Onda, ready to dictate";
 const LOAD_TIMEOUT: Duration = Duration::from_secs(180);
 const SESSION_TIMEOUT: Duration = Duration::from_secs(120);
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
+const RUNTIME_SHUTDOWN: Duration = Duration::from_secs(1);
 
 /// `dictate` options.
 #[derive(clap::Args)]
@@ -176,7 +180,7 @@ pub fn run(args: &Args, paths: &DataPaths, models_dir: &Path) -> Result<()> {
         platform,
         app_version: env!("CARGO_PKG_VERSION").to_owned(),
     };
-    let app = App::start_on(runtime.handle(), ports, console.clone());
+    let mut app = App::start_on(runtime.handle(), ports, console.clone());
     forward_audio_events(audio_events, app.audio_signals());
 
     app.ui_ready();
@@ -185,28 +189,29 @@ pub fn run(args: &Args, paths: &DataPaths, models_dir: &Path) -> Result<()> {
         paths.root().display(),
         snapshot.selected_model
     ));
-    wait_for_label(&trays, READY_LABEL, LOAD_TIMEOUT).context("loading the model")?;
-    let mode = snapshot.activation_mode;
-    console.say(&format!("ready ({} mode)", mode.display_name()));
-
-    let result = match args.hold_ms {
-        Some(hold_ms) => hold_once(
-            |event| app.on_hotkey_event(event),
-            || app.stop_dictation(),
-            &trays,
-            &console,
-            mode,
-            hold_ms,
-        )
-        .and_then(|()| {
-            wait_for_label(&trays, READY_LABEL, SESSION_TIMEOUT)
-                .context("waiting for the transcript")
-        }),
-        None => interactive(&app, &trays, &console, mode),
-    };
-    app.shutdown();
-    runtime.shutdown_timeout(Duration::from_secs(1));
-    result
+    let ready = wait_for_label(&trays, READY_LABEL, LOAD_TIMEOUT).context("loading the model");
+    drop(trays);
+    let result = ready.and_then(|()| {
+        let mode = snapshot.activation_mode;
+        console.say(&format!("ready ({} mode)", mode.display_name()));
+        match args.hold_ms {
+            Some(hold_ms) => {
+                console.say(&format!("holding the hotkey for {hold_ms} ms"));
+                runtime.block_on(dictate_once(
+                    &mut app,
+                    Duration::from_millis(hold_ms),
+                    SESSION_TIMEOUT,
+                ))
+            }
+            None => interactive(&app, &console, mode),
+        }
+    });
+    let stopped = shutdown(
+        runtime,
+        async move { app.shutdown_async().await },
+        SHUTDOWN_TIMEOUT,
+    );
+    result.and_then(|()| stopped.context("shutting down dictation"))
 }
 
 fn apply_overrides(args: &Args, settings: &Settings) -> Result<()> {
@@ -271,45 +276,70 @@ impl HistoryHooks for Logged {
     }
 }
 
-fn hold_once(
-    send_key: impl Fn(HotkeyEvent),
-    stop: impl FnOnce(),
-    trays: &Receiver<String>,
-    console: &Console,
-    mode: ActivationMode,
-    hold_ms: u64,
-) -> Result<()> {
-    console.say("hotkey down");
-    let pressed = Instant::now();
-    send_key(HotkeyEvent::ComboDown);
-    if mode == ActivationMode::Automatic {
-        wait_for_label(trays, "Onda, recording", SESSION_TIMEOUT)
-            .context("starting the recording")?;
+async fn dictate_once(app: &mut App, held_for: Duration, budget: Duration) -> Result<()> {
+    let pressed = TokioInstant::now();
+    let release_at = pressed + held_for;
+    let mut press = app.press_dictation_hotkey();
+    let mut state = PressState::Pending;
+    let mut release_requested = None;
+    loop {
+        let (deadline, error) = match state {
+            PressState::Pending | PressState::Starting(_) => {
+                (Some(pressed + budget), "timed out starting dictation")
+            }
+            // A release must also time out if the actor never acknowledges it.
+            PressState::Recording => (
+                release_requested.map(|at| at + budget),
+                "timed out waiting for dictation to finish",
+            ),
+            PressState::Finishing(at) => (
+                Some(release_requested.map_or(at, |requested| at.min(requested)) + budget),
+                "timed out waiting for dictation to finish",
+            ),
+            PressState::Done(result) => return result.map_err(Into::into),
+        };
+        let can_release = release_requested.is_none()
+            && matches!(
+                state,
+                PressState::Starting(ActivationMode::Hold | ActivationMode::Toggle)
+                    | PressState::Recording
+            );
+        let wait_for_deadline = async {
+            match deadline {
+                Some(at) => sleep_until(at).await,
+                None => pending().await,
+            }
+        };
+        tokio::select! {
+            biased;
+            update = press.changed() => state = update?,
+            () = wait_for_deadline => bail!("{error}"),
+            () = sleep_until(release_at), if can_release => {
+                release_requested = Some(TokioInstant::now());
+                press.release();
+            }
+        }
     }
-    thread::sleep(Duration::from_millis(hold_ms).saturating_sub(pressed.elapsed()));
-    if mode != ActivationMode::Automatic {
-        drain(trays);
-    }
-    console.say("hotkey up");
-    send_key(HotkeyEvent::ComboUp);
-    if mode == ActivationMode::Toggle {
-        // a toggle key-up does nothing (HOT-26); tap again to stop
-        console.say("hotkey tap");
-        send_key(HotkeyEvent::ComboDown);
-        send_key(HotkeyEvent::ComboUp);
-    }
-    if mode == ActivationMode::Automatic {
-        stop();
-    }
-    Ok(())
 }
 
-fn interactive(
-    app: &App,
-    trays: &Receiver<String>,
-    console: &Console,
-    mode: ActivationMode,
+fn shutdown(
+    runtime: Runtime,
+    stop: impl Future<Output = ()> + Send + 'static,
+    budget: Duration,
 ) -> Result<()> {
+    let handle = runtime.handle().clone();
+    let (done, wait) = mpsc::channel();
+    // App shutdown can join a blocked event thread or wait for a blocked audio worker.
+    runtime.spawn_blocking(move || {
+        handle.block_on(stop);
+        let _ = done.send(());
+    });
+    let stopped = wait.recv_timeout(budget);
+    runtime.shutdown_timeout(RUNTIME_SHUTDOWN);
+    stopped.context("dictation core did not stop")
+}
+
+fn interactive(app: &App, console: &Console, mode: ActivationMode) -> Result<()> {
     match mode {
         ActivationMode::Hold => {
             console.say("Enter presses the hotkey, Enter again releases it; q quits")
@@ -338,7 +368,6 @@ fn interactive(
             }
         }
     }
-    drain(trays);
     Ok(())
 }
 
@@ -354,11 +383,7 @@ fn wait_for_label(trays: &Receiver<String>, wanted: &str, timeout: Duration) -> 
     }
 }
 
-fn drain(trays: &Receiver<String>) {
-    while trays.try_recv().is_ok() {}
-}
-
-/// Prints events and feeds tray labels to the main thread.
+/// Prints events and feeds model startup status to the main thread.
 struct Console {
     started: Instant,
     last: Mutex<Shown>,
@@ -573,36 +598,4 @@ impl Files for Terminal {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::cell::Cell;
-
-    #[test]
-    fn an_automatic_one_shot_stops_without_a_second_press() {
-        for release_stops in [false, true] {
-            let (send, trays) = mpsc::channel();
-            let console = Console {
-                started: Instant::now(),
-                last: Mutex::default(),
-                trays: send.clone(),
-            };
-            let recording = Cell::new(false);
-            let pressed = Cell::new(false);
-            let events = |key| match key {
-                HotkeyEvent::ComboDown => {
-                    assert!(!pressed.replace(true), "only one press");
-                    recording.set(true);
-                    send.send("Onda, recording".to_owned()).unwrap();
-                }
-                HotkeyEvent::ComboUp => {
-                    assert!(recording.get());
-                    recording.set(!release_stops);
-                }
-                _ => unreachable!(),
-            };
-            let stop = || recording.set(false);
-            hold_once(events, stop, &trays, &console, ActivationMode::Automatic, 0).unwrap();
-            assert!(!recording.get());
-        }
-    }
-}
+mod tests;

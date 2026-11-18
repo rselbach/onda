@@ -1485,6 +1485,66 @@ async fn cln_2_an_unreadable_key_delivers_raw_with_a_notice() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn cleanup_dispatch_requires_the_enabled_recording_provider() {
+    use onda_domain::cleanup::CleanupProvider::{Fireworks, OpenRouter};
+
+    for (name, enabled, provider, want_calls, want_text) in [
+        ("unchanged", true, OpenRouter, 1, "Hello world."),
+        ("switched", true, Fireworks, 0, "hello world"),
+        ("disabled", false, OpenRouter, 0, "hello world"),
+    ] {
+        let h = Harness::with(|s| s.cleanup_enabled = true).await;
+        h.cleanup.respond(vec![Ok("Hello world.".to_owned())]);
+        h.press();
+        sleep(500).await;
+        assert!(h.audio.is_open(), "{name}");
+        h.update(|s| {
+            s.cleanup_enabled = enabled;
+            s.cleanup_provider = Some(provider);
+        });
+        h.release();
+        sleep(1000).await;
+        assert_eq!(h.cleanup.calls(), want_calls, "{name}");
+        assert_eq!(h.typed(), [want_text], "{name}");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn cleanup_retry_stops_if_the_recording_provider_is_no_longer_allowed() {
+    use onda_domain::cleanup::CleanupProvider::{Fireworks, OpenRouter};
+
+    for (name, enabled, provider) in [
+        ("switched", true, Fireworks),
+        ("disabled", false, OpenRouter),
+    ] {
+        let h = Harness::with(|s| s.cleanup_enabled = true).await;
+        let hold = Arc::new(tokio::sync::Notify::new());
+        *lock(&h.cleanup.hold) = Some(hold.clone());
+        h.cleanup.respond(vec![
+            Ok("# Hello".to_owned()),
+            Ok("Hello world.".to_owned()),
+        ]);
+        h.press();
+        sleep(500).await;
+        h.release();
+        sleep(1000).await;
+        assert_eq!(h.cleanup.calls(), 1, "{name}");
+
+        h.update(|s| {
+            s.cleanup_enabled = enabled;
+            s.cleanup_provider = Some(provider);
+        });
+        *lock(&h.cleanup.hold) = None;
+        hold.notify_one();
+        sleep(1000).await;
+
+        assert_eq!(h.cleanup.calls(), 1, "{name}");
+        assert_eq!(h.typed(), ["hello world"], "{name}");
+        assert!(h.notices().is_empty(), "{name}");
+    }
+}
+
+#[tokio::test(start_paused = true)]
 async fn an_invalid_provider_at_decode_completion_leaves_the_transcript_local() {
     let h = Harness::with(|s| s.cleanup_enabled = true).await;
     h.press();

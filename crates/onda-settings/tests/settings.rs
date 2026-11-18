@@ -484,7 +484,6 @@ fn corrupt_values_read_as_defaults_set_2() {
         Key::PauseMediaDuringRecording,
         Key::TerminalPasteShortcut,
         Key::SoundFeedbackEnabled,
-        Key::HistoryEnabled,
         Key::HistoryKeepsAudio,
         Key::PostProcessingEnabled,
         Key::OnboardingCompleted,
@@ -528,20 +527,56 @@ fn the_hotkey_default_is_the_callers_hot_2_hot_5() {
 }
 
 #[test]
-fn sending_checks_the_provider_even_without_a_local_settings_write() {
-    let (dir, settings) = with_json(&json!({}));
+fn sending_requires_enabled_cleanup_with_the_requested_provider_on_disk() {
+    use CleanupProvider::{Fireworks, OpenRouter};
+
+    let (dir, settings) = with_json(&json!({"postProcessingEnabled": true}));
     let path = settings_path(&dir);
-    assert_eq!(
-        settings.stored_cleanup_provider(),
-        Some(CleanupProvider::OpenRouter)
-    );
-    for contents in [r#"{"cleanupProvider":"greendale"}"#, "{"] {
+    let lock_path = path.with_file_name("settings.json.lock");
+    let allowed = |provider| {
+        settings
+            .with_cleanup_admission(provider, || {
+                let writer = fs::OpenOptions::new()
+                    .write(true)
+                    .open(&lock_path)
+                    .expect("open writer lock");
+                assert!(matches!(
+                    writer.try_lock(),
+                    Err(fs::TryLockError::WouldBlock)
+                ));
+            })
+            .is_some()
+    };
+    assert!(allowed(OpenRouter));
+    assert!(!allowed(Fireworks));
+
+    let writer = Settings::open(&path);
+    writer
+        .set_cleanup_provider(Fireworks)
+        .expect("switch provider");
+    assert!(!allowed(OpenRouter));
+    assert!(allowed(Fireworks));
+
+    writer
+        .set_post_processing_enabled(false)
+        .expect("disable cleanup");
+    assert!(!allowed(Fireworks));
+    assert!(settings.post_processing_enabled());
+    assert_eq!(settings.cleanup_provider(), Some(OpenRouter));
+
+    for contents in [
+        r#"{"postProcessingEnabled":true,"cleanupProvider":"greendale"}"#,
+        r#"{"postProcessingEnabled":true,"cleanupProvider":null}"#,
+        r#"{"postProcessingEnabled":"true"}"#,
+        "{",
+    ] {
         fs::write(&path, contents).expect("replace settings");
-        assert_eq!(settings.stored_cleanup_provider(), None);
+        assert!(!allowed(OpenRouter), "{contents}");
     }
     fs::remove_file(&path).expect("remove fixture");
+    assert!(!allowed(OpenRouter));
     fs::create_dir(path).expect("unreadable settings");
-    assert_eq!(settings.stored_cleanup_provider(), None);
+    assert!(!allowed(OpenRouter));
 }
 
 #[test]
@@ -549,6 +584,22 @@ fn invalid_provider_never_selects_a_cloud_service() {
     for value in [json!("greendale"), json!(1), Value::Null] {
         let (_, settings) = with_json(&json!({"cleanupProvider":value}));
         assert_eq!(settings.cleanup_provider(), None);
+    }
+}
+
+#[test]
+fn wrong_type_history_flag_stays_off_after_an_unrelated_write() {
+    for bad in [json!("true"), json!(1), Value::Null, json!([true])] {
+        let (dir, settings) = with_json(&json!({"historyEnabled": bad}));
+        assert!(!settings.history_enabled(), "{bad}");
+
+        settings
+            .set_output_mode(OutputMode::Clipboard)
+            .expect("set");
+
+        let reopened = Settings::open(settings_path(&dir));
+        assert!(!reopened.history_enabled(), "{bad}");
+        assert_eq!(reopened.output_mode(), OutputMode::Clipboard);
     }
 }
 
@@ -577,10 +628,13 @@ fn getters_never_write_back_corrupt_values() {
 }
 
 #[test]
-fn whole_file_corruption_reads_as_defaults() {
+fn whole_file_corruption_disables_history_even_after_repair() {
     let cases: [(&str, &[u8]); 8] = [
         ("garbage", b"Troy and Abed in the morning"),
-        ("truncated", b"{\"outputMode\": \"clip"),
+        (
+            "truncated",
+            br#"{"historyEnabled": false, "outputMode": "clip"#,
+        ),
         ("empty", b""),
         ("array", b"[1, 2, 3]"),
         ("string", b"\"settings\""),
@@ -592,10 +646,12 @@ fn whole_file_corruption_reads_as_defaults() {
         let (dir, settings) = with_file(contents);
         let path = settings_path(&dir);
         let mut want = defaults();
+        want.history_enabled = false;
         want.history_retention = HistoryRetention::Forever;
         want.cleanup_provider = None;
         assert_eq!(snapshot(&settings), want, "{name}");
         settings.canonicalize().expect(name);
+        assert!(!settings.history_enabled(), "{name}");
         assert_eq!(settings.history_retention(), HistoryRetention::Forever);
         assert_eq!(fs::read(&path).expect(name), contents);
 
@@ -603,10 +659,12 @@ fn whole_file_corruption_reads_as_defaults() {
 
         assert_eq!(
             stored(&path),
-            json!({"outputMode":"clipboard","historyRetention":"forever", "cleanupProvider": null}),
+            json!({"outputMode":"clipboard","historyEnabled":false,"historyRetention":"forever", "cleanupProvider": null}),
             "{name}"
         );
-        assert_eq!(Settings::open(&path).cleanup_provider(), None);
+        let reopened = Settings::open(&path);
+        assert!(!reopened.history_enabled(), "{name}");
+        assert_eq!(reopened.cleanup_provider(), None);
         let backups = leftovers(&path);
         assert_eq!(backups.len(), 1, "{name}: {backups:?}");
         assert!(backups[0].starts_with("settings.json.corrupt-"), "{name}");
@@ -687,23 +745,33 @@ fn explicit_forever_repairs_a_corrupt_file() {
         .expect("set");
     assert_eq!(
         stored(&settings_path(&dir)),
-        json!({"historyRetention":"forever","cleanupProvider":null})
+        json!({"historyEnabled":false,"historyRetention":"forever","cleanupProvider":null})
     );
 }
 
 #[test]
-fn failed_reread_disables_age_pruning_without_losing_other_preferences() {
-    let (dir, settings) = with_json(&json!({"historyRetention":"week", "historyEnabled": false}));
-    let path = settings_path(&dir);
-    fs::remove_file(&path).expect("remove fixture");
-    fs::create_dir(&path).expect("unreadable settings");
-    assert!(settings.set_output_mode(OutputMode::Clipboard).is_err());
-    assert_eq!(settings.history_retention(), HistoryRetention::Forever);
-    assert!(!settings.history_enabled());
+fn explicit_history_opt_in_wins_when_repairing_corruption() {
+    let (dir, settings) = with_file(b"{");
+    settings.set_history_enabled(true).expect("enable history");
+    assert!(Settings::open(settings_path(&dir)).history_enabled());
 }
 
 #[test]
-fn unreadable_path_reads_as_defaults() {
+fn failed_reread_disables_history_and_age_pruning_without_losing_other_preferences() {
+    let (dir, settings) = with_json(
+        &json!({"historyRetention":"week", "historyEnabled": true, "outputMode": "clipboard"}),
+    );
+    let path = settings_path(&dir);
+    fs::remove_file(&path).expect("remove fixture");
+    fs::create_dir(&path).expect("unreadable settings");
+    assert!(settings.set_sound_feedback_enabled(false).is_err());
+    assert_eq!(settings.history_retention(), HistoryRetention::Forever);
+    assert!(!settings.history_enabled());
+    assert_eq!(settings.output_mode(), OutputMode::Clipboard);
+}
+
+#[test]
+fn unreadable_path_disables_history_and_keeps_the_file() {
     let dir = TempDir::new().expect("temp dir");
     let path = settings_path(&dir);
     fs::create_dir_all(&path).expect("a directory where the file should be");
@@ -711,6 +779,7 @@ fn unreadable_path_reads_as_defaults() {
     let settings = Settings::open(&path);
 
     let mut want = defaults();
+    want.history_enabled = false;
     want.history_retention = HistoryRetention::Forever;
     want.cleanup_provider = None;
     assert_eq!(snapshot(&settings), want);

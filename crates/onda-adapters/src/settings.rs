@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use onda_app::seams::{SettingChange, Settings as SessionSettings, SettingsSource};
+use onda_domain::cleanup::CleanupRequest;
 use onda_domain::hotkey::Shortcut;
 use onda_domain::language_menu::recent_languages;
 use onda_domain::languages::{LanguageSetting, default_language};
@@ -11,6 +12,7 @@ use onda_domain::migration::{REMOVED_MODEL_IDS, SelectionResolution, resolve_sel
 use onda_domain::models::{Catalog, ModelId};
 use onda_domain::onboarding::OnboardingFlags;
 use onda_settings::Settings;
+use tokio::sync::oneshot;
 
 /// [`SettingsSource`] over the settings file. Computed defaults follow the
 /// OS language and the catalog (SET-2a); the hotkey's follows the platform
@@ -85,13 +87,15 @@ impl SettingsSource for SettingsAdapter {
         }
     }
 
-    fn cleanup_provider_available(&self) -> onda_app::seams::BoxFuture<'_, bool> {
+    fn admit_cleanup(&self, request: CleanupRequest) -> oneshot::Receiver<CleanupRequest> {
+        let (handoff, admitted) = oneshot::channel();
         let settings = self.settings.clone();
-        Box::pin(async move {
-            tokio::task::spawn_blocking(move || settings.stored_cleanup_provider().is_some())
-                .await
-                .unwrap_or(false)
-        })
+        tokio::task::spawn_blocking(move || {
+            let _ = settings.with_cleanup_admission(request.provider, || {
+                let _ = handoff.send(request);
+            });
+        });
+        admitted
     }
 
     fn set_selected_model(&self, model: ModelId) {
@@ -166,8 +170,162 @@ fn resolved_model(
 
 #[cfg(test)]
 mod tests {
+    use std::fs::OpenOptions;
+    use std::time::Duration;
+
     use super::*;
+    use onda_domain::cleanup::{CleanupPrompt, CleanupProvider, build_request};
     use onda_domain::routing::default_model;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio::time::timeout;
+
+    fn cleanup_settings() -> (tempfile::TempDir, SettingsAdapter) {
+        let dir = tempfile::tempdir().expect("settings directory");
+        let settings = Arc::new(Settings::open(dir.path().join("settings.json")));
+        settings
+            .set_post_processing_enabled(true)
+            .expect("enable cleanup");
+        let adapter = SettingsAdapter::new(
+            settings,
+            Catalog::new(None),
+            None,
+            &Shortcut::CONTROL_ALT_SPACE,
+        );
+        (dir, adapter)
+    }
+
+    fn writer_lock(dir: &tempfile::TempDir) -> std::fs::File {
+        OpenOptions::new()
+            .write(true)
+            .open(dir.path().join("settings.json.lock"))
+            .expect("open writer lock")
+    }
+
+    fn cleanup_request() -> CleanupRequest {
+        let provider = CleanupProvider::OpenRouter;
+        build_request(
+            provider,
+            None,
+            provider.default_model(),
+            &CleanupPrompt::default(),
+            "cool cool cool",
+            None,
+        )
+    }
+
+    #[tokio::test]
+    async fn busy_writer_denies_cleanup_without_waiting_for_unlock() {
+        let (dir, adapter) = cleanup_settings();
+        let held = writer_lock(&dir);
+        held.lock().expect("lock for writing");
+        let result = timeout(
+            Duration::from_secs(1),
+            adapter.admit_cleanup(cleanup_request()),
+        )
+        .await
+        .expect("admission returned while locked");
+        assert!(result.is_err());
+        drop(held);
+    }
+
+    #[tokio::test]
+    async fn writer_before_cleanup_admission_suppresses_handoff() {
+        let (dir, adapter) = cleanup_settings();
+        let writer = Settings::open(dir.path().join("settings.json"));
+        writer
+            .set_post_processing_enabled(false)
+            .expect("disable cleanup");
+        assert!(adapter.admit_cleanup(cleanup_request()).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn writer_after_cleanup_admission_completes_before_response() {
+        const POST: &[u8] =
+            b"POST /cleanup HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n";
+        const REPLY: &str =
+            "HTTP/1.1 200 OK\r\nContent-Length: 15\r\nConnection: close\r\n\r\nCool cool cool.";
+
+        let (dir, adapter) = cleanup_settings();
+        let path = dir.path().join("settings.json");
+        let writer = Settings::open(&path);
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("address");
+        let request = cleanup_request();
+        let admission = adapter.admit_cleanup(request.clone());
+        let executor = tokio::spawn(async move {
+            assert_eq!(admission.await.expect("request admitted"), request);
+            let mut stream = TcpStream::connect(address).await.expect("connect");
+            stream.write_all(POST).await.expect("send request");
+            let mut response = String::new();
+            stream
+                .read_to_string(&mut response)
+                .await
+                .expect("read response");
+            response
+        });
+        let (mut connection, _) = timeout(Duration::from_secs(5), listener.accept())
+            .await
+            .expect("transport connected")
+            .expect("accept");
+        let mut received = [0; POST.len()];
+        timeout(Duration::from_secs(5), connection.read_exact(&mut received))
+            .await
+            .expect("request arrived")
+            .expect("read request");
+        assert_eq!(received, POST);
+        let write = tokio::task::spawn_blocking(move || writer.set_post_processing_enabled(false));
+        timeout(Duration::from_secs(5), write)
+            .await
+            .expect("writer completed before the response")
+            .expect("writer task")
+            .expect("disable cleanup");
+        assert!(!executor.is_finished());
+        assert!(!Settings::open(path).post_processing_enabled());
+        connection
+            .write_all(REPLY.as_bytes())
+            .await
+            .expect("send response");
+        drop(connection);
+        let response = timeout(Duration::from_secs(5), executor)
+            .await
+            .expect("transport received response")
+            .expect("cleanup task");
+        assert_eq!(response, REPLY);
+    }
+
+    #[test]
+    fn cancelling_before_handoff_never_starts_transport() {
+        let (_dir, adapter) = cleanup_settings();
+        tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(1)
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                let (occupy, occupied) = oneshot::channel();
+                let (release, released) = std::sync::mpsc::channel();
+                let blocker = tokio::task::spawn_blocking(move || {
+                    occupy.send(()).expect("blocking worker occupied");
+                    let _ = released.recv();
+                });
+                occupied.await.expect("blocking worker occupied");
+                let (wait, waiting) = oneshot::channel();
+                let (start, started) = oneshot::channel();
+                let executor = tokio::spawn(async move {
+                    let admission = adapter.admit_cleanup(cleanup_request());
+                    wait.send(()).expect("admission queued");
+                    if let Ok(request) = admission.await {
+                        start.send(request).expect("transport started");
+                    }
+                });
+                waiting.await.expect("admission queued");
+                executor.abort();
+                assert!(executor.await.expect_err("caller aborted").is_cancelled());
+                release.send(()).expect("release blocking worker");
+                blocker.await.expect("blocking task");
+                assert!(started.await.is_err());
+            });
+    }
 
     const TEST_REMOVED: &[(&str, ModelId)] = &[
         ("parakeet-tdt-v3", ModelId::ParakeetUltra),

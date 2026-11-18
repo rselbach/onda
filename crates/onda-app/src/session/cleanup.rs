@@ -624,20 +624,14 @@ impl Actor {
                 Ok(key) => {
                     let request =
                         build_request(provider, key.as_ref(), &model, &prompt, TEST_SAMPLE, None);
-                    match refine(
-                        transport.as_ref(),
-                        settings.as_ref(),
-                        request,
-                        &prompt,
-                        TEST_SAMPLE,
-                    )
-                    .await
+                    match refine(transport, settings.as_ref(), request, &prompt, TEST_SAMPLE).await
                     {
                         CleanupOutcome::Cleaned { text } => Ok(text),
                         CleanupOutcome::FellBack { error, .. } => Err(error),
-                        CleanupOutcome::NotRun => {
-                            Err("Choose a model before testing post-processing.".to_owned())
-                        }
+                        CleanupOutcome::NotRun => Err(
+                            "Post-processing settings changed. Check them before testing again."
+                                .to_owned(),
+                        ),
                     }
                 }
                 Err(error) => Err(error),

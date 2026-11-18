@@ -13,6 +13,7 @@ flush_events                     never a barrier for the core's own tests
 onboarding_use_clipboard         never the link sits on the Permissions step, which Linux does not have
 open_keyboard_settings           never it sits next to the Fn warning, and Linux has no Fn shortcuts
 open_login_items                 never Linux autostart needs no approval, so the caption never offers it
+press_dictation_hotkey           never the CLI simulates a press while Linux sends real hotkey events to on_hotkey_event
 set_hotkey                       never the recorder commits the shortcut inside the core, as on macOS
 settings_changed                 never the shell changes settings only through core commands
 shutdown                         never the shell owns the runtime and calls shutdown_async

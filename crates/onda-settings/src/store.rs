@@ -1,7 +1,7 @@
 //! The settings store over `settings.json` (SET-1..SET-4).
 
 use std::fmt;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -31,9 +31,9 @@ type Observer = Box<dyn Fn(Key) + Send + Sync>;
 /// uniquely named temp file. Other instances and processes may write the same
 /// file: a write never undoes theirs, keys this version does not know are
 /// kept, and the cache picks up the file's latest contents on each write.
-/// Getters never write and never fail: a missing key is the default, a
-/// corrupt value is the default plus a log line (SET-2), and a corrupt or
-/// unreadable file uses the defaults except for retention, which keeps all ages.
+/// Getters never write and never fail. A missing key uses its default.
+/// Invalid values usually use the default and are logged (SET-2). A corrupt
+/// or unreadable file disables history saving and age pruning.
 ///
 /// `Settings` is `Send + Sync`; share it behind an `Arc`.
 pub struct Settings {
@@ -103,12 +103,11 @@ impl From<io::Error> for SettingsError {
 impl Settings {
     /// Opens the store at `path` (normally `<data>/settings.json`).
     ///
-    /// Never fails. A missing file is empty settings. An unreadable file, a
-    /// file that is not JSON, or JSON that is not an object is logged and
-    /// read with no history age limit. The next setter copies a corrupt file to
-    /// `settings.json.corrupt-<random>` before replacing it, and fails rather than
-    /// replace a file it cannot read. The parent directory is created on
-    /// first write.
+    /// Never fails. A missing file is empty settings. A corrupt or unreadable
+    /// file is logged and disables history saving and age pruning. The next
+    /// setter copies a corrupt file to `settings.json.corrupt-<random>` before
+    /// replacing it, and fails rather than replace a file it cannot read.
+    /// The parent directory is created on first write.
     pub fn open(path: impl Into<PathBuf>) -> Settings {
         let path = path.into();
         let values = CachedSettings::from_read(reload(&path).ok().flatten());
@@ -117,6 +116,12 @@ impl Settings {
             values: Mutex::new(values),
             observer: None,
         }
+    }
+
+    /// Opens a fresh snapshot of the file without refreshing this instance
+    /// or copying its change observer.
+    pub fn reopen(&self) -> Self {
+        Self::open(&self.path)
     }
 
     /// Calls `observer` with each key whose stored value a setter, reset, or
@@ -322,9 +327,21 @@ impl Settings {
         self.put(Key::SoundFeedbackEnabled, Value::from(enabled))
     }
 
-    /// Whether history is saved. Default true.
+    /// Whether history is saved. An unset key in valid settings defaults to
+    /// true. An invalid value or unreadable settings disables saving history.
     pub fn history_enabled(&self) -> bool {
-        self.bool(Key::HistoryEnabled, true)
+        let cache = self.lock();
+        if !cache.readable {
+            return false;
+        }
+        match cache.values.get(Key::HistoryEnabled.as_str()) {
+            None => true,
+            Some(Value::Bool(enabled)) => *enabled,
+            Some(_) => {
+                tracing::warn!(key = %Key::HistoryEnabled, "expected a boolean; history is off");
+                false
+            }
+        }
     }
 
     /// Stores `historyEnabled`.
@@ -411,9 +428,29 @@ impl Settings {
         }
     }
 
-    /// Checks the on-disk provider selection before sending text. Does not update the session snapshot.
-    pub fn stored_cleanup_provider(&self) -> Option<CleanupProvider> {
-        Settings::open(&self.path).cleanup_provider()
+    /// Runs `handoff` under a shared file lock if the on-disk settings still
+    /// enable cleanup for `provider`. Returns `None` if the lock is busy,
+    /// settings are unreadable, or the provider is not enabled.
+    /// Run this off the async executor. The handoff must not wait or do I/O.
+    pub fn with_cleanup_admission<T>(
+        &self,
+        provider: CleanupProvider,
+        handoff: impl FnOnce() -> T,
+    ) -> Option<T> {
+        let file = open_lock_file(&self.path)
+            .inspect_err(|error| tracing::warn!(%error, "could not open settings lock for cleanup"))
+            .ok()?;
+        match file.try_lock_shared() {
+            Ok(()) => {}
+            Err(TryLockError::WouldBlock) => return None,
+            Err(TryLockError::Error(error)) => {
+                tracing::warn!(%error, "could not lock settings for cleanup");
+                return None;
+            }
+        }
+        let stored = Self::open(&self.path);
+        (stored.post_processing_enabled() && stored.cleanup_provider() == Some(provider))
+            .then(handoff)
     }
 
     /// Stores `cleanupProvider`.
@@ -635,6 +672,7 @@ impl Settings {
             }
             if corrupt {
                 for (key, fallback) in [
+                    (Key::HistoryEnabled, Value::Bool(false)),
                     (
                         Key::HistoryRetention,
                         Value::from(HistoryRetention::Forever.as_setting()),
@@ -713,20 +751,23 @@ fn read(path: &Path) -> io::Result<Result<Map<String, Value>, &'static str>> {
     })
 }
 
-// an exclusive lock on `settings.json.lock`, held until the file is dropped;
-// the lock file is never removed, so every writer locks the same inode
 fn lock_file(path: &Path) -> Result<File, SettingsError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let lock_path = sibling(path, ".lock");
-    let file = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(&lock_path)?;
+    let file = open_lock_file(path)?;
     file.lock()?;
     Ok(file)
+}
+
+// the lock file is never removed, so writers and cleanup lock the same inode
+fn open_lock_file(path: &Path) -> io::Result<File> {
+    OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(sibling(path, ".lock"))
 }
 
 // replaces the file through a uniquely named sibling temp file, first copying

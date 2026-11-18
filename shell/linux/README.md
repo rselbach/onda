@@ -188,17 +188,22 @@ removes your custom prompt. Onda does not accept a blank prompt.
   keyboard layout.
 - **Paste:** `wl-copy` plus `wtype` when the compositor advertises virtual
   keyboards, otherwise a keyboard-only RemoteDesktop portal session. X11 uses
-  `xclip` and `xdotool`. Refused or failed injection leaves the transcript on
-  the clipboard. **Terminal paste shortcut** selects Ctrl+Shift+V
-  and is saved with the other settings.
+  `xclip` for the clipboard and XTEST for the paste keys. Onda sends Ctrl+V
+  on the active X11 layout without remapping keys or switching layouts. If
+  Onda cannot send the shortcut safely, paste the transcript manually from
+  the clipboard. Onda sends no keys if it detects a newer copy before
+  dispatch. **Terminal paste shortcut** selects
+  Ctrl+Shift+V and is saved with the other settings.
 - **Permission lifetime:** portal restore tokens are kept with owner-only
   permissions. A restorable keyboard session closes after 15 idle seconds.
   The desktop may show a remote-control indicator while it is open.
 - **Clipboard preservation:** bounded to 32 MiB and one second of reads.
   Wayland preserves offered formats when data-control is available; X11
   preserves text-only selections. Unsupported or unreadable selections leave
-  the transcript on the clipboard. Restoration waits 500 ms and checks the
-  current text; this is not an acknowledgement from the target application.
+  the transcript on the clipboard. The check before sending X11 paste keys
+  does not cover the target app's later clipboard read. Restoration is
+  separate and best effort. Onda waits 500 ms and checks for a newer copy, but
+  a copy between that check and the restore can still be overwritten.
 - **Indicator:** a floating panel with the waveform, a clock, the transcribing,
   notice, and silent-microphone states, and a cancel button. Outside a
   dictation, the same panel shows a model download or load: its status line, a
@@ -320,19 +325,30 @@ a line in `tests/uncalled-core-commands.txt`, and when a listed command gains a
 call site. Delete a command's line in the same change that starts calling it.
 
 The real-GUI tests drive the GTK window and are marked `#[ignore]`.
-`scripts/test-linux-gui.sh` finds every ignored test of the shell and runs each
-one in its own process and data directory, under Xvfb with a private D-Bus
-session and keyring. CI runs the script on every push. The tests check the
-first-run wizard, the Getting Started checklist with a model missing and
-installed, a paste into its try-it field, provider switching, key storage
-and deletion, custom model
-selection, missing-key feedback, prompt editing, replacement editing,
-shortcuts, history search, confirmation dialogs, the model update notice, and
-critical alerts. They never use your credentials or normal Onda data. The
-script also runs the overlay tests described below, and the test of the text
-field reader. That test serves a stand-in accessibility bus on the private
-session bus, with fields, a password field, and applications that never
-answer.
+`scripts/test-linux-gui.sh` finds the ignored X11-compatible tests and runs
+each test in its own process and data directory. The tests use Xvfb, a private
+D-Bus session, and a private keyring. CI runs the script on every push. The
+tests check the first-run wizard, the Getting Started checklist with a model
+missing and installed, a paste into its try-it field, provider switching, key
+storage and deletion, custom model selection, missing-key feedback, prompt
+editing, replacement editing, shortcuts, history search, confirmation dialogs,
+the model update notice, and critical alerts. They never use your credentials
+or normal Onda data. The script also runs the overlay tests described below,
+and the test of the text field reader. That test serves a stand-in accessibility
+bus on the private session bus, with fields, a password field, and applications
+that never answer.
+
+Run the Wayland clipboard and output tests inside a private Wayland session
+with one seat and data control. Install `wl-clipboard` in that environment.
+The tests replace the clipboard contents in that session.
+
+```sh
+cargo test --locked -p onda-linux --bin onda linux::clipboard::tests:: -- \
+  --ignored --skip x11 --test-threads=1
+cargo test --locked -p onda-linux --bin onda \
+  linux::output::tests::wayland_changed_clipboard_stops_the_portal_paste -- \
+  --ignored --exact
+```
 
 The script needs no list of tests. Mark a new real-GUI test `#[ignore]`, and
 start the app with `launch` in `src/linux/ui/integration_tests.rs`. `launch`

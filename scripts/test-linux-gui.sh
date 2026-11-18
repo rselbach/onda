@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# Run every ignored test of the GTK shell, the tests that drive the real
-# window, in a private desktop session with its own display, bus, and
-# keyring. Each test runs in its own process and data directory. A local
-# proxy refuses all network traffic, and the run fails if a test tried to
-# reach the host of the speech models.
+# Run the GTK shell's ignored X11-compatible tests in a private desktop
+# session with its own display, bus, and keyring. Each test runs in its own
+# process and data directory. A local proxy refuses all network traffic.
+# The run fails if a test tries to reach the speech model host.
 set -euo pipefail
 
 readonly MODEL_HOST='huggingface.co'
@@ -65,7 +64,7 @@ main() {
   trap cleanup EXIT
   # the harness prints one "<name>: test" line for each test
   local listing
-  listing="$(gui_tests --list --ignored)"
+  listing="$(gui_tests --list --ignored --skip ::tests::wayland_)"
   local -a tests
   mapfile -t tests < <(sed -n 's/: test$//p' <<< "${listing}")
   if (( ${#tests[@]} == 0 )); then

@@ -287,7 +287,7 @@ What a run cannot prove, because it is X11 in Xvfb with no window manager:
 - **The layer-shell overlay.** On Wayland the overlay is a layer surface. A
   run shows the X11 window `onda-recording`.
 - **`wtype` paste.** On Wayland Onda types with `wtype` or asks the portal
-  for a keyboard. A run pastes with `xdotool`.
+  for a keyboard. A run pastes with XTEST on the active X11 layout.
 - **The Wayland clipboard.** A run uses the X11 selection.
 - **What a desktop adds.** Focus policy, stacking, the tray host's drawing of
   the icon and menu, notifications, the file manager, the browser, login

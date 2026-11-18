@@ -171,7 +171,7 @@ pub(super) fn seed_history() {
                     audio_byte_count: None,
                 },
                 seed.samples,
-                onda_history::HistoryPreferences {
+                || onda_history::HistoryPreferences {
                     enabled: true,
                     keep_audio: !seed.samples.is_empty(),
                     retention: onda_domain::types::HistoryRetention::Month,

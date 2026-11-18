@@ -1697,6 +1697,38 @@ async fn cln_27_model_changes_cancel_running_tests_and_discard_their_results() {
     }
 }
 
+#[tokio::test(start_paused = true)]
+async fn sample_test_does_not_send_after_the_shown_configuration_changes() {
+    use onda_domain::cleanup::CleanupProvider::{Fireworks, OpenRouter};
+
+    for (name, enabled, provider) in [
+        ("switched", true, Fireworks),
+        ("disabled", false, OpenRouter),
+    ] {
+        let h = Harness::with(|s| s.cleanup_enabled = true).await;
+        h.app.page_appeared(MainWindowSection::PostProcessing);
+        sleep(10).await;
+        let details = post_processing(&h).details.expect("details");
+        assert!(details.test_button.enabled);
+
+        h.update(|s| {
+            s.cleanup_enabled = enabled;
+            s.cleanup_provider = Some(provider);
+        });
+        h.app.test_cleanup();
+        sleep(10).await;
+
+        assert_eq!(h.cleanup.calls(), 0, "{name}");
+        let details = post_processing(&h).details.expect("stale details");
+        assert_eq!(details.test_result, None, "{name}");
+        assert_eq!(
+            details.test_error.expect("settings error").message,
+            "Post-processing settings changed. Check them before testing again.",
+            "{name}"
+        );
+    }
+}
+
 const CUSTOM_PROMPT: &str = "Fix punctuation only.\n\nKeep every word Troy said.";
 
 #[tokio::test(start_paused = true)]

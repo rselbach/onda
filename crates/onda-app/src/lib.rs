@@ -19,6 +19,7 @@ pub mod system_speech;
 mod transcription;
 pub mod views;
 
+use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -27,7 +28,8 @@ use onda_domain::hotkey::{
 };
 use onda_domain::models::{Catalog, ModelId};
 use tokio::runtime::{Handle, Runtime};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
+use tokio::time::Instant;
 
 use events::EventBus;
 pub use events::{Event, EventSink};
@@ -123,6 +125,74 @@ pub enum HotkeyEvent {
     Cancel,
 }
 
+/// Why a one-shot dictation command could not run to completion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DictateOnceError {
+    /// The core could not start the recording.
+    NotStarted,
+    /// The core shut down before the session ended.
+    CoreStopped,
+}
+
+impl fmt::Display for DictateOnceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::NotStarted => "could not start dictation",
+            Self::CoreStopped => "the dictation core stopped",
+        })
+    }
+}
+
+impl std::error::Error for DictateOnceError {}
+
+/// The latest milestone of a simulated dictation press.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DictationPressState {
+    /// The actor has not acknowledged the press yet.
+    Pending,
+    /// The actor accepted the press and is opening capture.
+    Starting(ActivationMode),
+    /// Capture is open, even if the recording UI is still hidden.
+    Recording,
+    /// Capture is stopping or startup was cancelled. Includes any output in progress.
+    Finishing(Instant),
+    /// The session has ended. A short hold can succeed without a transcript.
+    Done(Result<(), DictateOnceError>),
+}
+
+/// A simulated hotkey press on an otherwise idle core. Dropping it cancels
+/// the session if it has not already ended.
+#[must_use]
+pub struct DictationPress<'a> {
+    app: &'a App,
+    state: watch::Receiver<DictationPressState>,
+}
+
+impl DictationPress<'_> {
+    /// Waits for the latest unseen milestone. Intermediate milestones can be skipped.
+    pub async fn changed(&mut self) -> Result<DictationPressState, DictateOnceError> {
+        self.state
+            .changed()
+            .await
+            .map_err(|_| DictateOnceError::CoreStopped)?;
+        Ok(*self.state.borrow_and_update())
+    }
+
+    /// Requests key-up and stops any latched recording. Hold and Toggle can
+    /// release during startup. Automatic must wait for capture to open.
+    pub fn release(&self) {
+        self.app.send(Msg::ReleaseDictationHotkey);
+    }
+}
+
+impl Drop for DictationPress<'_> {
+    fn drop(&mut self) {
+        if !matches!(*self.state.borrow(), DictationPressState::Done(_)) {
+            self.app.send(Msg::CancelDictationHotkey);
+        }
+    }
+}
+
 /// Feeds audio-source signals to a running core. Cheap to clone and send.
 #[derive(Clone)]
 pub struct AudioSignalSender {
@@ -206,6 +276,16 @@ impl App {
     /// Settings changed outside a session command; views re-read them.
     pub fn settings_changed(&self) {
         self.send(Msg::SettingsChanged);
+    }
+
+    /// Presses the combo hotkey for a single session.
+    pub fn press_dictation_hotkey(&mut self) -> DictationPress<'_> {
+        let (state, wait) = watch::channel(DictationPressState::Pending);
+        self.send(Msg::PressDictationHotkey(state));
+        DictationPress {
+            app: self,
+            state: wait,
+        }
     }
 
     /// A raw dictation-hotkey event.

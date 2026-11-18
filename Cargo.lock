@@ -2623,6 +2623,7 @@ dependencies = [
  "clap",
  "dirs",
  "hound",
+ "jiff",
  "onda-adapters",
  "onda-app",
  "onda-asr",
@@ -2634,8 +2635,10 @@ dependencies = [
  "onda-models",
  "onda-settings",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

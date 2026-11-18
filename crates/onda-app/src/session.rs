@@ -51,10 +51,10 @@ use onda_domain::status_menu::{
     LanguageMenuItem, RecentTranscriptItem, StatusMenu, StatusMenuInput,
 };
 use onda_domain::tray::{AppStatus, TrayView, tray_view};
-use onda_domain::types::{MicrophonePermission, ModelState, SessionPhase};
+use onda_domain::types::{ActivationMode, MicrophonePermission, ModelState, SessionPhase};
 use onda_domain::typing::requires_accessibility;
 use onda_domain::updates::update_control;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::{AbortHandle, spawn_blocking};
 use tokio::time::Instant;
 use uuid::Uuid;
@@ -69,7 +69,7 @@ use crate::ports::{Cue, Delivery, Target};
 use crate::seams::{AudioSignal, CaptureInfo, DownloadUpdate, Settings};
 use crate::transcription::{LoadError, TranscriptionService};
 use crate::views::MainWindowSection;
-use crate::{HotkeyEvent, Ports};
+use crate::{DictateOnceError, DictationPressState as PressState, HotkeyEvent, Ports};
 use hotkeys::Hotkeys;
 use windows::Ui;
 pub(crate) use windows::UiMsg;
@@ -91,6 +91,9 @@ pub(crate) struct SessionId(pub(crate) u64);
 pub(crate) enum Msg {
     // shell commands
     Hotkey(HotkeyEvent),
+    PressDictationHotkey(watch::Sender<PressState>),
+    ReleaseDictationHotkey,
+    CancelDictationHotkey,
     HotkeyRegistrationFailed(i32),
     SetHotkey(Shortcut),
     CaptureBegan,
@@ -358,6 +361,11 @@ enum Phase {
     Transcribing(Box<Transcribing>),
 }
 
+struct SimulatedPress {
+    held: Option<ActivationMode>,
+    state: watch::Sender<PressState>,
+}
+
 #[derive(Default)]
 struct Published {
     tray: Option<TrayView>,
@@ -378,6 +386,7 @@ pub(crate) struct Actor {
     service: TranscriptionService,
     settings: Arc<Settings>,
     phase: Phase,
+    simulated_press: Option<SimulatedPress>,
     next_id: u64,
     press: PressRouter,
     hotkeys: Hotkeys,
@@ -452,6 +461,7 @@ impl Actor {
             service,
             settings,
             phase: Phase::Idle,
+            simulated_press: None,
             next_id: 0,
             press: PressRouter::new(),
             hotkeys: Hotkeys::new(recorder),
@@ -498,6 +508,17 @@ impl Actor {
             // a failed or aborted start returns to idle without go_idle
             if let Phase::Idle = self.phase {
                 self.apply_deferred();
+                if let Some(press) = self.simulated_press.take() {
+                    if press.held.is_some() {
+                        self.on_hotkey(HotkeyEvent::ComboUp);
+                    }
+                    let result = if matches!(*press.state.borrow(), PressState::Starting(_)) {
+                        Err(DictateOnceError::NotStarted)
+                    } else {
+                        Ok(())
+                    };
+                    press.state.send_replace(PressState::Done(result));
+                }
             }
             self.publish();
         }
@@ -508,6 +529,9 @@ impl Actor {
             // settings are re-read only when a press reaches the router, so
             // the keystrokes a lone-modifier stream forwards stay cheap
             Msg::Hotkey(event) => self.on_hotkey(event),
+            Msg::PressDictationHotkey(state) => self.press_dictation_hotkey(state),
+            Msg::ReleaseDictationHotkey => self.release_dictation_hotkey(),
+            Msg::CancelDictationHotkey => self.cancel_dictation_hotkey(),
             Msg::HotkeyRegistrationFailed(status) => self.check_hotkey_failure(None, status),
             Msg::SetHotkey(shortcut) => self.set_hotkey(&shortcut),
             Msg::CaptureBegan => self.capture_began(),
@@ -630,6 +654,69 @@ impl Actor {
                     self.recent = recent;
                 }
             }
+        }
+    }
+
+    fn press_dictation_hotkey(&mut self, state: watch::Sender<PressState>) {
+        if state.is_closed() {
+            return;
+        }
+        if matches!(self.phase, Phase::Idle) {
+            self.on_hotkey(HotkeyEvent::ComboDown);
+            if let Phase::Starting(starting) = &self.phase {
+                let mode = starting.settings.activation_mode;
+                state.send_replace(PressState::Starting(mode));
+                self.simulated_press = Some(SimulatedPress {
+                    held: Some(mode),
+                    state,
+                });
+                return;
+            }
+            self.on_hotkey(HotkeyEvent::ComboUp);
+        }
+        state.send_replace(PressState::Done(Err(DictateOnceError::NotStarted)));
+    }
+
+    fn release_dictation_hotkey(&mut self) {
+        let Some(press) = &mut self.simulated_press else {
+            return;
+        };
+        if matches!(self.phase, Phase::Starting(_)) && press.held == Some(ActivationMode::Automatic)
+        {
+            return;
+        }
+        let Some(mode) = press.held.take() else {
+            return;
+        };
+        self.on_hotkey(HotkeyEvent::ComboUp);
+        match (mode, &self.phase) {
+            (ActivationMode::Toggle, Phase::Starting(_)) => self.abort_start(),
+            (ActivationMode::Toggle, Phase::Recording(_)) => self.stop_with_tail(),
+            // A long Automatic press already stopped with the release tail.
+            (ActivationMode::Automatic, Phase::Recording(_)) => self.stop_without_tail(),
+            _ => {}
+        }
+    }
+
+    fn cancel_dictation_hotkey(&mut self) {
+        if let Some(press) = &mut self.simulated_press {
+            let held = press.held.take().is_some();
+            self.cancel();
+            if held {
+                self.on_hotkey(HotkeyEvent::ComboUp);
+            }
+        }
+    }
+
+    fn dictation_press_finishing(&self) {
+        if let Some(press) = &self.simulated_press {
+            press.state.send_if_modified(|state| {
+                if matches!(state, PressState::Finishing(_)) {
+                    return false;
+                }
+                *state = PressState::Finishing(Instant::now());
+                true
+            });
         }
     }
 
@@ -758,7 +845,10 @@ impl Actor {
 
     fn abort_start(&mut self) {
         self.phase = match std::mem::replace(&mut self.phase, Phase::Idle) {
-            Phase::Starting(starting) => Phase::Aborting(starting),
+            Phase::Starting(starting) => {
+                self.dictation_press_finishing();
+                Phase::Aborting(starting)
+            }
             other => other,
         };
     }
@@ -893,6 +983,9 @@ impl Actor {
                 }));
                 if !provisional {
                     self.show_recording_ui();
+                }
+                if let Some(press) = &self.simulated_press {
+                    press.state.send_replace(PressState::Recording);
                 }
             }
         }
@@ -1055,6 +1148,7 @@ impl Actor {
         let Phase::Recording(recording) = std::mem::replace(&mut self.phase, Phase::Idle) else {
             return;
         };
+        self.dictation_press_finishing();
         let recording = *recording;
         let release_count = self.ports.audio.mark_release();
         if let Some(preview) = &recording.preview {
@@ -1122,6 +1216,7 @@ impl Actor {
         let Phase::Recording(recording) = std::mem::replace(&mut self.phase, Phase::Idle) else {
             return;
         };
+        self.dictation_press_finishing();
         let mut recording = *recording;
         let stopped = Instant::now();
         let preview = recording.preview.take();
@@ -1431,6 +1526,7 @@ impl Actor {
     // --- cancelling and finishing (DICT-19..DICT-21, DICT-28a) ---
 
     fn cancel(&mut self) {
+        self.dictation_press_finishing();
         match std::mem::replace(&mut self.phase, Phase::Idle) {
             Phase::Idle => {}
             Phase::Starting(starting) | Phase::Aborting(starting) => {

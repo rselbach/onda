@@ -12,9 +12,11 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use onda_asr::SpeechEngine;
 use onda_asr_coreml::ParakeetEngine;
+use onda_asr_coreml::manifest::manifest;
 use onda_domain::languages::{Language, LanguageSetting};
 use onda_domain::models::ModelId;
 use onda_domain::preview::{PREVIEW_INTERVAL, PREVIEW_MIN_SAMPLES};
+use onda_models::ModelManager;
 
 use crate::models::parse_model;
 
@@ -50,10 +52,12 @@ pub fn run(args: &Args, models_dir: &Path) -> Result<()> {
     let samples = read_wav(&args.wav)?;
     let audio_seconds = samples.len() as f64 / f64::from(SAMPLE_RATE);
     let language = args.language.engine_language();
-    let model_dir = models_dir.join(args.model.as_str());
-    let Some(mut engine) = ParakeetEngine::new(args.model, &model_dir) else {
+    let (manager, _events) = ModelManager::new(models_dir, manifest)?;
+    let Some(mut engine) = ParakeetEngine::new(args.model, manager.model_dir(args.model)) else {
         bail!("{} has no engine yet", args.model);
     };
+    eprintln!("Verifying model...");
+    manager.verify_contents(args.model)?;
 
     let started = Instant::now();
     engine.load(&mut |progress| {

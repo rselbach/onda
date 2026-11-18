@@ -332,7 +332,7 @@ async fn run(job: &CleanupJob, key: Option<String>) -> CleanupOutcome {
                 job.app_name.as_deref(),
             );
             refine(
-                job.transport.as_ref(),
+                job.transport.clone(),
                 job.settings.as_ref(),
                 request,
                 &job.prompt,
@@ -345,25 +345,27 @@ async fn run(job: &CleanupJob, key: Option<String>) -> CleanupOutcome {
 
 /// Runs the same acceptance and retry policy for dictation and sample tests.
 pub(crate) async fn refine(
-    transport: &dyn CleanupTransport,
+    transport: Arc<dyn CleanupTransport>,
     settings: &dyn SettingsSource,
     request: CleanupRequest,
     prompt: &CleanupPrompt,
     raw: &str,
 ) -> CleanupOutcome {
     let provider = request.provider;
-    if !settings.cleanup_provider_available().await {
+    let attempt = async |request| {
+        let request = settings.admit_cleanup(request).await.ok()?;
+        Some(transport.send(request).await)
+    };
+    let Some(first) = attempt(request.clone()).await else {
         return CleanupOutcome::NotRun;
-    }
-    let first = transport.send(request.clone()).await;
+    };
     match cleanup::after_first_attempt(provider, prompt, raw, first) {
         CleanupStep::Done(outcome) => outcome,
         CleanupStep::Retry(violation) => {
-            tracing::info!(%violation, "cleanup rejected by guardrails; retrying once");
-            if !settings.cleanup_provider_available().await {
+            tracing::info!(%violation, "cleanup rejected by guardrails");
+            let Some(second) = attempt(request).await else {
                 return CleanupOutcome::NotRun;
-            }
-            let second = transport.send(request).await;
+            };
             cleanup::after_retry(provider, raw, second)
         }
     }

@@ -1,15 +1,17 @@
 //! Best-effort clipboard preservation, bounded by size and read time.
 
 use super::process;
+use std::cell::Cell;
 use std::time::{Duration, Instant};
 
 use wl_clipboard_rs::copy::{ClipboardType, MimeSource, MimeType, Options, Seat, Source};
-use x11rb::connection::Connection;
-use x11rb::protocol::{Event, xfixes, xproto};
+use x11rb::connection::{Connection, RequestConnection};
+use x11rb::protocol::{Event, xfixes, xkb, xproto, xtest};
 use x11rb::rust_connection::RustConnection;
-use x11rb::wrapper::ConnectionExt as _;
+use x11rb::wrapper::{ConnectionExt as _, GrabServer};
 
 const WAYLAND_TEXT_TYPE: &str = "text/plain;charset=utf-8";
+const X11_PASTE_SYMBOLS: [xproto::Keysym; 2] = [0x76, 0x56];
 
 pub struct Paste<'a> {
     text: &'a str,
@@ -18,8 +20,20 @@ pub struct Paste<'a> {
 }
 
 enum Selection {
-    X11(Box<RustConnection>),
+    X11(Box<X11Selection>),
     Wayland(String),
+}
+
+struct X11Selection {
+    connection: RustConnection,
+    ownership: Cell<X11Ownership>,
+}
+
+#[derive(Clone, Copy)]
+enum X11Ownership {
+    AwaitingClaim,
+    Claimed,
+    Lost,
 }
 
 impl Selection {
@@ -59,7 +73,10 @@ impl Selection {
                 | xfixes::SelectionEventMask::SELECTION_CLIENT_CLOSE,
         )?
         .check()?;
-        Ok(Self::X11(Box::new(connection)))
+        Ok(Self::X11(Box::new(X11Selection {
+            connection,
+            ownership: Cell::new(X11Ownership::AwaitingClaim),
+        })))
     }
 
     fn still_ours(&self) -> anyhow::Result<bool> {
@@ -70,21 +87,214 @@ impl Selection {
                     .lines()
                     .any(|mime| mime == marker))
             }
-            Self::X11(connection) => {
-                // Our xclip must be the only selection change since the snapshot.
-                connection.sync()?;
-                let mut claimed = false;
-                while let Some(event) = connection.poll_for_event()? {
-                    if let Event::XfixesSelectionNotify(event) = event {
-                        if claimed || event.owner == x11rb::NONE {
-                            return Ok(false);
-                        }
-                        claimed = true;
-                    }
+            Self::X11(selection) => {
+                if matches!(selection.ownership.get(), X11Ownership::Lost) {
+                    return Ok(false);
                 }
-                Ok(claimed)
+                selection.connection.sync().inspect_err(|_| {
+                    selection.ownership.set(X11Ownership::Lost);
+                })?;
+                selection.consume_ownership_events()
             }
         }
+    }
+}
+
+impl X11Ownership {
+    fn observe(self, event: xfixes::SelectionNotifyEvent) -> Self {
+        if matches!(self, Self::AwaitingClaim)
+            && event.subtype == xfixes::SelectionEvent::SET_SELECTION_OWNER
+            && event.owner != x11rb::NONE
+        {
+            return Self::Claimed;
+        }
+        Self::Lost
+    }
+}
+
+impl X11Selection {
+    // The caller must round-trip first so notifications already sent by the server are visible.
+    fn consume_ownership_events(&self) -> anyhow::Result<bool> {
+        let mut state = self.ownership.replace(X11Ownership::Lost);
+        while !matches!(state, X11Ownership::Lost) {
+            let Some(event) = self.connection.poll_for_event()? else {
+                break;
+            };
+            if let Event::XfixesSelectionNotify(event) = event {
+                state = state.observe(event);
+            }
+        }
+        self.ownership.set(state);
+        Ok(matches!(state, X11Ownership::Claimed))
+    }
+
+    fn paste(&self, shift: bool) -> anyhow::Result<bool> {
+        if matches!(self.ownership.get(), X11Ownership::Lost) {
+            return Ok(false);
+        }
+        let connection = &self.connection;
+        anyhow::ensure!(
+            xkb::use_extension(connection, 1, 0)?.reply()?.supported,
+            "XKB is unavailable"
+        );
+        xtest::get_version(connection, 2, 2)?.reply()?;
+        let device = xkb::ID::USE_CORE_KBD.into();
+        let requests = self.with_server_grab(|| {
+            // Read the layout and drain ownership changes before dispatching on this connection.
+            let map = connection.send_trait_request_with_reply(xkb::GetMapRequest {
+                device_spec: device,
+                full: xkb::MapPart::KEY_SYMS
+                    | xkb::MapPart::KEY_TYPES
+                    | xkb::MapPart::KEY_ACTIONS
+                    | xkb::MapPart::MODIFIER_MAP,
+                ..Default::default()
+            })?;
+            let state = xkb::get_state(connection, device)?;
+            let state = state.reply()?;
+            if !self.consume_ownership_events()? {
+                return Ok(None);
+            }
+            let map = map.reply()?;
+            anyhow::ensure!(
+                map.first_key_sym == map.first_key_action,
+                "incomplete XKB map"
+            );
+            let keys = X11PasteKeys::resolve(&map.map, map.first_key_sym, &state, shift)?;
+            let requests = keys
+                .events()
+                .map(|(kind, key)| {
+                    xtest::fake_input(
+                        connection,
+                        kind,
+                        key,
+                        x11rb::CURRENT_TIME,
+                        x11rb::NONE,
+                        0,
+                        0,
+                        0,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Some(requests))
+        })?;
+        let Some(requests) = requests else {
+            return Ok(false);
+        };
+        for request in requests {
+            request.check()?;
+        }
+        Ok(true)
+    }
+
+    fn with_server_grab<T>(&self, action: impl FnOnce() -> anyhow::Result<T>) -> anyhow::Result<T> {
+        let grab = GrabServer::grab(&self.connection)?;
+        let result = action();
+        // Flush the ungrab on errors too, before checking requests or waiting on a receiver.
+        drop(grab);
+        self.connection.flush()?;
+        result
+    }
+}
+
+struct X11PasteKeys {
+    ctrl: xproto::Keycode,
+    shift: Option<xproto::Keycode>,
+    v: xproto::Keycode,
+}
+
+impl X11PasteKeys {
+    fn resolve(
+        map: &xkb::GetMapMap,
+        first_key: xproto::Keycode,
+        state: &xkb::GetStateReply,
+        shift: bool,
+    ) -> anyhow::Result<Self> {
+        use xproto::ModMask;
+
+        anyhow::ensure!(
+            state.base_mods == ModMask::default()
+                && state.latched_mods == ModMask::default()
+                && state.latched_group == 0,
+            "X11 modifiers are held or latched"
+        );
+        let types = map.types_rtrn.as_deref().unwrap_or_default();
+        let symbols = map.syms_rtrn.as_deref().unwrap_or_default();
+        let group = usize::from(u8::from(state.group));
+        let translate = |code: xproto::Keycode, mods| {
+            let offset = usize::from(code.checked_sub(first_key)?);
+            let key = symbols.get(offset)?;
+            let group_count = usize::from(key.group_info & 0x0f);
+            let group = if group_count == 1 { 0 } else { group };
+            if group >= group_count {
+                return None;
+            }
+            let key_type = types.get(usize::from(*key.kt_index.get(group)?))?;
+            let level = key_type
+                .map
+                .iter()
+                .find(|entry| entry.active && entry.mods_mask == (mods & key_type.mods_mask))
+                .map_or(0, |entry| entry.level);
+            let index = group * usize::from(key.width) + usize::from(level);
+            let action = map.key_actions.as_ref().and_then(|actions| {
+                let (prior, current) = actions.acts_rtrn_count.split_at_checked(offset)?;
+                if index >= usize::from(*current.first()?) {
+                    return None;
+                }
+                let start: usize = prior.iter().copied().map(usize::from).sum();
+                actions.acts_rtrn_acts.get(start + index)
+            });
+            Some((*key.syms.get(index)?, action))
+        };
+        let modifiers = map.modmap_rtrn.as_deref().unwrap_or_default();
+        let modifier = |mask, mods| {
+            // A mapped modifier can select a different action, such as switching groups.
+            modifiers
+                .iter()
+                .find(|entry| {
+                    entry.mods == mask
+                        && translate(entry.keycode, mods)
+                            .and_then(|(_, action)| action)
+                            .is_some_and(|action| {
+                                action.as_type() == xkb::SAType::SET_MODS
+                                    && action.as_setmods().mask == mask
+                            })
+                })
+                .map(|entry| entry.keycode)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("the current X11 layout does not map the paste modifier")
+                })
+        };
+        let ctrl = modifier(ModMask::CONTROL, state.lookup_mods)?;
+        let mods = state.lookup_mods | ModMask::CONTROL;
+        let shift = shift.then(|| modifier(ModMask::SHIFT, mods)).transpose()?;
+        let mods = if shift.is_some() {
+            mods | ModMask::SHIFT
+        } else {
+            mods
+        };
+        for v in first_key..=xproto::Keycode::MAX {
+            if translate(v, mods).is_some_and(|(sym, action)| {
+                X11_PASTE_SYMBOLS.contains(&sym)
+                    && action.is_none_or(|action| action.as_type() == xkb::SAType::NO_ACTION)
+            }) && !modifiers.iter().any(|entry| entry.keycode == v)
+            {
+                return Ok(Self { ctrl, shift, v });
+            }
+        }
+        anyhow::bail!("the current X11 layout does not map the paste shortcut")
+    }
+
+    fn events(&self) -> impl Iterator<Item = (u8, xproto::Keycode)> {
+        let keys = [Some(self.ctrl), self.shift, Some(self.v)];
+        keys.into_iter()
+            .flatten()
+            .map(|key| (xproto::KEY_PRESS_EVENT, key))
+            .chain(
+                keys.into_iter()
+                    .rev()
+                    .flatten()
+                    .map(|key| (xproto::KEY_RELEASE_EVENT, key)),
+            )
     }
 }
 
@@ -201,9 +411,16 @@ impl<'a> Paste<'a> {
         copy_text(self.text)
     }
 
+    pub fn paste_on_x11(&self, shift: bool) -> anyhow::Result<bool> {
+        match &self.selection {
+            Some(Selection::X11(selection)) => selection.paste(shift),
+            _ => Ok(false),
+        }
+    }
+
     pub fn ready_to_paste(&self) -> anyhow::Result<bool> {
         match &self.selection {
-            Some(selection @ Selection::Wayland(_)) => selection.still_ours(),
+            Some(selection) => selection.still_ours(),
             None if process::wayland() => {
                 let contents = process::run(
                     "wl-paste",
@@ -212,7 +429,7 @@ impl<'a> Paste<'a> {
                 )?;
                 Ok(contents == self.text.as_bytes())
             }
-            _ => Ok(true),
+            None => Ok(false),
         }
     }
 
@@ -224,6 +441,7 @@ impl<'a> Paste<'a> {
         let (Some(formats), Some(selection)) = (self.previous, self.selection) else {
             return Ok(());
         };
+        // A new copy can still arrive after this check and before the restore writes.
         if !selection.still_ours()? {
             return Ok(());
         }
@@ -249,6 +467,201 @@ impl<'a> Paste<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_x11_claim_cannot_be_recovered_after_loss() {
+        use xfixes::SelectionEvent;
+        let claim = |subtype, owner| xfixes::SelectionNotifyEvent {
+            subtype,
+            owner,
+            ..Default::default()
+        };
+        let offered = claim(SelectionEvent::SET_SELECTION_OWNER, 1);
+        let state = X11Ownership::AwaitingClaim.observe(offered);
+        assert!(matches!(state, X11Ownership::Claimed));
+        for event in [
+            offered,
+            claim(SelectionEvent::SET_SELECTION_OWNER, 2),
+            claim(SelectionEvent::SET_SELECTION_OWNER, x11rb::NONE),
+            claim(SelectionEvent::SELECTION_WINDOW_DESTROY, 1),
+            claim(SelectionEvent::SELECTION_CLIENT_CLOSE, 1),
+        ] {
+            let lost = state.observe(event);
+            assert!(matches!(lost, X11Ownership::Lost));
+            assert!(matches!(lost.observe(offered), X11Ownership::Lost));
+        }
+        assert!(matches!(
+            X11Ownership::AwaitingClaim
+                .observe(claim(SelectionEvent::SET_SELECTION_OWNER, x11rb::NONE)),
+            X11Ownership::Lost
+        ));
+    }
+
+    #[test]
+    fn paste_requires_v_in_the_active_x11_group() {
+        use xkb::SAType;
+        use xproto::ModMask;
+
+        let key = |syms: Vec<_>| xkb::KeySymMap {
+            group_info: syms.len() as u8,
+            width: 1,
+            syms,
+            ..Default::default()
+        };
+        let map = xkb::GetMapMap {
+            modmap_rtrn: Some(vec![
+                xkb::KeyModMap {
+                    keycode: 37,
+                    mods: ModMask::CONTROL,
+                },
+                xkb::KeyModMap {
+                    keycode: 38,
+                    mods: ModMask::SHIFT,
+                },
+            ]),
+            types_rtrn: Some(vec![xkb::KeyType::default()]),
+            syms_rtrn: Some(vec![
+                key(vec![0xffe3]),
+                key(vec![0xfe08]),
+                key(vec![0x76, 0x06d7]),
+            ]),
+            key_actions: Some(xkb::GetMapMapKeyActions {
+                acts_rtrn_count: vec![1, 1, 0],
+                acts_rtrn_acts: vec![
+                    xkb::SASetMods {
+                        type_: SAType::SET_MODS,
+                        mask: ModMask::CONTROL,
+                        ..Default::default()
+                    }
+                    .into(),
+                    xkb::SALockGroup {
+                        type_: SAType::LOCK_GROUP,
+                        ..Default::default()
+                    }
+                    .into(),
+                ],
+            }),
+            ..Default::default()
+        };
+        let mut state = xkb::GetStateReply::default();
+        assert_eq!(
+            X11PasteKeys::resolve(&map, 37, &state, false).unwrap().v,
+            39
+        );
+        assert!(X11PasteKeys::resolve(&map, 37, &state, true).is_err());
+        state.group = xkb::Group::M2;
+        assert!(X11PasteKeys::resolve(&map, 37, &state, false).is_err());
+    }
+
+    #[test]
+    #[ignore = "uses the private X11 clipboard and keyboard"]
+    fn x11_dispatch_sends_a_balanced_chord_only_while_owning_the_clipboard() {
+        use xproto::{
+            ConnectionExt as _, CreateWindowAux, EventMask, InputFocus, KeyButMask, WindowClass,
+        };
+        let (receiver, screen) = x11rb::connect(None).unwrap();
+        let root = receiver.setup().roots[screen].root;
+        let window = receiver.generate_id().unwrap();
+        receiver
+            .create_window(
+                x11rb::COPY_DEPTH_FROM_PARENT,
+                window,
+                root,
+                0,
+                0,
+                50,
+                50,
+                0,
+                WindowClass::INPUT_OUTPUT,
+                0,
+                &CreateWindowAux::new().event_mask(EventMask::KEY_PRESS | EventMask::KEY_RELEASE),
+            )
+            .unwrap()
+            .check()
+            .unwrap();
+        receiver.map_window(window).unwrap().check().unwrap();
+        receiver
+            .set_input_focus(InputFocus::PARENT, window, x11rb::CURRENT_TIME)
+            .unwrap()
+            .check()
+            .unwrap();
+        let events = || {
+            receiver.sync().unwrap();
+            std::iter::from_fn(|| receiver.poll_for_event().unwrap())
+                .filter_map(|event| match event {
+                    Event::KeyPress(key) => Some((true, key.detail, key.state)),
+                    Event::KeyRelease(key) => Some((false, key.detail, key.state)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let read = || process::run("xclip", &["-selection", "clipboard", "-out"], &[]).unwrap();
+        let mapping = || {
+            let setup = receiver.setup();
+            receiver
+                .get_keyboard_mapping(setup.min_keycode, setup.max_keycode - setup.min_keycode + 1)
+                .unwrap()
+                .reply()
+                .unwrap()
+        };
+        xkb::use_extension(&receiver, 1, 0)
+            .unwrap()
+            .reply()
+            .unwrap();
+        let group = || {
+            u8::from(
+                xkb::get_state(&receiver, xkb::ID::USE_CORE_KBD.into())
+                    .unwrap()
+                    .reply()
+                    .unwrap()
+                    .group,
+            )
+        };
+        let before = mapping();
+        let original_group = group();
+        for shift in [false, true] {
+            copy_text("Greendale").unwrap();
+            let mut paste = Paste::prepare("Troy Barnes");
+            paste.copy_for_paste().unwrap();
+            assert!(paste.paste_on_x11(shift).unwrap());
+            let keys = events();
+            let chord_size = if shift { 3 } else { 2 };
+            assert_eq!(keys.len(), chord_size * 2);
+            let (presses, releases) = keys.split_at(chord_size);
+            for (down, up) in presses.iter().zip(releases.iter().rev()) {
+                assert!(down.0 && !up.0);
+                assert_eq!(down.1, up.1);
+            }
+            let (_, key, modifiers) = presses[chord_size - 1];
+            assert!(modifiers.contains(KeyButMask::CONTROL));
+            assert_eq!(modifiers.contains(KeyButMask::SHIFT), shift);
+            assert_eq!(group(), original_group);
+            assert_eq!(mapping().keysyms, before.keysyms);
+            let v_key = receiver
+                .get_keyboard_mapping(key, 1)
+                .unwrap()
+                .reply()
+                .unwrap();
+            assert!(
+                v_key
+                    .keysyms
+                    .iter()
+                    .any(|sym| X11_PASTE_SYMBOLS.contains(sym))
+            );
+            assert_eq!(read(), b"Troy Barnes");
+            paste.restore_if_unchanged().unwrap();
+            assert_eq!(read(), b"Greendale");
+        }
+
+        let mut paste = Paste::prepare("Troy Barnes");
+        paste.copy_for_paste().unwrap();
+        assert!(paste.ready_to_paste().unwrap());
+        copy_text("Abed Nadir").unwrap();
+        assert!(!paste.paste_on_x11(false).unwrap());
+        assert!(events().is_empty());
+        paste.restore_if_unchanged().unwrap();
+        assert_eq!(read(), b"Abed Nadir");
+    }
 
     #[test]
     #[ignore = "uses the private desktop clipboard"]
@@ -282,8 +695,6 @@ mod tests {
                 } else {
                     copy_text("Troy Barnes").unwrap();
                 }
-            }
-            if copied_again && process::wayland() {
                 assert!(!paste.ready_to_paste().unwrap());
             }
             paste.restore_if_unchanged().unwrap();
@@ -305,8 +716,40 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "uses the private X11 clipboard"]
+    fn newer_x11_copies_before_preflight_stop_paste_and_restore() {
+        assert!(!process::wayland());
+        copy_text("Greendale").unwrap();
+        let mut paste = Paste::prepare("Troy Barnes");
+        assert!(paste.can_restore());
+        paste.copy_for_paste().unwrap();
+        copy_text("Britta Perry").unwrap();
+        copy_text("Abed Nadir").unwrap();
+
+        assert!(!paste.paste_on_x11(false).unwrap());
+        assert!(!paste.ready_to_paste().unwrap());
+        assert!(!paste.ready_to_paste().unwrap());
+        paste.restore_if_unchanged().unwrap();
+        assert_eq!(
+            process::run("xclip", &["-selection", "clipboard", "-out"], &[]).unwrap(),
+            b"Abed Nadir"
+        );
+    }
+
+    #[test]
+    fn an_x11_paste_without_a_watcher_does_not_dispatch() {
+        let paste = Paste {
+            text: "Troy Barnes",
+            previous: None,
+            selection: None,
+        };
+        assert!(!paste.paste_on_x11(false).unwrap());
+        assert!(!paste.can_restore());
+    }
+
+    #[test]
     #[ignore = "uses the private Wayland clipboard"]
-    fn a_paste_without_a_marker_checks_the_current_text() {
+    fn wayland_paste_without_a_marker_checks_the_current_text() {
         assert!(process::wayland());
         let mut paste = Paste {
             text: "Troy Barnes\n",

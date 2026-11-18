@@ -52,6 +52,7 @@ use onda_domain::status_menu::StatusMenu;
 use onda_domain::tray::TrayView;
 use onda_domain::types::{ActivationMode, HistoryRetention, MicrophonePermission, OutputMode};
 use onda_domain::updates::UpdateStatus;
+use tokio::sync::oneshot;
 use uuid::Uuid;
 
 pub fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -1038,8 +1039,15 @@ pub struct FakeSettings {
 }
 
 impl SettingsSource for FakeSettings {
-    fn cleanup_provider_available(&self) -> BoxFuture<'_, bool> {
-        Box::pin(async { lock(&self.settings).cleanup_provider.is_some() })
+    fn admit_cleanup(&self, request: CleanupRequest) -> oneshot::Receiver<CleanupRequest> {
+        let (handoff, admitted) = oneshot::channel();
+        if let Ok(settings) = self.settings.try_lock()
+            && settings.cleanup_enabled
+            && settings.cleanup_provider == Some(request.provider)
+        {
+            let _ = handoff.send(request);
+        }
+        admitted
     }
 
     fn snapshot(&self) -> Settings {

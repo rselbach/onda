@@ -19,6 +19,10 @@ use crate::fs::{remove_descendant, resolve_descendant, write_atomic};
 const STAGING_PREFIX: &str = ".onda-pending-";
 const STAGING_SUFFIX_LEN: usize = 16;
 
+#[cfg(test)]
+#[path = "tests.rs"]
+mod tests;
+
 /// History settings as read at save time (HIS-1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HistoryPreferences {
@@ -86,7 +90,7 @@ impl HistoryStore {
     /// Entries, newest first (HIS-9). Loads and prunes the folder on first
     /// call (HIS-8).
     pub fn entries(&self) -> Result<Vec<HistoryEntry>, HistoryError> {
-        self.with_state(false, |state| {
+        self.with_state(|state, _| {
             self.load_once(&mut state.entries)
                 .map(|entries| entries.clone())
         })
@@ -95,8 +99,11 @@ impl HistoryStore {
     /// Saves a finished session when history is on (HIS-1, HIS-2), then
     /// applies retention with the new entry exempt (HIS-12..HIS-15).
     ///
-    /// `preferences` must be read from settings right before the call. When
-    /// audio is kept, `samples` are written as `audio.wav` and
+    /// Reads `preferences` after obtaining the history lock, before any
+    /// history mutation. If the lock file is missing, it also checks whether
+    /// history is off before creating it. The reader must not call the store.
+    ///
+    /// When audio is kept, `samples` are written as `audio.wav` and
     /// `new.audio_byte_count` is set from the encoded file; otherwise it is
     /// cleared. Returns the saved entry, or `None` when history is off. A
     /// write failure removes the partial folder (HIS-7); a retention failure
@@ -106,22 +113,24 @@ impl HistoryStore {
         &self,
         new: NewEntry,
         samples: &[f32],
-        preferences: HistoryPreferences,
+        preferences: impl Fn() -> HistoryPreferences,
         now: Timestamp,
     ) -> Result<Option<HistoryEntry>, HistoryError> {
-        if !preferences.enabled {
+        if matches!(self.lock_path().symlink_metadata(), Err(err) if err.kind() == ErrorKind::NotFound)
+            && !preferences().enabled
+        {
             return Ok(None);
         }
-        let result = self.with_state(true, |state| {
-            self.save_locked(state, new, samples, preferences, now)
-        });
-        match result {
-            Ok(entry) => Ok(Some(entry)),
-            Err(err) => {
-                tracing::error!(error = %err, "could not save history entry");
-                Err(err)
+        self.with_state(|state, lock| {
+            let preferences = preferences();
+            if !preferences.enabled {
+                return Ok(None);
             }
-        }
+            self.advance_generation(state, lock)?;
+            self.save_locked(state, new, samples, preferences, now)
+                .map(Some)
+        })
+        .inspect_err(|err| tracing::error!(error = %err, "could not save history entry"))
     }
 
     /// Applies retention to the whole list (HIS-16): at launch (which also
@@ -133,14 +142,12 @@ impl HistoryStore {
         retention: HistoryRetention,
         now: Timestamp,
     ) -> Result<bool, HistoryError> {
-        self.with_state(true, |state| {
-            self.enforce_retention(state, retention, now, None)
-        })
+        self.with_mutation(|state| self.enforce_retention(state, retention, now, None))
     }
 
     /// Deletes one entry's folder. An unknown id is not an error.
     pub fn delete(&self, id: Uuid) -> Result<(), HistoryError> {
-        self.with_state(true, |state| {
+        self.with_mutation(|state| {
             let State {
                 entries, changed, ..
             } = state;
@@ -161,7 +168,7 @@ impl HistoryStore {
     /// history folder is refused rather than unlinked, since unlinking would
     /// leave the transcripts on disk (ARCH-12).
     pub fn delete_all(&self) -> Result<(), HistoryError> {
-        self.with_state(true, |state| {
+        self.with_mutation(|state| {
             let removal = match std::fs::symlink_metadata(&self.directory) {
                 Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
                 Err(err) => return Err(io_error("read", &self.directory, &err)),
@@ -190,7 +197,7 @@ impl HistoryStore {
     /// with [`HistoryError::UnsafePath`] when the file resolves outside the
     /// history folder or is a symlink.
     pub fn audio_path(&self, id: Uuid) -> Result<PathBuf, HistoryError> {
-        self.with_state(false, |state| {
+        self.with_state(|state, _| {
             let entries = self.load_once(&mut state.entries)?;
             let audio = entries
                 .iter()
@@ -209,16 +216,25 @@ impl HistoryStore {
         })
     }
 
+    fn with_mutation<T>(
+        &self,
+        op: impl FnOnce(&mut State) -> Result<T, HistoryError>,
+    ) -> Result<T, HistoryError> {
+        self.with_state(|state, lock| {
+            self.advance_generation(state, lock)?;
+            op(state)
+        })
+    }
+
     // runs `op` under the lock, then reports a change with the lock released.
     fn with_state<T>(
         &self,
-        may_write: bool,
-        op: impl FnOnce(&mut State) -> Result<T, HistoryError>,
+        op: impl FnOnce(&mut State, &mut File) -> Result<T, HistoryError>,
     ) -> Result<T, HistoryError> {
         let (result, changed) = {
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-            let _lock = self.lock_history(&mut state, may_write)?;
-            let result = op(&mut state);
+            let mut lock = self.lock_history(&mut state)?;
+            let result = op(&mut state, &mut lock);
             (result, std::mem::take(&mut state.changed))
         };
         if changed {
@@ -227,10 +243,13 @@ impl HistoryStore {
         result
     }
 
-    // The lock survives Clear History. Advance its generation before a mutation
-    // so even a writer that exits mid-operation invalidates other caches.
-    fn lock_history(&self, state: &mut State, may_write: bool) -> Result<File, HistoryError> {
-        let path = self.directory.with_added_extension("lock");
+    // The lock survives Clear History.
+    fn lock_path(&self) -> PathBuf {
+        self.directory.with_added_extension("lock")
+    }
+
+    fn lock_history(&self, state: &mut State) -> Result<File, HistoryError> {
+        let path = self.lock_path();
         let mut acquire = || -> std::io::Result<File> {
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
@@ -255,15 +274,19 @@ impl HistoryStore {
                 state.directory_prepared = false;
             }
             state.generation = generation;
-            if may_write {
-                let next = generation.wrapping_add(1);
-                file.rewind()?;
-                file.write_all(&next.to_le_bytes())?;
-                state.generation = next;
-            }
             Ok(file)
         };
         acquire().map_err(|err| io_error("lock", &path, &err))
+    }
+
+    // Even a writer that exits mid-operation must invalidate other caches.
+    fn advance_generation(&self, state: &mut State, lock: &mut File) -> Result<(), HistoryError> {
+        let next = state.generation.wrapping_add(1);
+        lock.rewind()
+            .and_then(|()| lock.write_all(&next.to_le_bytes()))
+            .map_err(|err| io_error("lock", &self.lock_path(), &err))?;
+        state.generation = next;
+        Ok(())
     }
 
     fn save_locked(
