@@ -128,14 +128,7 @@ fn set(settings: &Settings, key: Key, value: &Value) -> Result<()> {
         Key::SelectedLanguage => settings.set_selected_language(language(value)?)?,
         Key::RecentLanguages => {
             let codes = value.as_str().context("expected a JSON string")?;
-            let mut languages = recent_languages(LanguageSetting::Auto, codes);
-            // keep only what was given, in order
-            if !codes
-                .split(',')
-                .any(|code| code == LanguageSetting::Auto.code())
-            {
-                languages.retain(|l| *l != LanguageSetting::Auto);
-            }
+            let languages = parse_recents(codes);
             settings.set_recent_languages(&languages)?;
         }
         Key::HistoryRetention => settings.set_history_retention(value_of(&RETENTIONS, value)?)?,
@@ -165,6 +158,14 @@ fn set(settings: &Settings, key: Key, value: &Value) -> Result<()> {
     Ok(())
 }
 
+fn parse_recents(codes: &str) -> Vec<LanguageSetting> {
+    codes
+        .split(',')
+        .find_map(LanguageSetting::parse)
+        .map(|first| recent_languages(first, codes))
+        .unwrap_or_default()
+}
+
 fn name_of<T: PartialEq + Copy>(table: &[(&'static str, T)], value: T) -> &'static str {
     table
         .iter()
@@ -190,4 +191,21 @@ fn language(value: &Value) -> Result<LanguageSetting> {
 
 fn boolean(value: &Value) -> Result<bool> {
     value.as_bool().context("expected true or false")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use onda_domain::language_menu::encode_recent;
+
+    #[test]
+    fn recent_language_input_keeps_the_first_five_distinct_valid_codes() {
+        for (input, want) in [
+            ("en,es,fr,de,pt", "en,es,fr,de,pt"),
+            ("unknown,en,es,en,auto,fr,de,pt", "en,es,auto,fr,de"),
+            ("unknown,", ""),
+        ] {
+            assert_eq!(encode_recent(&parse_recents(input)), want);
+        }
+    }
 }
