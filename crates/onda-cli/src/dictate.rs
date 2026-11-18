@@ -185,12 +185,23 @@ pub fn run(args: &Args, paths: &DataPaths, models_dir: &Path) -> Result<()> {
         paths.root().display(),
         snapshot.selected_model
     ));
-    wait_for_ready(&trays, LOAD_TIMEOUT).context("loading the model")?;
+    wait_for_label(&trays, READY_LABEL, LOAD_TIMEOUT).context("loading the model")?;
     let mode = snapshot.activation_mode;
     console.say(&format!("ready ({} mode)", mode.display_name()));
 
     let result = match args.hold_ms {
-        Some(hold_ms) => hold_once(&app, &trays, &console, mode, hold_ms),
+        Some(hold_ms) => hold_once(
+            |event| app.on_hotkey_event(event),
+            || app.stop_dictation(),
+            &trays,
+            &console,
+            mode,
+            hold_ms,
+        )
+        .and_then(|()| {
+            wait_for_label(&trays, READY_LABEL, SESSION_TIMEOUT)
+                .context("waiting for the transcript")
+        }),
         None => interactive(&app, &trays, &console, mode),
     };
     app.shutdown();
@@ -261,25 +272,36 @@ impl HistoryHooks for Logged {
 }
 
 fn hold_once(
-    app: &App,
+    send_key: impl Fn(HotkeyEvent),
+    stop: impl FnOnce(),
     trays: &Receiver<String>,
     console: &Console,
     mode: ActivationMode,
     hold_ms: u64,
 ) -> Result<()> {
     console.say("hotkey down");
-    app.on_hotkey_event(HotkeyEvent::ComboDown);
-    thread::sleep(Duration::from_millis(hold_ms));
-    drain(trays);
+    let pressed = Instant::now();
+    send_key(HotkeyEvent::ComboDown);
+    if mode == ActivationMode::Automatic {
+        wait_for_label(trays, "Onda, recording", SESSION_TIMEOUT)
+            .context("starting the recording")?;
+    }
+    thread::sleep(Duration::from_millis(hold_ms).saturating_sub(pressed.elapsed()));
+    if mode != ActivationMode::Automatic {
+        drain(trays);
+    }
     console.say("hotkey up");
-    app.on_hotkey_event(HotkeyEvent::ComboUp);
+    send_key(HotkeyEvent::ComboUp);
     if mode == ActivationMode::Toggle {
         // a toggle key-up does nothing (HOT-26); tap again to stop
         console.say("hotkey tap");
-        app.on_hotkey_event(HotkeyEvent::ComboDown);
-        app.on_hotkey_event(HotkeyEvent::ComboUp);
+        send_key(HotkeyEvent::ComboDown);
+        send_key(HotkeyEvent::ComboUp);
     }
-    wait_for_ready(trays, SESSION_TIMEOUT).context("waiting for the transcript")
+    if mode == ActivationMode::Automatic {
+        stop();
+    }
+    Ok(())
 }
 
 fn interactive(
@@ -320,12 +342,12 @@ fn interactive(
     Ok(())
 }
 
-fn wait_for_ready(trays: &Receiver<String>, timeout: Duration) -> Result<()> {
+fn wait_for_label(trays: &Receiver<String>, wanted: &str, timeout: Duration) -> Result<()> {
     let deadline = Instant::now() + timeout;
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
         match trays.recv_timeout(left) {
-            Ok(label) if label == READY_LABEL => return Ok(()),
+            Ok(label) if label == wanted => return Ok(()),
             Ok(_) => {}
             Err(_) => bail!("timed out"),
         }
@@ -547,5 +569,40 @@ impl Files for Terminal {
     fn open(&self, path: &Path) -> Result<(), String> {
         self.console.say(&format!("open {}", path.display()));
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn an_automatic_one_shot_stops_without_a_second_press() {
+        for release_stops in [false, true] {
+            let (send, trays) = mpsc::channel();
+            let console = Console {
+                started: Instant::now(),
+                last: Mutex::default(),
+                trays: send.clone(),
+            };
+            let recording = Cell::new(false);
+            let pressed = Cell::new(false);
+            let events = |key| match key {
+                HotkeyEvent::ComboDown => {
+                    assert!(!pressed.replace(true), "only one press");
+                    recording.set(true);
+                    send.send("Onda, recording".to_owned()).unwrap();
+                }
+                HotkeyEvent::ComboUp => {
+                    assert!(recording.get());
+                    recording.set(!release_stops);
+                }
+                _ => unreachable!(),
+            };
+            let stop = || recording.set(false);
+            hold_once(events, stop, &trays, &console, ActivationMode::Automatic, 0).unwrap();
+            assert!(!recording.get());
+        }
     }
 }
