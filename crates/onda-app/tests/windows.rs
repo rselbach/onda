@@ -1714,7 +1714,7 @@ async fn custom_prompt_transformations_match_in_samples_and_dictation() {
         for (instructions, output) in cases {
             let h = Harness::with(|s| {
                 s.cleanup_enabled = true;
-                s.cleanup_provider = provider;
+                s.cleanup_provider = Some(provider);
                 s.cleanup_model = provider.default_model().clone();
                 s.cleanup_prompt = CleanupPrompt::from_text(instructions).expect("custom prompt");
             })
@@ -3151,6 +3151,33 @@ async fn cln_25_the_key_loads_only_while_the_sheet_shows() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn unknown_provider_delivers_raw_until_a_model_is_chosen() {
+    let h = Harness::with(|s| {
+        s.cleanup_enabled = true;
+        s.cleanup_provider = None;
+    })
+    .await;
+    h.dictate().await;
+    h.app.page_appeared(MainWindowSection::PostProcessing);
+    h.app.test_cleanup();
+    sleep(10).await;
+    assert_eq!(h.typed(), ["hello world"]);
+    assert!(lock(&h.secrets.2).is_empty());
+    assert_eq!(h.cleanup.calls(), 0);
+    let details = post_processing(&h).details.expect("enabled");
+    assert!(!details.test_button.enabled);
+    assert_eq!(details.model_name, "Choose a model");
+
+    let provider = onda_domain::cleanup::CleanupProvider::OpenRouter;
+    h.app.open_providers_dialog();
+    h.app
+        .select_cleanup_model(provider, provider.default_model().slug.as_ref());
+    sleep(10).await;
+    h.dictate().await;
+    assert_eq!(h.cleanup.calls(), 1);
+}
+
+#[tokio::test(start_paused = true)]
 async fn the_model_sheet_picks_the_model_in_one_click() {
     use onda_domain::cleanup::{CleanupError, CleanupModel, CleanupProvider};
 
@@ -3158,7 +3185,7 @@ async fn the_model_sheet_picks_the_model_in_one_click() {
     let in_use = |h: &Harness| {
         let settings = lock(&h.settings.settings);
         (
-            settings.cleanup_provider,
+            settings.cleanup_provider.expect("selected provider"),
             settings.cleanup_model.slug.clone().into_owned(),
         )
     };
@@ -3257,7 +3284,7 @@ async fn keyed_providers_list_models_only_with_their_key() {
         };
         let h = Harness::with(|s| {
             s.cleanup_enabled = true;
-            s.cleanup_provider = provider;
+            s.cleanup_provider = Some(provider);
             s.cleanup_model = provider.default_model().clone();
         })
         .await;
@@ -3343,7 +3370,7 @@ async fn picking_another_providers_model_switches_the_provider() {
     );
     sleep(1).await;
     let settings = lock(&h.settings.settings).clone();
-    assert_eq!(settings.cleanup_provider, CleanupProvider::Fireworks);
+    assert_eq!(settings.cleanup_provider, Some(CleanupProvider::Fireworks));
     assert_eq!(
         settings.cleanup_model.slug,
         "accounts/fireworks/models/deepseek-v4p1-flash"

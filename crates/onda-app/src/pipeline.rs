@@ -22,7 +22,7 @@ use tokio::task::{JoinHandle, spawn_blocking};
 use tokio::time::Instant;
 
 use crate::ports::{CopyOutcome, Delivery, Permissions, Target, TextOutput};
-use crate::seams::{AudioSource, CleanupTransport, SecretSource};
+use crate::seams::{AudioSource, CleanupTransport, SecretSource, SettingsSource};
 use crate::session::{Msg, SessionId};
 use crate::transcription::TranscriptionService;
 
@@ -252,6 +252,7 @@ pub(crate) async fn decode(job: DecodeJob) -> Msg {
 
 pub(crate) struct CleanupJob {
     pub(crate) id: SessionId,
+    pub(crate) settings: Arc<dyn SettingsSource>,
     pub(crate) secrets: Arc<dyn SecretSource>,
     pub(crate) transport: Arc<dyn CleanupTransport>,
     pub(crate) provider: CleanupProvider,
@@ -330,7 +331,14 @@ async fn run(job: &CleanupJob, key: Option<String>) -> CleanupOutcome {
                 &job.raw,
                 job.app_name.as_deref(),
             );
-            refine(job.transport.as_ref(), request, &job.prompt, &job.raw).await
+            refine(
+                job.transport.as_ref(),
+                job.settings.as_ref(),
+                request,
+                &job.prompt,
+                &job.raw,
+            )
+            .await
         }
     }
 }
@@ -338,16 +346,23 @@ async fn run(job: &CleanupJob, key: Option<String>) -> CleanupOutcome {
 /// Runs the same acceptance and retry policy for dictation and sample tests.
 pub(crate) async fn refine(
     transport: &dyn CleanupTransport,
+    settings: &dyn SettingsSource,
     request: CleanupRequest,
     prompt: &CleanupPrompt,
     raw: &str,
 ) -> CleanupOutcome {
     let provider = request.provider;
+    if !settings.cleanup_provider_available().await {
+        return CleanupOutcome::NotRun;
+    }
     let first = transport.send(request.clone()).await;
     match cleanup::after_first_attempt(provider, prompt, raw, first) {
         CleanupStep::Done(outcome) => outcome,
         CleanupStep::Retry(violation) => {
             tracing::info!(%violation, "cleanup rejected by guardrails; retrying once");
+            if !settings.cleanup_provider_available().await {
+                return CleanupOutcome::NotRun;
+            }
             let second = transport.send(request).await;
             cleanup::after_retry(provider, raw, second)
         }

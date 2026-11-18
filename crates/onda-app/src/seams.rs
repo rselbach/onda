@@ -43,7 +43,7 @@ pub struct Settings {
     /// `postProcessingEnabled` (CLN-1).
     pub cleanup_enabled: bool,
     /// `cleanupProvider`.
-    pub cleanup_provider: CleanupProvider,
+    pub cleanup_provider: Option<CleanupProvider>,
     /// The provider's model, resolved from its slug (CLN-21).
     pub cleanup_model: CleanupModel,
     /// `cleanupPrompt`: the system prompt every provider and model gets.
@@ -113,9 +113,7 @@ pub enum SettingChange {
     ReplacementRules(Vec<ReplacementRule>),
     /// `postProcessingEnabled`.
     CleanupEnabled(bool),
-    /// `cleanupProvider`.
-    CleanupProvider(CleanupProvider),
-    /// The provider's model slug (`openRouterModel`).
+    /// The provider and model selected together.
     CleanupModel(CleanupProvider, CleanupModel),
     /// `cleanupPrompt`; the default removes the stored override.
     CleanupPrompt(CleanupPrompt),
@@ -131,6 +129,9 @@ pub enum SettingChange {
 pub trait SettingsSource: Send + Sync {
     /// The current settings. Cheap; called once per command and per session.
     fn snapshot(&self) -> Settings;
+
+    /// Whether the provider selection is readable now, including changes from other processes.
+    fn cleanup_provider_available(&self) -> BoxFuture<'_, bool>;
 
     /// Persists `selectedModel` after a model switch (DL-7).
     fn set_selected_model(&self, model: ModelId);

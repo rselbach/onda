@@ -62,7 +62,7 @@ impl SettingsSource for SettingsAdapter {
             selected_model,
             cleanup_enabled: settings.post_processing_enabled(),
             cleanup_provider,
-            cleanup_model: settings.cleanup_model(cleanup_provider),
+            cleanup_model: settings.cleanup_model(cleanup_provider.unwrap_or_default()),
             cleanup_prompt: settings.cleanup_prompt(),
             replacement_rules: settings.replacement_rules(),
             history_enabled: settings.history_enabled(),
@@ -83,6 +83,15 @@ impl SettingsSource for SettingsAdapter {
             declined_notice_key: settings.declined_model_migration_notice_key(),
             os_language: self.os_language.clone(),
         }
+    }
+
+    fn cleanup_provider_available(&self) -> onda_app::seams::BoxFuture<'_, bool> {
+        let settings = self.settings.clone();
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || settings.stored_cleanup_provider().is_some())
+                .await
+                .unwrap_or(false)
+        })
     }
 
     fn set_selected_model(&self, model: ModelId) {
@@ -113,9 +122,8 @@ impl SettingsSource for SettingsAdapter {
             SettingChange::HistoryRetention(retention) => settings.set_history_retention(retention),
             SettingChange::ReplacementRules(rules) => settings.set_replacement_rules(&rules),
             SettingChange::CleanupEnabled(on) => settings.set_post_processing_enabled(on),
-            SettingChange::CleanupProvider(provider) => settings.set_cleanup_provider(provider),
             SettingChange::CleanupModel(provider, model) => {
-                settings.set_cleanup_model(provider, &model)
+                settings.select_cleanup_model(provider, &model)
             }
             SettingChange::CleanupPrompt(prompt) => settings.set_cleanup_prompt(&prompt),
             SettingChange::Onboarding(flags) => settings

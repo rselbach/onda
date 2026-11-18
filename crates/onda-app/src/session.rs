@@ -1242,15 +1242,20 @@ impl Actor {
         let settings = head.settings.clone();
         // read before the cleanup await and used for delivery (DICT-16)
         let app_name = head.target.as_ref().and_then(|t| t.name.clone());
-        if !settings.cleanup_enabled || raw.trim().is_empty() {
+        let Some(provider) = settings.cleanup_provider.filter(|_| {
+            settings.cleanup_enabled
+                && !raw.trim().is_empty()
+                && self.settings.cleanup_provider.is_some()
+        }) else {
             self.cleaned_with(id, raw, CleanupOutcome::NotRun);
             return;
-        }
+        };
         let job = CleanupJob {
             id,
+            settings: self.ports.settings.clone(),
             secrets: self.ports.secrets.clone(),
             transport: self.ports.cleanup.clone(),
-            provider: settings.cleanup_provider,
+            provider,
             model: settings.cleanup_model.clone(),
             prompt: settings.cleanup_prompt.clone(),
             raw: raw.clone(),

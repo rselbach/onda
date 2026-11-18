@@ -1485,12 +1485,24 @@ async fn cln_2_an_unreadable_key_delivers_raw_with_a_notice() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn an_invalid_provider_at_decode_completion_leaves_the_transcript_local() {
+    let h = Harness::with(|s| s.cleanup_enabled = true).await;
+    h.press();
+    sleep(500).await;
+    lock(&h.settings.settings).cleanup_provider = None;
+    h.release();
+    sleep(1000).await;
+    assert_eq!(h.typed(), ["hello world"]);
+    assert_eq!(h.cleanup.calls(), 0);
+}
+
+#[tokio::test(start_paused = true)]
 async fn apple_intelligence_cleans_on_device_without_a_key() {
     use onda_domain::cleanup::{APPLE_MODELS, CleanupProvider, OnDeviceStatus};
 
     let h = Harness::with(|s| {
         s.cleanup_enabled = true;
-        s.cleanup_provider = CleanupProvider::AppleIntelligence;
+        s.cleanup_provider = Some(CleanupProvider::AppleIntelligence);
         s.cleanup_model = APPLE_MODELS[0].clone();
     })
     .await;
@@ -1525,7 +1537,7 @@ async fn dictation_sends_the_prompt_in_use_to_every_provider() {
             let prompt = CleanupPrompt::from_text(want).expect("a prompt with text");
             let h = Harness::with(move |s| {
                 s.cleanup_enabled = true;
-                s.cleanup_provider = provider;
+                s.cleanup_provider = Some(provider);
                 s.cleanup_model = provider.default_model().clone();
                 s.cleanup_prompt = prompt;
             })
@@ -1581,7 +1593,7 @@ async fn apple_intelligence_turned_off_delivers_raw_silently() {
 
     let h = Harness::with(|s| {
         s.cleanup_enabled = true;
-        s.cleanup_provider = CleanupProvider::AppleIntelligence;
+        s.cleanup_provider = Some(CleanupProvider::AppleIntelligence);
         s.cleanup_model = APPLE_MODELS[0].clone();
     })
     .await;

@@ -399,15 +399,21 @@ impl Settings {
         self.put(Key::PostProcessingEnabled, Value::from(enabled))
     }
 
-    /// `cleanupProvider`; missing or unknown ids read as the default.
-    pub fn cleanup_provider(&self) -> CleanupProvider {
-        let Some(id) = self.string(Key::CleanupProvider) else {
-            return CleanupProvider::default();
-        };
-        CleanupProvider::from_id(&id).unwrap_or_else(|| {
-            tracing::warn!(key = %Key::CleanupProvider, "unknown provider; reading as the default");
-            CleanupProvider::default()
-        })
+    /// An unset provider uses the default. An unreadable selection authorizes no provider.
+    pub fn cleanup_provider(&self) -> Option<CleanupProvider> {
+        let cache = self.lock();
+        if !cache.readable {
+            return None;
+        }
+        match cache.values.get(Key::CleanupProvider.as_str()) {
+            None => Some(CleanupProvider::default()),
+            Some(id) => id.as_str().and_then(CleanupProvider::from_id),
+        }
+    }
+
+    /// Checks the on-disk provider selection before sending text. Does not update the session snapshot.
+    pub fn stored_cleanup_provider(&self) -> Option<CleanupProvider> {
+        Settings::open(&self.path).cleanup_provider()
     }
 
     /// Stores `cleanupProvider`.
@@ -434,6 +440,22 @@ impl Settings {
             return Ok(());
         };
         self.put(key, Value::from(model.slug.as_ref()))
+    }
+
+    /// Selects the provider and model together so a failed write activates neither.
+    pub fn select_cleanup_model(
+        &self,
+        provider: CleanupProvider,
+        model: &CleanupModel,
+    ) -> Result<(), SettingsError> {
+        self.apply(|| {
+            let mut changes = vec![(Key::CleanupProvider, Some(Value::from(provider.id())))];
+            if let Some(key) = model_key(provider) {
+                changes.push((key, Some(Value::from(model.slug.as_ref()))));
+            }
+            changes
+        })
+        .map(drop)
     }
 
     /// The cleanup prompt in use, for every provider and model: the stored
@@ -611,12 +633,19 @@ impl Settings {
             if changed.is_empty() {
                 return Ok(changed);
             }
-            if corrupt && !next.contains_key(Key::HistoryRetention.as_str()) {
-                next.insert(
-                    Key::HistoryRetention.as_str().into(),
-                    Value::from(HistoryRetention::Forever.as_setting()),
-                );
-                changed.push(Key::HistoryRetention);
+            if corrupt {
+                for (key, fallback) in [
+                    (
+                        Key::HistoryRetention,
+                        Value::from(HistoryRetention::Forever.as_setting()),
+                    ),
+                    (Key::CleanupProvider, Value::Null),
+                ] {
+                    if let serde_json::map::Entry::Vacant(entry) = next.entry(key.as_str()) {
+                        entry.insert(fallback);
+                        changed.push(key);
+                    }
+                }
             }
             if let Err(error) = save(&self.path, &next, corrupt) {
                 let keys: Vec<&str> = changed.iter().map(|key| key.as_str()).collect();

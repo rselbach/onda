@@ -194,7 +194,9 @@ impl Actor {
     }
 
     fn list_public_models_once(&mut self) {
-        let provider = self.settings.cleanup_provider;
+        let Some(provider) = self.settings.cleanup_provider else {
+            return;
+        };
         if provider.model_listing() == ModelListing::Public {
             self.list_models_once(provider);
         }
@@ -320,7 +322,7 @@ impl Actor {
             return;
         }
         self.refresh_on_device();
-        self.show_provider(self.settings.cleanup_provider);
+        self.show_provider(self.settings.cleanup_provider.unwrap_or_default());
     }
 
     /// "Done", or anything that hides the sheet: saves the key field
@@ -491,9 +493,6 @@ impl Actor {
             tracing::warn!("blank or malformed cleanup model slug from the shell");
             return;
         };
-        if provider != self.settings.cleanup_provider {
-            self.apply_setting(SettingChange::CleanupProvider(provider));
-        }
         let model = provider.resolve_model(Some(&slug));
         self.apply_setting(SettingChange::CleanupModel(provider, model));
         // the result resets when the model changes (CLN-27)
@@ -576,6 +575,9 @@ impl Actor {
 
     // CLN-27: save a just-typed key before testing the selected provider
     pub(super) fn test_cleanup(&mut self) {
+        let Some(provider) = self.settings.cleanup_provider else {
+            return;
+        };
         if self.ui.cleanup.test.is_some() {
             return;
         }
@@ -591,12 +593,12 @@ impl Actor {
             .zip(key_write(&page.baseline, &page.text).map(written_value));
         let secrets = self.ports.secrets.clone();
         let transport = self.ports.cleanup.clone();
-        let provider = self.settings.cleanup_provider;
         let model = self.settings.cleanup_model.clone();
         // the saved prompt as of now; a save during the test is not picked up
         let prompt = self.settings.cleanup_prompt.clone();
         let messages = self.messages.clone();
         let computer_term = self.ports.platform.computer_term;
+        let settings = self.ports.settings.clone();
         let queue = self.key_queue();
         let saved = write.map(|(saved_for, value)| {
             let saver = secrets.clone();
@@ -620,10 +622,20 @@ impl Actor {
                 Ok(key) => {
                     let request =
                         build_request(provider, key.as_ref(), &model, &prompt, TEST_SAMPLE, None);
-                    match refine(transport.as_ref(), request, &prompt, TEST_SAMPLE).await {
+                    match refine(
+                        transport.as_ref(),
+                        settings.as_ref(),
+                        request,
+                        &prompt,
+                        TEST_SAMPLE,
+                    )
+                    .await
+                    {
                         CleanupOutcome::Cleaned { text } => Ok(text),
                         CleanupOutcome::FellBack { error, .. } => Err(error),
-                        CleanupOutcome::NotRun => Ok(TEST_SAMPLE.to_owned()),
+                        CleanupOutcome::NotRun => {
+                            Err("Choose a model before testing post-processing.".to_owned())
+                        }
                     }
                 }
                 Err(error) => Err(error),
@@ -679,7 +691,7 @@ impl Actor {
             .filter(|p| {
                 !p.on_device()
                     || page.on_device != OnDeviceStatus::DeviceNotEligible
-                    || *p == provider
+                    || Some(*p) == provider
             })
             .collect();
         let status_message = page.on_device.message(self.ports.platform.computer_term);
@@ -700,7 +712,7 @@ impl Actor {
             enabled: self.settings.cleanup_enabled,
             provider,
             model: &self.settings.cleanup_model,
-            listed_models: listed(provider),
+            listed_models: provider.map_or(&[][..], listed),
             dialog,
             prompt: &self.settings.cleanup_prompt,
             prompt_draft: page.prompt_draft.as_ref().map(|draft| PromptDraftInputs {

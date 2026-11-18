@@ -1038,6 +1038,10 @@ pub struct FakeSettings {
 }
 
 impl SettingsSource for FakeSettings {
+    fn cleanup_provider_available(&self) -> BoxFuture<'_, bool> {
+        Box::pin(async { lock(&self.settings).cleanup_provider.is_some() })
+    }
+
     fn snapshot(&self) -> Settings {
         let mut settings = lock(&self.settings).clone();
         settings.recent_languages =
@@ -1078,8 +1082,10 @@ impl SettingsSource for FakeSettings {
             SettingChange::HistoryRetention(retention) => s.history_retention = retention,
             SettingChange::ReplacementRules(rules) => s.replacement_rules = rules,
             SettingChange::CleanupEnabled(on) => s.cleanup_enabled = on,
-            SettingChange::CleanupProvider(provider) => s.cleanup_provider = provider,
-            SettingChange::CleanupModel(_, model) => s.cleanup_model = model,
+            SettingChange::CleanupModel(provider, model) => {
+                s.cleanup_provider = Some(provider);
+                s.cleanup_model = model;
+            }
             SettingChange::CleanupPrompt(prompt) => s.cleanup_prompt = prompt,
             SettingChange::Onboarding(flags) => s.onboarding = flags,
             SettingChange::LastNoticeKey(key) => s.last_notice_key = key,
@@ -1113,7 +1119,7 @@ pub fn default_settings() -> Settings {
         recent_languages: vec![LanguageSetting::Auto],
         selected_model: ModelId::ParakeetTdtV2,
         cleanup_enabled: false,
-        cleanup_provider: CleanupProvider::OpenRouter,
+        cleanup_provider: Some(CleanupProvider::OpenRouter),
         cleanup_model: default_model().clone(),
         cleanup_prompt: CleanupPrompt::default(),
         replacement_rules: Vec::new(),

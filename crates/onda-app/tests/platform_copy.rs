@@ -215,7 +215,7 @@ async fn main_window() -> Harness {
 fn carried_over_from_a_mac(s: &mut Settings) {
     s.stored_model = "whisper-greendale".to_owned();
     s.cleanup_enabled = true;
-    s.cleanup_provider = CleanupProvider::AppleIntelligence;
+    s.cleanup_provider = Some(CleanupProvider::AppleIntelligence);
     s.cleanup_model = CleanupProvider::AppleIntelligence.default_model().clone();
 }
 

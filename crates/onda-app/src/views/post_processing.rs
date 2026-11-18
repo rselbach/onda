@@ -345,8 +345,8 @@ pub struct PostProcessingPage {
 pub struct PostProcessingInputs<'a> {
     /// `postProcessingEnabled`.
     pub enabled: bool,
-    /// `cleanupProvider`.
-    pub provider: CleanupProvider,
+    /// No provider when the stored selection cannot be read.
+    pub provider: Option<CleanupProvider>,
     /// The model actually used.
     pub model: &'a CleanupModel,
     /// The models the provider listed, for the model's name; empty until a
@@ -461,7 +461,7 @@ fn providers_dialog(
 ) -> ProvidersDialog {
     let provider = inputs.provider;
     // the model in use shows as the selection only in its provider's pane
-    let selected = (provider == page.provider).then_some(page.model);
+    let selected = (Some(provider) == page.provider).then_some(page.model);
     ProvidersDialog {
         title: "Choose Model".to_owned(),
         providers: inputs
@@ -472,7 +472,7 @@ fn providers_dialog(
                 name: offered.display_name().to_owned(),
                 // Apple's mark ships with the OS as a symbol
                 system_symbol: offered.on_device().then(|| "apple.intelligence".to_owned()),
-                in_use: *offered == page.provider,
+                in_use: Some(*offered) == page.provider,
             })
             .collect(),
         selected_provider: provider.id().to_owned(),
@@ -490,8 +490,14 @@ fn providers_dialog(
         loading_title: "Loading models…".to_owned(),
         models_notice: inputs.models_notice.cloned(),
         in_use_label: "In use".to_owned(),
-        in_use_model: model_name(page.model, page.listed_models).to_owned(),
-        in_use_provider: page.provider.display_name().to_owned(),
+        in_use_model: page
+            .provider
+            .map_or("None", |_| model_name(page.model, page.listed_models))
+            .to_owned(),
+        in_use_provider: page
+            .provider
+            .map_or("Unknown provider", CleanupProvider::display_name)
+            .to_owned(),
         done_title: "Done".to_owned(),
     }
 }
@@ -593,15 +599,15 @@ pub fn post_processing_page(inputs: PostProcessingInputs<'_>) -> PostProcessingP
         enabled: ToggleView::new("Post-process transcripts", inputs.enabled, true),
         details: inputs.enabled.then(|| PostProcessingDetails {
             model_label: "Model".to_owned(),
-            provider_name: provider.display_name().to_owned(),
-            model_name: model_name(inputs.model, inputs.listed_models).to_owned(),
+            provider_name: provider.map_or("Unknown provider", CleanupProvider::display_name).to_owned(),
+            model_name: provider.map_or("Choose a model", |_| model_name(inputs.model, inputs.listed_models)).to_owned(),
             dialog: inputs
                 .dialog
                 .as_ref()
                 .map(|dialog| providers_dialog(&inputs, dialog)),
-            caption: caption(provider, inputs.platform),
+            caption: provider.map_or_else(|| "Onda doesn't recognize the saved provider. Choose a model to resume post-processing.".to_owned(), |provider| caption(provider, inputs.platform)),
             prompt: prompt_summary(&inputs),
-            test_button: ButtonView::new("Test with Sample Text", !inputs.test_running),
+            test_button: ButtonView::new("Test with Sample Text", provider.is_some() && !inputs.test_running),
             test_running: inputs.test_running,
             test_result: inputs.test_result.cloned(),
             test_error: inputs.test_error.map(|message| AlertView {
@@ -638,7 +644,7 @@ mod tests {
     fn inputs<'a>(model: &'a CleanupModel, listed: &'a [CleanupModel]) -> PostProcessingInputs<'a> {
         PostProcessingInputs {
             enabled: true,
-            provider: CleanupProvider::OpenRouter,
+            provider: Some(CleanupProvider::OpenRouter),
             model,
             listed_models: listed,
             dialog: None,
@@ -766,7 +772,7 @@ mod tests {
         for tc in cases {
             let model = tc.provider.default_model();
             let details = post_processing_page(PostProcessingInputs {
-                provider: tc.provider,
+                provider: Some(tc.provider),
                 platform: tc.platform,
                 ..inputs(model, &[])
             })
@@ -810,7 +816,7 @@ mod tests {
             let model = tc.provider.default_model();
             let dialog = providers_dialog(
                 &PostProcessingInputs {
-                    provider: tc.provider,
+                    provider: Some(tc.provider),
                     platform: tc.platform,
                     ..inputs(model, &[])
                 },
@@ -1210,7 +1216,7 @@ mod tests {
         let model = CleanupProvider::AppleIntelligence.default_model();
         let dialog = providers_dialog(
             &PostProcessingInputs {
-                provider: CleanupProvider::AppleIntelligence,
+                provider: Some(CleanupProvider::AppleIntelligence),
                 ..inputs(model, &[])
             },
             &ProvidersDialogInputs {
@@ -1244,7 +1250,7 @@ mod tests {
         };
         let dialog = providers_dialog(
             &PostProcessingInputs {
-                provider: CleanupProvider::Fireworks,
+                provider: Some(CleanupProvider::Fireworks),
                 ..inputs(&CLEANUP_MODELS[0], &[])
             },
             &ProvidersDialogInputs {

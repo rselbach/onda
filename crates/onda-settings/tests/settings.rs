@@ -41,7 +41,7 @@ struct Snapshot {
     history_retention: HistoryRetention,
     replacement_rules: Vec<ReplacementRule>,
     post_processing_enabled: bool,
-    cleanup_provider: CleanupProvider,
+    cleanup_provider: Option<CleanupProvider>,
     openrouter_model: String,
     fireworks_model: String,
     deepseek_model: String,
@@ -107,7 +107,7 @@ fn defaults() -> Snapshot {
         history_retention: HistoryRetention::Month,
         replacement_rules: Vec::new(),
         post_processing_enabled: false,
-        cleanup_provider: CleanupProvider::OpenRouter,
+        cleanup_provider: Some(CleanupProvider::OpenRouter),
         openrouter_model: "~openai/gpt-luna-latest".to_owned(),
         fireworks_model: "accounts/fireworks/models/deepseek-v4p1-flash".to_owned(),
         deepseek_model: "deepseek-flash".to_owned(),
@@ -332,7 +332,7 @@ fn every_setter_round_trips_through_the_file() {
         history_retention: HistoryRetention::Forever,
         replacement_rules: rules,
         post_processing_enabled: true,
-        cleanup_provider: CleanupProvider::Fireworks,
+        cleanup_provider: Some(CleanupProvider::Fireworks),
         openrouter_model: "~anthropic/claude-haiku-latest".to_owned(),
         fireworks_model: "accounts/fireworks/models/kimi-k3".to_owned(),
         deepseek_model: "deepseek-v4-pro".to_owned(),
@@ -471,8 +471,6 @@ fn corrupt_values_read_as_defaults_set_2() {
         ("replacementEntries".into(), json!("{broken")),
         ("replacementEntries".into(), json!({"id": "x"})),
         ("replacementEntries".into(), json!([{"id": "a"}])),
-        ("cleanupProvider".into(), json!("greendale")),
-        ("cleanupProvider".into(), json!(1)),
         ("openRouterModel".into(), json!("")),
         ("openRouterModel".into(), json!(3)),
         ("cleanupPrompt".into(), json!(7)),
@@ -530,6 +528,31 @@ fn the_hotkey_default_is_the_callers_hot_2_hot_5() {
 }
 
 #[test]
+fn sending_checks_the_provider_even_without_a_local_settings_write() {
+    let (dir, settings) = with_json(&json!({}));
+    let path = settings_path(&dir);
+    assert_eq!(
+        settings.stored_cleanup_provider(),
+        Some(CleanupProvider::OpenRouter)
+    );
+    for contents in [r#"{"cleanupProvider":"greendale"}"#, "{"] {
+        fs::write(&path, contents).expect("replace settings");
+        assert_eq!(settings.stored_cleanup_provider(), None);
+    }
+    fs::remove_file(&path).expect("remove fixture");
+    fs::create_dir(path).expect("unreadable settings");
+    assert_eq!(settings.stored_cleanup_provider(), None);
+}
+
+#[test]
+fn invalid_provider_never_selects_a_cloud_service() {
+    for value in [json!("greendale"), json!(1), Value::Null] {
+        let (_, settings) = with_json(&json!({"cleanupProvider":value}));
+        assert_eq!(settings.cleanup_provider(), None);
+    }
+}
+
+#[test]
 fn unrecognized_history_retention_keeps_everything() {
     for bad in [json!("fortnight"), json!(30)] {
         let (_dir, settings) = with_json(&json!({ "historyRetention": bad.clone() }));
@@ -570,6 +593,7 @@ fn whole_file_corruption_reads_as_defaults() {
         let path = settings_path(&dir);
         let mut want = defaults();
         want.history_retention = HistoryRetention::Forever;
+        want.cleanup_provider = None;
         assert_eq!(snapshot(&settings), want, "{name}");
         settings.canonicalize().expect(name);
         assert_eq!(settings.history_retention(), HistoryRetention::Forever);
@@ -579,9 +603,10 @@ fn whole_file_corruption_reads_as_defaults() {
 
         assert_eq!(
             stored(&path),
-            json!({"outputMode":"clipboard","historyRetention":"forever"}),
+            json!({"outputMode":"clipboard","historyRetention":"forever", "cleanupProvider": null}),
             "{name}"
         );
+        assert_eq!(Settings::open(&path).cleanup_provider(), None);
         let backups = leftovers(&path);
         assert_eq!(backups.len(), 1, "{name}: {backups:?}");
         assert!(backups[0].starts_with("settings.json.corrupt-"), "{name}");
@@ -604,12 +629,16 @@ fn corruption_after_open_is_preserved_not_merged() {
     settings.set_history_enabled(false).expect("set");
     assert_eq!(
         *seen.lock().expect("lock"),
-        [Key::HistoryEnabled, Key::HistoryRetention]
+        [
+            Key::HistoryEnabled,
+            Key::HistoryRetention,
+            Key::CleanupProvider
+        ]
     );
 
     assert_eq!(
         stored(&path),
-        json!({"historyEnabled": false, "historyRetention": "forever"})
+        json!({"historyEnabled": false, "historyRetention": "forever", "cleanupProvider": null})
     );
     assert_eq!(
         settings.output_mode(),
@@ -645,7 +674,7 @@ fn repeated_corruption_keeps_distinct_backups() {
     assert_eq!(backups, want);
     assert_eq!(
         stored(&path),
-        json!({"historyEnabled": false, "historyRetention": "forever"})
+        json!({"historyEnabled": false, "historyRetention": "forever", "cleanupProvider": null})
     );
 }
 
@@ -658,7 +687,7 @@ fn explicit_forever_repairs_a_corrupt_file() {
         .expect("set");
     assert_eq!(
         stored(&settings_path(&dir)),
-        json!({"historyRetention":"forever"})
+        json!({"historyRetention":"forever","cleanupProvider":null})
     );
 }
 
@@ -683,6 +712,7 @@ fn unreadable_path_reads_as_defaults() {
 
     let mut want = defaults();
     want.history_retention = HistoryRetention::Forever;
+    want.cleanup_provider = None;
     assert_eq!(snapshot(&settings), want);
     assert!(settings.set_output_mode(OutputMode::Clipboard).is_err());
     assert!(path.is_dir(), "an unreadable file is never replaced");
@@ -1357,7 +1387,7 @@ fn deepseek_selection_survives_reopening_without_changing_other_models() {
         .expect("DeepSeek model");
     settings.set_cleanup_provider(provider).expect("provider");
     let reopened = Settings::open(&path);
-    assert_eq!(reopened.cleanup_provider(), provider);
+    assert_eq!(reopened.cleanup_provider(), Some(provider));
     assert_eq!(reopened.cleanup_model(provider).slug, "deepseek-v4-pro");
     assert_eq!(
         reopened.cleanup_model(CleanupProvider::OpenRouter).slug,
