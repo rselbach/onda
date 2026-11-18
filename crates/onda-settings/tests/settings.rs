@@ -568,11 +568,20 @@ fn whole_file_corruption_reads_as_defaults() {
     for (name, contents) in cases {
         let (dir, settings) = with_file(contents);
         let path = settings_path(&dir);
-        assert_eq!(snapshot(&settings), defaults(), "{name}");
+        let mut want = defaults();
+        want.history_retention = HistoryRetention::Forever;
+        assert_eq!(snapshot(&settings), want, "{name}");
+        settings.canonicalize().expect(name);
+        assert_eq!(settings.history_retention(), HistoryRetention::Forever);
+        assert_eq!(fs::read(&path).expect(name), contents);
 
         settings.set_output_mode(OutputMode::Clipboard).expect(name);
 
-        assert_eq!(stored(&path), json!({"outputMode": "clipboard"}), "{name}");
+        assert_eq!(
+            stored(&path),
+            json!({"outputMode":"clipboard","historyRetention":"forever"}),
+            "{name}"
+        );
         let backups = leftovers(&path);
         assert_eq!(backups.len(), 1, "{name}: {backups:?}");
         assert!(backups[0].starts_with("settings.json.corrupt-"), "{name}");
@@ -591,9 +600,17 @@ fn corruption_after_open_is_preserved_not_merged() {
     let path = settings_path(&dir);
     fs::write(&path, b"Troy and Abed in the morning").expect("corrupt the file");
 
+    let (settings, seen) = recorder(settings);
     settings.set_history_enabled(false).expect("set");
+    assert_eq!(
+        *seen.lock().expect("lock"),
+        [Key::HistoryEnabled, Key::HistoryRetention]
+    );
 
-    assert_eq!(stored(&path), json!({"historyEnabled": false}));
+    assert_eq!(
+        stored(&path),
+        json!({"historyEnabled": false, "historyRetention": "forever"})
+    );
     assert_eq!(
         settings.output_mode(),
         OutputMode::Type,
@@ -626,7 +643,34 @@ fn repeated_corruption_keeps_distinct_backups() {
     let mut want = contents.to_vec();
     want.sort();
     assert_eq!(backups, want);
-    assert_eq!(stored(&path), json!({"historyEnabled": false}));
+    assert_eq!(
+        stored(&path),
+        json!({"historyEnabled": false, "historyRetention": "forever"})
+    );
+}
+
+#[test]
+fn explicit_forever_repairs_a_corrupt_file() {
+    let (dir, settings) = with_file(b"{");
+    assert!(!settings.is_set(Key::HistoryRetention));
+    settings
+        .set_history_retention(HistoryRetention::Forever)
+        .expect("set");
+    assert_eq!(
+        stored(&settings_path(&dir)),
+        json!({"historyRetention":"forever"})
+    );
+}
+
+#[test]
+fn failed_reread_disables_age_pruning_without_losing_other_preferences() {
+    let (dir, settings) = with_json(&json!({"historyRetention":"week", "historyEnabled": false}));
+    let path = settings_path(&dir);
+    fs::remove_file(&path).expect("remove fixture");
+    fs::create_dir(&path).expect("unreadable settings");
+    assert!(settings.set_output_mode(OutputMode::Clipboard).is_err());
+    assert_eq!(settings.history_retention(), HistoryRetention::Forever);
+    assert!(!settings.history_enabled());
 }
 
 #[test]
@@ -637,7 +681,9 @@ fn unreadable_path_reads_as_defaults() {
 
     let settings = Settings::open(&path);
 
-    assert_eq!(snapshot(&settings), defaults());
+    let mut want = defaults();
+    want.history_retention = HistoryRetention::Forever;
+    assert_eq!(snapshot(&settings), want);
     assert!(settings.set_output_mode(OutputMode::Clipboard).is_err());
     assert!(path.is_dir(), "an unreadable file is never replaced");
     assert_eq!(leftovers(&path), Vec::<String>::new());

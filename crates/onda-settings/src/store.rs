@@ -33,13 +33,28 @@ type Observer = Box<dyn Fn(Key) + Send + Sync>;
 /// kept, and the cache picks up the file's latest contents on each write.
 /// Getters never write and never fail: a missing key is the default, a
 /// corrupt value is the default plus a log line (SET-2), and a corrupt or
-/// unreadable file reads as empty.
+/// unreadable file uses the defaults except for retention, which keeps all ages.
 ///
 /// `Settings` is `Send + Sync`; share it behind an `Arc`.
 pub struct Settings {
     path: PathBuf,
-    values: Mutex<Map<String, Value>>,
+    values: Mutex<CachedSettings>,
     observer: Option<Observer>,
+}
+
+#[derive(Default)]
+struct CachedSettings {
+    values: Map<String, Value>,
+    readable: bool,
+}
+
+impl CachedSettings {
+    fn from_read(stored: Option<Map<String, Value>>) -> Self {
+        Self {
+            readable: stored.is_some(),
+            values: stored.unwrap_or_default(),
+        }
+    }
 }
 
 impl fmt::Debug for Settings {
@@ -90,13 +105,13 @@ impl Settings {
     ///
     /// Never fails. A missing file is empty settings. An unreadable file, a
     /// file that is not JSON, or JSON that is not an object is logged and
-    /// read as empty. The next setter copies a corrupt file to
+    /// read with no history age limit. The next setter copies a corrupt file to
     /// `settings.json.corrupt-<random>` before replacing it, and fails rather than
     /// replace a file it cannot read. The parent directory is created on
     /// first write.
     pub fn open(path: impl Into<PathBuf>) -> Settings {
         let path = path.into();
-        let values = load(&path);
+        let values = CachedSettings::from_read(reload(&path).ok().flatten());
         Settings {
             path,
             values: Mutex::new(values),
@@ -117,7 +132,7 @@ impl Settings {
 
     /// Whether `key` is stored, valid or not.
     pub fn is_set(&self, key: Key) -> bool {
-        self.lock().contains_key(key.as_str())
+        self.lock().values.contains_key(key.as_str())
     }
 
     /// Removes `key`, so it reads as its default again.
@@ -331,11 +346,14 @@ impl Settings {
     /// does not recognize reads as `forever`: it may come from a newer build,
     /// and a guessed shorter limit would delete history.
     pub fn history_retention(&self) -> HistoryRetention {
-        if self.raw(Key::HistoryRetention).is_none() {
-            return HistoryRetention::default();
+        let cache = self.lock();
+        if !cache.readable {
+            return HistoryRetention::Forever;
         }
-        self.string(Key::HistoryRetention)
-            .and_then(|raw| HistoryRetention::from_setting(&raw))
+        let Some(raw) = cache.values.get(Key::HistoryRetention.as_str()) else {
+            return HistoryRetention::default();
+        };
+        raw.as_str().and_then(HistoryRetention::from_setting)
             .unwrap_or_else(|| {
                 tracing::warn!(key = %Key::HistoryRetention, "unrecognized value; keeping all history");
                 HistoryRetention::Forever
@@ -518,12 +536,12 @@ impl Settings {
         self.put(Key::DeclinedModelMigrationNoticeKey, Value::from(key))
     }
 
-    fn lock(&self) -> MutexGuard<'_, Map<String, Value>> {
+    fn lock(&self) -> MutexGuard<'_, CachedSettings> {
         self.values.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     fn raw(&self, key: Key) -> Option<Value> {
-        self.lock().get(key.as_str()).cloned()
+        self.lock().values.get(key.as_str()).cloned()
     }
 
     fn string(&self, key: Key) -> Option<String> {
@@ -575,10 +593,10 @@ impl Settings {
     ) -> Result<Vec<Key>, SettingsError> {
         let changed = {
             let _file_lock = lock_file(&self.path)?;
-            let stored = reload(&self.path)?;
+            let stored = reload(&self.path).inspect_err(|_| self.lock().readable = false)?;
             let corrupt = stored.is_none();
+            *self.lock() = CachedSettings::from_read(stored.clone());
             let mut next = stored.unwrap_or_default();
-            *self.lock() = next.clone();
             let mut changed = Vec::new();
             for (key, value) in changes() {
                 if next.get(key.as_str()) == value.as_ref() {
@@ -593,12 +611,19 @@ impl Settings {
             if changed.is_empty() {
                 return Ok(changed);
             }
+            if corrupt && !next.contains_key(Key::HistoryRetention.as_str()) {
+                next.insert(
+                    Key::HistoryRetention.as_str().into(),
+                    Value::from(HistoryRetention::Forever.as_setting()),
+                );
+                changed.push(Key::HistoryRetention);
+            }
             if let Err(error) = save(&self.path, &next, corrupt) {
                 let keys: Vec<&str> = changed.iter().map(|key| key.as_str()).collect();
                 tracing::error!(path = %self.path.display(), ?keys, %error, "couldn't save settings");
                 return Err(error);
             }
-            *self.lock() = next;
+            *self.lock() = CachedSettings::from_read(Some(next));
             changed
         };
         if let Some(observer) = &self.observer {
@@ -629,31 +654,17 @@ fn wrong_type(key: Key, value: &Value) {
     tracing::warn!(%key, found, "setting has the wrong type; using the default");
 }
 
-fn load(path: &Path) -> Map<String, Value> {
-    match read(path) {
-        Ok(Ok(values)) => values,
-        Ok(Err(problem)) => {
-            tracing::error!(path = %path.display(), problem, "corrupt settings; using defaults");
-            Map::new()
-        }
-        Err(error) => {
-            tracing::error!(path = %path.display(), %error, "couldn't read settings; using defaults");
-            Map::new()
-        }
-    }
-}
-
 // the file's settings for a write: `None` when it is corrupt, an error when
 // it cannot be read, since replacing it would lose settings we never saw
 fn reload(path: &Path) -> Result<Option<Map<String, Value>>, SettingsError> {
     match read(path) {
         Ok(Ok(values)) => Ok(Some(values)),
         Ok(Err(problem)) => {
-            tracing::error!(path = %path.display(), problem, "corrupt settings; replacing them");
+            tracing::error!(path = %path.display(), problem, "corrupt settings; ignoring their contents");
             Ok(None)
         }
         Err(error) => {
-            tracing::error!(path = %path.display(), %error, "couldn't reread settings; not saving");
+            tracing::error!(path = %path.display(), %error, "couldn't read settings");
             Err(SettingsError::Io(error))
         }
     }
