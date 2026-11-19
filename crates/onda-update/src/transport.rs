@@ -120,59 +120,96 @@ impl Transport {
         tokio::fs::create_dir_all(dir)
             .await
             .map_err(|error| io_error("create", dir, &error))?;
+        let lock_path = dir.join(format!("{}.download.lock", artifact.sha256));
+        let _lock = tokio::task::spawn_blocking(move || lock_download(&lock_path))
+            .await
+            .map_err(|error| {
+                TransferError::Io(format!("could not lock update download: {error}"))
+            })??;
         let part = dir.join(format!("{}.download", artifact.sha256));
-        let mut last = None;
-        for attempt in 1..=ATTEMPTS {
-            if attempt > 1 {
-                tokio::time::sleep(RETRY_DELAY).await;
-            }
-            match self.fetch_rest(artifact, &part, progress).await {
-                Ok(()) => {
-                    last = None;
-                    break;
+        let mut retried_exact_corrupt = false;
+        loop {
+            let mut last = None;
+            let mut fetched = false;
+            for attempt in 1..=ATTEMPTS {
+                if attempt > 1 {
+                    tokio::time::sleep(RETRY_DELAY).await;
                 }
-                Err(TransferError::Network(why)) => {
-                    tracing::warn!(attempt, %why, "update download interrupted");
-                    last = Some(TransferError::Network(why));
+                match self.fetch_rest(artifact, &part, progress).await {
+                    Ok(did_fetch) => {
+                        fetched = did_fetch;
+                        last = None;
+                        break;
+                    }
+                    Err(TransferError::Network(why)) => {
+                        tracing::warn!(attempt, %why, "update download interrupted");
+                        last = Some(TransferError::Network(why));
+                    }
+                    Err(error) => return Err(discard(&part, error).await),
+                }
+            }
+            if let Some(error) = last {
+                return Err(error);
+            }
+            let checked = part.clone();
+            let want = artifact.clone();
+            let verdict = tokio::task::spawn_blocking(move || verify_file(&checked, &want))
+                .await
+                .map_err(|error| {
+                    TransferError::Io(format!("could not check the update: {error}"))
+                })?;
+            match verdict {
+                Ok(()) => return Ok(part),
+                Err(error @ TransferError::Mismatch(_)) if !fetched && !retried_exact_corrupt => {
+                    tracing::warn!(
+                        %error,
+                        "cached exact-size update download failed verification; restarting from byte 0"
+                    );
+                    discard(&part, error).await;
+                    retried_exact_corrupt = true;
                 }
                 Err(error) => return Err(discard(&part, error).await),
             }
         }
-        if let Some(error) = last {
-            return Err(error);
-        }
-        let checked = part.clone();
-        let want = artifact.clone();
-        let verdict = tokio::task::spawn_blocking(move || verify_file(&checked, &want))
-            .await
-            .map_err(|error| TransferError::Io(format!("could not check the update: {error}")))?;
-        match verdict {
-            Ok(()) => Ok(part),
-            Err(error) => Err(discard(&part, error).await),
-        }
     }
 
-    /// One request for whatever `part` still lacks.
+    /// One request for whatever `part` still lacks. Returns whether a request ran.
     async fn fetch_rest(
         &self,
         artifact: &Artifact,
         part: &Path,
         progress: &(dyn Fn(u64) + Send + Sync),
-    ) -> Result<(), TransferError> {
+    ) -> Result<bool, TransferError> {
         let mut offset = tokio::fs::metadata(part).await.map_or(0, |meta| meta.len());
         if offset > artifact.size {
             offset = 0;
         }
         if offset == artifact.size {
-            return Ok(());
-        }
-        let mut request = self.client.get(&artifact.url);
-        if offset > 0 {
-            tracing::info!(offset, size = artifact.size, "resuming the update download");
-            request = request.header(RANGE, format!("bytes={offset}-"));
+            return Ok(false);
         }
         let network = |error: reqwest::Error| TransferError::Network(describe(&error));
-        let mut response = request.send().await.map_err(network)?;
+        let mut response = {
+            let mut request = self.client.get(&artifact.url);
+            if offset > 0 {
+                tracing::info!(offset, size = artifact.size, "resuming the update download");
+                request = request.header(RANGE, format!("bytes={offset}-"));
+            }
+            request.send().await.map_err(network)?
+        };
+        if offset > 0 && response.status() == StatusCode::RANGE_NOT_SATISFIABLE {
+            tracing::warn!(
+                offset,
+                "the server rejected the resume range with HTTP 416; restarting from byte 0"
+            );
+            discard(part, TransferError::Network(String::new())).await;
+            offset = 0;
+            response = self
+                .client
+                .get(&artifact.url)
+                .send()
+                .await
+                .map_err(network)?;
+        }
         match response.status() {
             StatusCode::PARTIAL_CONTENT if offset > 0 => {
                 let resumed = response
@@ -232,13 +269,16 @@ impl Transport {
         out.flush()
             .await
             .map_err(|error| io_error("write", part, &error))?;
+        out.sync_all()
+            .await
+            .map_err(|error| io_error("sync", part, &error))?;
         if written < artifact.size {
             return Err(TransferError::Network(format!(
                 "the connection closed after {written} of {} bytes",
                 artifact.size
             )));
         }
-        Ok(())
+        Ok(true)
     }
 }
 
@@ -294,6 +334,22 @@ fn io_error(action: &str, path: &Path, error: &std::io::Error) -> TransferError 
     TransferError::Io(format!("could not {action} {}: {error}", path.display()))
 }
 
+fn lock_download(path: &Path) -> Result<std::fs::File, TransferError> {
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).truncate(false).read(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options
+        .open(path)
+        .map_err(|error| io_error("lock", path, &error))?;
+    file.lock()
+        .map_err(|error| io_error("lock", path, &error))?;
+    Ok(file)
+}
+
 /// The error and its causes on one line; reqwest's own text omits them.
 fn describe(error: &reqwest::Error) -> String {
     let mut text = error.to_string();
@@ -325,6 +381,8 @@ pub(crate) mod tests {
         CutAfter(usize),
         /// Redirects to the given path on the same server.
         Redirect(&'static str),
+        /// Answers HTTP 416 when Range is present, otherwise serves normally.
+        RejectRange,
         Fail,
         /// Never answers.
         Hang,
@@ -460,7 +518,15 @@ pub(crate) mod tests {
                 return;
             }
             Behavior::Corrupt => body.iter_mut().for_each(|byte| *byte ^= 0xff),
-            Behavior::Serve | Behavior::CutAfter(_) => {}
+            Behavior::RejectRange if range.is_some() => {
+                let _ = writer
+                    .write_all(
+                        b"HTTP/1.1 416 Range Not Satisfiable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await;
+                return;
+            }
+            Behavior::Serve | Behavior::CutAfter(_) | Behavior::RejectRange => {}
         }
         let total = body.len();
         let start = range
@@ -555,7 +621,11 @@ pub(crate) mod tests {
         let transport = Transport::new(server.origins(), "Onda/test").unwrap();
         let got = transport.download(&artifact, dir.path(), &|_| {}).await;
         assert!(matches!(got, Err(TransferError::Mismatch(_))), "{got:?}");
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        assert!(
+            !dir.path()
+                .join(format!("{}.download", artifact.sha256))
+                .exists()
+        );
     }
 
     #[tokio::test]
@@ -627,5 +697,44 @@ pub(crate) mod tests {
         assert!(matches!(got, Err(TransferError::Mismatch(_))), "{got:?}");
         let got = transport.fetch_feed(&server.url("/missing.json")).await;
         assert!(matches!(got, Err(TransferError::Network(_))), "{got:?}");
+    }
+
+    #[tokio::test]
+    async fn http_416_and_corrupt_exact_size_partial_retry_from_zero() {
+        let server = Server::start().await;
+        let path = "/releases/v2/Onda.zip";
+        server.put(path, body(), Behavior::RejectRange);
+        let artifact = artifact_for(&server, path, &body());
+        let transport = Transport::new(server.origins(), "Onda/test").unwrap();
+
+        let dir_416 = tempfile::tempdir().unwrap();
+        let part_416 = dir_416.path().join(format!("{}.download", artifact.sha256));
+        std::fs::write(&part_416, &body()[..100]).unwrap();
+        let got_416 = transport
+            .download(&artifact, dir_416.path(), &|_| {})
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(got_416).unwrap(), body());
+        assert_eq!(
+            server
+                .requests(path)
+                .iter()
+                .map(Option::as_deref)
+                .collect::<Vec<_>>(),
+            vec![Some("bytes=100-"), None]
+        );
+
+        let dir_exact = tempfile::tempdir().unwrap();
+        let part_exact = dir_exact
+            .path()
+            .join(format!("{}.download", artifact.sha256));
+        let mut corrupt = body();
+        corrupt[0] ^= 0xff;
+        std::fs::write(&part_exact, &corrupt).unwrap();
+        let got_exact = transport
+            .download(&artifact, dir_exact.path(), &|_| {})
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(got_exact).unwrap(), body());
     }
 }

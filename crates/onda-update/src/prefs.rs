@@ -3,7 +3,8 @@
 //! and the highest build any verified feed has named (UPD-5's replay
 //! guard).
 
-use std::path::{Path, PathBuf};
+use std::io::Write;
+use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -42,16 +43,20 @@ impl Prefs {
 
     /// Writes `file` atomically.
     pub(crate) fn save(&self, file: &Path) -> std::io::Result<()> {
-        if let Some(parent) = file.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let temporary = PathBuf::from(format!("{}.tmp", file.display()));
+        let parent = file
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        std::fs::create_dir_all(parent)?;
+        let mut temporary = tempfile::Builder::new()
+            .prefix(".updater-")
+            .suffix(".tmp")
+            .tempfile_in(parent)?;
         // serializing this plain struct cannot fail
-        std::fs::write(
-            &temporary,
-            serde_json::to_vec_pretty(self).unwrap_or_default(),
-        )?;
-        std::fs::rename(&temporary, file)
+        temporary.write_all(&serde_json::to_vec_pretty(self).unwrap_or_default())?;
+        temporary.as_file().sync_all()?;
+        temporary.persist(file).map_err(|error| error.error)?;
+        Ok(())
     }
 
     /// The last check, or `None` when there was none or the saved value

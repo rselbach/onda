@@ -215,14 +215,28 @@ pub fn stage(zip: &Path, installed: &Path, expected: &Expected) -> Result<Staged
         .parent()
         .ok_or_else(|| InstallError::Failed("the app has no parent folder".to_owned()))?;
     let (folder, receipt) = claim_folder(parent, &installed, expected.build)?;
+    let unpack_dir = folder.join("unpack");
+    let create_unpack = || -> std::io::Result<()> {
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder.create(&unpack_dir)
+    };
     let staged = Staged {
-        app: folder.join("Onda.app"),
+        app: unpack_dir.join("Onda.app"),
         folder,
         installed,
         expected: expected.clone(),
         receipt: Some(Arc::new(receipt)),
     };
-    let result = unpack(zip, &staged.folder).and_then(|()| verify_bundle(&staged.app, expected));
+    if let Err(error) = create_unpack() {
+        discard(&staged);
+        return Err(failed("create", &unpack_dir, &error));
+    }
+    let result = unpack(zip, &unpack_dir).and_then(|()| verify_bundle(&staged.app, expected));
     if let Err(error) = result {
         discard(&staged);
         return Err(error);
@@ -252,7 +266,13 @@ fn claim_folder(
             std::process::id()
         );
         let folder = parent.join(name);
-        match fs::create_dir(&folder) {
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        match builder.create(&folder) {
             Ok(()) => {}
             // never reuse a folder that was already there
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -648,14 +668,14 @@ fn remove_staging_folder(folder: &Path) -> Result<(), InstallError> {
 /// empty; give this user write access to the folders inside first.
 fn make_writable(folder: &Path) {
     use std::os::unix::fs::PermissionsExt;
-    let Ok(entries) = fs::read_dir(folder) else {
-        return;
-    };
     if let Ok(meta) = fs::symlink_metadata(folder) {
         let mut permissions = meta.permissions();
         permissions.set_mode(permissions.mode() | 0o700);
         let _ = fs::set_permissions(folder, permissions);
     }
+    let Ok(entries) = fs::read_dir(folder) else {
+        return;
+    };
     for entry in entries.flatten() {
         if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
             make_writable(&entry.path());
@@ -951,7 +971,7 @@ pub(crate) mod tests {
 
         let replaced = stage(&archive, &installed, &expected("2.0.0", 42)).unwrap();
         fs::remove_dir_all(&replaced.app).unwrap();
-        bundle(&replaced.folder, TEST_ID, "2.0.0", 43);
+        bundle(replaced.app.parent().unwrap(), TEST_ID, "2.0.0", 43);
         let got = apply_with(&replaced, 41, &swap, no_relaunch);
         assert!(matches!(got, Err(ApplyError::NotApplied(_))), "{got:?}");
         assert_eq!(version(&installed), "41");
@@ -1057,5 +1077,22 @@ pub(crate) mod tests {
             std::thread::sleep(Duration::from_millis(50));
         }
         assert!(marker.exists(), "never ran after the old process exited");
+    }
+
+    #[test]
+    fn make_writable_unlocks_unreadable_directory_before_removal() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = scratch();
+        let parent = root.path().to_path_buf();
+        let locked = parent.join(format!("{STAGING_PREFIX}99"));
+        let nested = locked.join("unpack/Onda.app");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("Info.plist"), b"greendale").unwrap();
+        fs::set_permissions(&nested, fs::Permissions::from_mode(0o000)).unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+
+        remove_staging_folder(&locked).unwrap();
+        assert!(!locked.exists());
     }
 }

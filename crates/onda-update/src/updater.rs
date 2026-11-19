@@ -214,6 +214,7 @@ struct State {
 
 struct Shared {
     state: Mutex<State>,
+    prefs_write: Mutex<()>,
     prefs_file: PathBuf,
     host: Arc<dyn Host>,
     /// Commands the worker finished; tests wait on it.
@@ -236,13 +237,19 @@ impl Shared {
         self.host.changed();
     }
 
-    /// Changes the preferences and saves them under the state lock, so
-    /// saves land in the order the changes happened and the file always
-    /// matches memory. `change` returning `Err` saves nothing.
+    /// Changes the preferences and saves them serialized by `prefs_write`,
+    /// releasing `state` before disk I/O so readers never stall on disk.
     fn update_prefs<E>(&self, change: impl FnOnce(&mut Prefs) -> Result<(), E>) -> Result<(), E> {
-        let mut state = self.lock();
-        change(&mut state.prefs)?;
-        if let Err(error) = state.prefs.save(&self.prefs_file) {
+        let _write = self
+            .prefs_write
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let snapshot = {
+            let mut state = self.lock();
+            change(&mut state.prefs)?;
+            state.prefs.clone()
+        };
+        if let Err(error) = snapshot.save(&self.prefs_file) {
             tracing::error!(%error, "could not save the updater state");
         }
         Ok(())
@@ -286,7 +293,8 @@ impl Updater {
     ) -> Result<Self, String> {
         let transport = Transport::new(config.origins.clone(), &config.user_agent)?;
         let prefs_file = config.state_dir.join("updater.json");
-        let prefs = Prefs::load(&prefs_file, config.automatic_default);
+        let mut prefs = Prefs::load(&prefs_file, config.automatic_default);
+        prefs.highest_build_seen = prefs.highest_build_seen.max(config.build);
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
                 status: UpdateStatus::Idle,
@@ -296,6 +304,7 @@ impl Updater {
                 stranded: false,
                 failed_build: None,
             }),
+            prefs_write: Mutex::new(()),
             prefs_file,
             host,
             finished: AtomicUsize::new(0),
@@ -431,7 +440,8 @@ impl Worker {
                     // after the reply: the caller holds dictation until then
                     if let Some(release) = replacement {
                         let outcome = self.act(&release).await;
-                        let status = self.settle(outcome);
+                        let (status, dropped) = self.settle(outcome);
+                        self.discard_staged(dropped).await;
                         self.shared.set_status(status);
                     }
                 }
@@ -466,39 +476,43 @@ impl Worker {
             Ok(release) => self.act(&release).await,
             Err(failure) => Err(failure),
         };
-        let status = self.settle(outcome);
+        let (status, dropped) = self.settle(outcome);
+        self.discard_staged(dropped).await;
         self.shared.set_status(status);
+    }
+
+    async fn discard_staged(&self, staged: Option<Staged>) {
+        if let Some(staged) = staged {
+            tracing::info!(build = staged.build(), "dropping the staged update");
+            if let Some(installer) = self.installer.clone() {
+                let _ = tokio::task::spawn_blocking(move || installer.discard(&staged)).await;
+            }
+        }
     }
 
     /// The status after a check: a staged update outlives a failed check,
     /// and stays ready unless the feed says it is no longer wanted.
-    fn settle(&self, outcome: Result<UpdateStatus, UpdateFailure>) -> UpdateStatus {
-        let (status, dropped) = {
-            let mut state = self.shared.lock();
-            let Some(version) = state.staged.as_ref().map(|s| s.version().to_owned()) else {
-                return outcome.unwrap_or_else(UpdateStatus::Failed);
-            };
-            match outcome {
-                // nothing newer applies to this build, or it cannot replace
-                // itself any more
-                Ok(status @ (UpdateStatus::UpToDate | UpdateStatus::Available { .. })) => {
-                    (status, state.staged.take())
-                }
-                Ok(status @ UpdateStatus::Ready { .. }) => (status, None),
-                Ok(_) => (UpdateStatus::Ready { version }, None),
-                Err(failure) => {
-                    tracing::warn!(?failure, "the check failed; the staged update stays ready");
-                    (UpdateStatus::Ready { version }, None)
-                }
-            }
+    fn settle(
+        &self,
+        outcome: Result<UpdateStatus, UpdateFailure>,
+    ) -> (UpdateStatus, Option<Staged>) {
+        let mut state = self.shared.lock();
+        let Some(version) = state.staged.as_ref().map(|s| s.version().to_owned()) else {
+            return (outcome.unwrap_or_else(UpdateStatus::Failed), None);
         };
-        if let Some(staged) = dropped {
-            tracing::info!(build = staged.build(), "dropping the staged update");
-            if let Some(installer) = &self.installer {
-                installer.discard(&staged);
+        match outcome {
+            // nothing newer applies to this build, or it cannot replace
+            // itself any more
+            Ok(status @ (UpdateStatus::UpToDate | UpdateStatus::Available { .. })) => {
+                (status, state.staged.take())
+            }
+            Ok(status @ UpdateStatus::Ready { .. }) => (status, None),
+            Ok(_) => (UpdateStatus::Ready { version }, None),
+            Err(failure) => {
+                tracing::warn!(?failure, "the check failed; the staged update stays ready");
+                (UpdateStatus::Ready { version }, None)
             }
         }
-        status
     }
 
     /// Fetches and verifies the feed, refuses one older than a feed already
@@ -517,19 +531,27 @@ impl Worker {
                 tracing::error!(%error, "refused the update feed");
                 UpdateFailure::Untrusted
             })?;
-        self.shared.update_prefs(|prefs| {
-            if release.build < prefs.highest_build_seen {
-                tracing::error!(
-                    build = release.build,
-                    seen = prefs.highest_build_seen,
-                    "refused an update feed older than one already seen"
-                );
-                return Err(UpdateFailure::Untrusted);
-            }
-            prefs.highest_build_seen = release.build;
-            prefs.set_last_check(SystemTime::now());
-            Ok(())
-        })?;
+        let shared = self.shared.clone();
+        let build = release.build;
+        let min_build = self.config.build;
+        tokio::task::spawn_blocking(move || {
+            shared.update_prefs(|prefs| {
+                let floor = prefs.highest_build_seen.max(min_build);
+                if build < floor {
+                    tracing::error!(
+                        build,
+                        seen = floor,
+                        "refused an update feed older than one already seen"
+                    );
+                    return Err(UpdateFailure::Untrusted);
+                }
+                prefs.highest_build_seen = build;
+                prefs.set_last_check(SystemTime::now());
+                Ok(())
+            })
+        })
+        .await
+        .unwrap_or(Err(UpdateFailure::Check))?;
         Ok(release)
     }
 
@@ -566,7 +588,8 @@ impl Worker {
         );
         match feed::decide(release, &install) {
             Decision::UpToDate => {
-                prune(&self.config.state_dir.join("downloads"), None);
+                let downloads = self.config.state_dir.join("downloads");
+                let _ = tokio::task::spawn_blocking(move || prune(&downloads, None)).await;
                 Ok(UpdateStatus::UpToDate)
             }
             Decision::RequiresNewerOs { minimum_os } => Err(UpdateFailure::RequiresNewerOs {
@@ -607,7 +630,9 @@ impl Worker {
             return Ok(ready);
         }
         let downloads = self.config.state_dir.join("downloads");
-        prune(&downloads, Some(&artifact.sha256));
+        let prune_dir = downloads.clone();
+        let keep_sha = artifact.sha256.clone();
+        let _ = tokio::task::spawn_blocking(move || prune(&prune_dir, Some(&keep_sha))).await;
         let shared = self.shared.clone();
         let version = release.version.clone();
         let size = artifact.size.max(1);
@@ -697,7 +722,8 @@ impl Worker {
                 ) =>
             {
                 let outcome = self.act(&release).await;
-                let status = self.settle(outcome);
+                let (status, dropped) = self.settle(outcome);
+                self.discard_staged(dropped).await;
                 self.shared.set_status(status);
                 return (false, None);
             }
@@ -739,8 +765,11 @@ impl Worker {
             Err(ApplyError::NotApplied(error)) => {
                 tracing::error!(%error, "could not install the update");
                 // nothing changed, so the staging folder holds only the update
-                installer.discard(&staged);
-                self.shared.lock().staged = None;
+                let dropped = {
+                    let mut state = self.shared.lock();
+                    state.staged.take()
+                };
+                self.discard_staged(dropped).await;
                 match error {
                     InstallError::Rejected(_) => UpdateFailure::Verify,
                     InstallError::Failed(_) => UpdateFailure::Install,
@@ -1636,5 +1665,15 @@ mod tests {
             assert_eq!(on_disk.automatic_checks, build % 2 == 0);
             assert_eq!(on_disk, fixture.updater.shared.lock().prefs);
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn downgrade_below_running_build_is_refused_on_fresh_state() {
+        let fixture = Fixture::new(42, true).await;
+        fixture.publish(41);
+        assert_eq!(
+            fixture.check().await,
+            UpdateStatus::Failed(UpdateFailure::Untrusted)
+        );
     }
 }

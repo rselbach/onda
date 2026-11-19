@@ -157,6 +157,7 @@ impl Origins {
     /// A redirect to `url` may be followed.
     pub fn allows_redirect(&self, url: &Url) -> bool {
         self.allows_scheme(url)
+            && (!self.https_only || url.port().is_none())
             && url.username().is_empty()
             && url.password().is_none()
             && url
@@ -296,7 +297,7 @@ fn check(release: &Release, origins: &Origins) -> Result<(), FeedError> {
         return malformed("build 0".to_owned());
     }
     if let Some(notes) = &release.notes_url
-        && !notes.starts_with("https://github.com/rselbach/onda/")
+        && !valid_notes_url(notes)
     {
         return malformed(format!("notes URL {notes}"));
     }
@@ -315,6 +316,22 @@ fn check(release: &Release, origins: &Origins) -> Result<(), FeedError> {
         }
     }
     Ok(())
+}
+
+fn valid_notes_url(notes: &str) -> bool {
+    let Ok(parsed) = Url::parse(notes) else {
+        return false;
+    };
+    let rest = parsed.path().strip_prefix("/rselbach/onda/");
+    parsed.scheme() == "https"
+        && parsed.username().is_empty()
+        && parsed.password().is_none()
+        && parsed.port().is_none()
+        && parsed.host_str() == Some("github.com")
+        && rest.is_some_and(|tail| !tail.is_empty())
+        && !notes
+            .split(['/', '?', '#'])
+            .any(|seg| seg == ".." || seg.eq_ignore_ascii_case("%2e%2e"))
 }
 
 /// A version is shown and compared with the bundle's for equality only;
@@ -633,6 +650,7 @@ mod tests {
             "http://objects.githubusercontent.com/x",
             "https://greendale.edu/x",
             "https://user@objects.githubusercontent.com/x",
+            "https://objects.githubusercontent.com:8443/x",
             "ftp://github.com/x",
         ];
         for url in allowed {
@@ -641,6 +659,21 @@ mod tests {
         for url in refused {
             assert!(!origins.allows_redirect(&Url::parse(url).unwrap()), "{url}");
         }
+        assert!(!valid_notes_url(
+            "http://github.com/rselbach/onda/releases/tag/v2.0.0"
+        ));
+        assert!(!valid_notes_url(
+            "https://github.com:8443/rselbach/onda/releases/tag/v2.0.0"
+        ));
+        assert!(!valid_notes_url(
+            "https://user@github.com/rselbach/onda/releases/tag/v2.0.0"
+        ));
+        assert!(!valid_notes_url(
+            "https://github.com/rselbach/onda/releases/../../evil"
+        ));
+        assert!(valid_notes_url(
+            "https://github.com/rselbach/onda/releases/tag/v2.0.0"
+        ));
     }
 
     #[test]

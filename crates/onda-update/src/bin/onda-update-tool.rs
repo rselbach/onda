@@ -4,11 +4,11 @@
 //! instead of publishing a feed no client accepts.
 //!
 //! ```text
-//! onda-update-tool sign-feed --version V --build N --minimum-os X
+//! onda-update-tool sign-feed --version V --build N [--arch A] --minimum-os X
 //!     --published-at RFC3339 --notes-url URL --zip FILE --zip-url URL
 //!     --dmg FILE --dmg-url URL [--linux-dir DIR --linux-base-url URL] --out FILE
 //! onda-update-tool sparkle-signature FILE
-//! onda-update-tool verify-feed FILE [--version V --build N] [--download]
+//! onda-update-tool verify-feed FILE [--version V --build N] [--arch A] [--download]
 //! ```
 //!
 //! `verify-feed` opens a feed exactly as the app does; `--download` also
@@ -97,7 +97,13 @@ fn pinned_key() -> Result<SigningKey, String> {
     Ok(key)
 }
 
-fn artifact(kind: &str, minimum_os: &str, file: &Path, url: &str) -> Result<Artifact, String> {
+fn artifact(
+    kind: &str,
+    arch: &str,
+    minimum_os: &str,
+    file: &Path,
+    url: &str,
+) -> Result<Artifact, String> {
     let size = std::fs::metadata(file)
         .map_err(|error| format!("could not read {}: {error}", file.display()))?
         .len();
@@ -105,7 +111,7 @@ fn artifact(kind: &str, minimum_os: &str, file: &Path, url: &str) -> Result<Arti
         sha256_file(file).map_err(|error| format!("could not hash {}: {error}", file.display()))?;
     Ok(Artifact {
         os: onda_update::OS.to_owned(),
-        arch: onda_update::ARCH.to_owned(),
+        arch: arch.to_owned(),
         kind: kind.to_owned(),
         minimum_os: minimum_os.to_owned(),
         url: url.to_owned(),
@@ -121,6 +127,11 @@ fn sign_feed(args: &[String]) -> Result<(), String> {
         .parse()
         .map_err(|_| "--build is not a number".to_owned())?;
     let minimum_os = args.get("minimum-os")?;
+    let arch = args
+        .options
+        .get("arch")
+        .map(String::as_str)
+        .unwrap_or(onda_update::ARCH);
     let mut release = Release {
         schema: feed::SCHEMA,
         app: onda_update::BUNDLE_ID.to_owned(),
@@ -132,12 +143,14 @@ fn sign_feed(args: &[String]) -> Result<(), String> {
         artifacts: vec![
             artifact(
                 KIND_APP_ZIP,
+                arch,
                 minimum_os,
                 Path::new(args.get("zip")?),
                 args.get("zip-url")?,
             )?,
             artifact(
                 KIND_DMG,
+                arch,
                 minimum_os,
                 Path::new(args.get("dmg")?),
                 args.get("dmg-url")?,
@@ -176,9 +189,14 @@ fn linux_artifacts(directory: &Path, version: &str, base: &str) -> Result<Vec<Ar
     for arch in ["x86_64", "arm64"] {
         for kind in ["deb", "rpm", "pkg.tar.zst", "tar.gz"] {
             let name = format!("Onda-{version}-linux-{arch}.{kind}");
-            let mut item = artifact(kind, "0", &directory.join(&name), &format!("{base}/{name}"))?;
+            let mut item = artifact(
+                kind,
+                arch,
+                "0",
+                &directory.join(&name),
+                &format!("{base}/{name}"),
+            )?;
             item.os = "linux".into();
-            item.arch = arch.into();
             artifacts.push(item);
         }
     }
@@ -204,7 +222,10 @@ fn open_pinned(bytes: &[u8]) -> Result<Release, String> {
 fn verify_feed(args: &[String]) -> Result<(), String> {
     let args = Args::parse(args, &["download"])?;
     let [file] = args.positional.as_slice() else {
-        return Err("usage: onda-update-tool verify-feed FILE [--download]".to_owned());
+        return Err(
+            "usage: onda-update-tool verify-feed FILE [--version V --build N] [--arch A] [--download]"
+                .to_owned(),
+        );
     };
     let bytes = std::fs::read(file).map_err(|error| format!("could not read {file}: {error}"))?;
     let release = open_pinned(&bytes)?;
@@ -221,11 +242,13 @@ fn verify_feed(args: &[String]) -> Result<(), String> {
     {
         return Err(format!("the feed is build {}, not {build}", release.build));
     }
+    let arch = args
+        .options
+        .get("arch")
+        .map(String::as_str)
+        .unwrap_or(onda_update::ARCH);
     for kind in [KIND_APP_ZIP, KIND_DMG] {
-        if release
-            .artifact(onda_update::OS, onda_update::ARCH, kind)
-            .is_none()
-        {
+        if release.artifact(onda_update::OS, arch, kind).is_none() {
             return Err(format!("the feed has no {kind} for this platform"));
         }
     }
@@ -242,11 +265,13 @@ fn download_all(release: &Release) -> Result<(), String> {
         .build()
         .map_err(|error| format!("could not start a runtime: {error}"))?;
     let transport = Transport::new(Origins::github(), "Onda-release-check")?;
-    let dir = std::env::temp_dir().join(format!("onda-update-verify-{}", std::process::id()));
-    let result = runtime.block_on(async {
+    let temp = tempfile::tempdir()
+        .map_err(|error| format!("could not create temporary download directory: {error}"))?;
+    let dir = temp.path();
+    runtime.block_on(async {
         for artifact in &release.artifacts {
             let file = transport
-                .download(artifact, &dir, &|_| {})
+                .download(artifact, dir, &|_| {})
                 .await
                 .map_err(|error| format!("{}: {error}", artifact.url))?;
             println!("downloaded and verified {}", artifact.url);
@@ -254,13 +279,7 @@ fn download_all(release: &Release) -> Result<(), String> {
                 .map_err(|error| format!("could not remove {}: {error}", file.display()))?;
         }
         Ok(())
-    });
-    if let Err(error) = std::fs::remove_dir_all(&dir)
-        && error.kind() != std::io::ErrorKind::NotFound
-    {
-        eprintln!("warning: could not remove {}: {error}", dir.display());
-    }
-    result
+    })
 }
 
 #[cfg(test)]
