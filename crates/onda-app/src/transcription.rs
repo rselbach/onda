@@ -48,6 +48,9 @@ struct Slot {
 struct Inner {
     gate: Arc<Mutex<Slot>>,
     load_lock: Mutex<()>,
+    // serializes staleness checks with state publication so an unload or newer
+    // selection cannot be overtaken by a stale load's status updates
+    publish_lock: StdMutex<()>,
     // bumped by every unload; a load that sees it change was cancelled
     generation: AtomicU64,
     desired: StdMutex<Option<ModelId>>,
@@ -70,6 +73,7 @@ impl TranscriptionService {
             inner: Arc::new(Inner {
                 gate: Arc::new(Mutex::new(Slot::default())),
                 load_lock: Mutex::new(()),
+                publish_lock: StdMutex::new(()),
                 generation: AtomicU64::new(0),
                 desired: StdMutex::new(None),
                 loaded: StdMutex::new(None),
@@ -118,13 +122,20 @@ impl TranscriptionService {
             });
             return Err(LoadError::Failed(message));
         };
-        let generation = inner.generation.load(Ordering::SeqCst);
-        let Some(model) = *lock(&inner.desired) else {
-            return Err(LoadError::Stale);
+        let (generation, model) = {
+            let _pub = lock(&inner.publish_lock);
+            let generation = inner.generation.load(Ordering::SeqCst);
+            let Some(model) = *lock(&inner.desired) else {
+                return Err(LoadError::Stale);
+            };
+            (generation, model)
         };
 
         let mut slot = inner.gate.clone().lock_owned().await;
         if slot.model == Some(model) && slot.engine.is_some() {
+            if self.is_stale(generation, model) {
+                return Err(self.stale_error(generation));
+            }
             return Ok(());
         }
         if slot.engine.is_some() {
@@ -137,20 +148,26 @@ impl TranscriptionService {
                 }
                 *slot = Slot::default();
                 service.mark_unloaded();
-                (service.inner.publish)(ModelState::NotReady);
+                let _pub = lock(&service.inner.publish_lock);
+                if service.inner.generation.load(Ordering::SeqCst) == generation {
+                    (service.inner.publish)(ModelState::NotReady);
+                }
             })
             .await;
         } else {
             drop(slot);
         }
-        if self.is_stale(generation, model) {
-            return Err(LoadError::Stale);
+        if !self.publish_if_current(
+            generation,
+            model,
+            ModelState::Loading {
+                status: PREPARING_STATUS.to_owned(),
+                progress: None,
+            },
+        ) {
+            return Err(self.stale_error(generation));
         }
 
-        (inner.publish)(ModelState::Loading {
-            status: PREPARING_STATUS.to_owned(),
-            progress: None,
-        });
         let store = inner.store.clone();
         let downloaded = blocking(move || store.downloaded()).await;
         if !downloaded.contains(&model) {
@@ -158,76 +175,90 @@ impl TranscriptionService {
                 model_id: model.as_str().to_owned(),
             }
             .to_string();
-            return Err(self.fail(message));
+            return Err(self.fail_if_current(generation, model, message));
         }
-        let Some(mut engine) = inner.store.engine(model) else {
-            return Err(self.fail(format!("No speech engine runs {model}.")));
+        let store = inner.store.clone();
+        let Some(mut engine) = blocking(move || store.engine(model)).await else {
+            return Err(self.fail_if_current(
+                generation,
+                model,
+                format!("No speech engine runs {model}."),
+            ));
         };
-        if self.is_stale(generation, model) {
-            return Err(LoadError::Stale);
+        if !self.publish_if_current(
+            generation,
+            model,
+            ModelState::Loading {
+                status: DEFAULT_LOADING_STATUS.to_owned(),
+                progress: None,
+            },
+        ) {
+            return Err(self.stale_error(generation));
         }
 
-        (inner.publish)(ModelState::Loading {
-            status: DEFAULT_LOADING_STATUS.to_owned(),
-            progress: None,
-        });
         let progress_service = self.clone();
         let loaded = spawn_blocking(move || {
             let mut report = |progress: LoadProgress| {
-                if progress_service.is_stale(generation, model) {
-                    return;
-                }
                 let status = match progress.status.trim() {
                     "" => DEFAULT_LOADING_STATUS.to_owned(),
                     status => status.to_owned(),
                 };
-                (progress_service.inner.publish)(ModelState::Loading {
-                    status,
-                    progress: Some(progress.fraction.clamp(0.0, 1.0)),
-                });
+                let progress = progress
+                    .fraction
+                    .is_finite()
+                    .then(|| progress.fraction.clamp(0.0, 1.0));
+                progress_service.publish_if_current(
+                    generation,
+                    model,
+                    ModelState::Loading { status, progress },
+                );
             };
             let result = engine.load(&mut report);
             (engine, result)
         })
         .await;
-        let (mut engine, result) = match loaded {
+        let (engine, result) = match loaded {
             Ok(loaded) => loaded,
-            Err(error) => return Err(self.fail(error.to_string())),
+            Err(error) => return Err(self.fail_if_current(generation, model, error.to_string())),
         };
         if let Err(error) = result {
             tracing::error!(model = model.as_str(), ?error, "model load failed");
-            if self.is_stale(generation, model) {
-                return Err(LoadError::Stale);
-            }
             if error == AsrError::Cancelled {
                 // ASR-7: the platform cancelled the load; not an error
-                (inner.publish)(ModelState::NotReady);
-                return Err(LoadError::Cancelled);
+                if self.publish_if_current(generation, model, ModelState::NotReady) {
+                    return Err(LoadError::Cancelled);
+                }
+                return Err(self.stale_error(generation));
             }
-            return Err(self.fail(error.to_string()));
+            return Err(self.fail_if_current(generation, model, error.to_string()));
         }
 
         let mut slot = inner.gate.clone().lock_owned().await;
-        // an unload bumps the generation before it queues on the gate, so
-        // holding the gate here settles which of us goes last
-        if self.is_stale(generation, model) {
-            blocking(move || engine.unload()).await;
-            return Err(if inner.generation.load(Ordering::SeqCst) == generation {
-                LoadError::Stale
-            } else {
-                LoadError::Cancelled
-            });
-        }
         let supports_preview = engine.supports_preview();
         let min_samples = engine.min_samples();
-        slot.engine = Some(engine);
-        slot.model = Some(model);
-        *lock(&inner.loaded) = Some(model);
-        inner
-            .supports_preview
-            .store(supports_preview, Ordering::SeqCst);
-        inner.min_samples.store(min_samples, Ordering::SeqCst);
-        (inner.publish)(ModelState::Ready);
+        // an unload bumps the generation before it queues on the gate, so
+        // holding both the gate and publish_lock settles which of us goes last
+        let stale_engine = {
+            let _pub = lock(&inner.publish_lock);
+            if self.is_stale(generation, model) {
+                Some(engine)
+            } else {
+                slot.engine = Some(engine);
+                slot.model = Some(model);
+                *lock(&inner.loaded) = Some(model);
+                inner
+                    .supports_preview
+                    .store(supports_preview, Ordering::SeqCst);
+                inner.min_samples.store(min_samples, Ordering::SeqCst);
+                (inner.publish)(ModelState::Ready);
+                None
+            }
+        };
+        if let Some(mut engine) = stale_engine {
+            drop(slot);
+            blocking(move || engine.unload()).await;
+            return Err(self.stale_error(generation));
+        }
         drop(slot);
         Ok(())
     }
@@ -235,7 +266,10 @@ impl TranscriptionService {
     /// Unloads the model after any in-flight engine call and cancels any
     /// in-flight load; publishes `not_ready` (ASR-7, ASR-8).
     pub(crate) async fn unload(&self) {
-        self.inner.generation.fetch_add(1, Ordering::SeqCst);
+        let unload_generation = {
+            let _pub = lock(&self.inner.publish_lock);
+            self.inner.generation.fetch_add(1, Ordering::SeqCst) + 1
+        };
         let mut slot = self.inner.gate.clone().lock_owned().await;
         let service = self.clone();
         blocking(move || {
@@ -244,7 +278,10 @@ impl TranscriptionService {
             }
             *slot = Slot::default();
             service.mark_unloaded();
-            (service.inner.publish)(ModelState::NotReady);
+            let _pub = lock(&service.inner.publish_lock);
+            if service.inner.generation.load(Ordering::SeqCst) == unload_generation {
+                (service.inner.publish)(ModelState::NotReady);
+            }
         })
         .await;
     }
@@ -302,11 +339,35 @@ impl TranscriptionService {
             || *lock(&self.inner.desired) != Some(model)
     }
 
-    fn fail(&self, message: String) -> LoadError {
-        (self.inner.publish)(ModelState::Error {
-            message: message.clone(),
-        });
-        LoadError::Failed(message)
+    fn publish_if_current(&self, generation: u64, model: ModelId, state: ModelState) -> bool {
+        let _pub = lock(&self.inner.publish_lock);
+        if self.is_stale(generation, model) {
+            return false;
+        }
+        (self.inner.publish)(state);
+        true
+    }
+
+    fn fail_if_current(&self, generation: u64, model: ModelId, message: String) -> LoadError {
+        if self.publish_if_current(
+            generation,
+            model,
+            ModelState::Error {
+                message: message.clone(),
+            },
+        ) {
+            LoadError::Failed(message)
+        } else {
+            self.stale_error(generation)
+        }
+    }
+
+    fn stale_error(&self, generation: u64) -> LoadError {
+        if self.inner.generation.load(Ordering::SeqCst) == generation {
+            LoadError::Stale
+        } else {
+            LoadError::Cancelled
+        }
     }
 
     fn mark_unloaded(&self) {
@@ -373,6 +434,7 @@ mod tests {
         hold_load: Option<Arc<Hold>>,
         hold_transcribe: Option<Arc<Hold>>,
         fail_load: bool,
+        nan_progress: bool,
         preview: bool,
         loaded: bool,
     }
@@ -390,7 +452,7 @@ mod tests {
             }
             progress(LoadProgress {
                 status: String::new(),
-                fraction: 1.5,
+                fraction: if self.nan_progress { f64::NAN } else { 1.5 },
             });
             self.loaded = true;
             Ok(())
@@ -431,6 +493,7 @@ mod tests {
         hold_load: StdMutex<Option<Arc<Hold>>>,
         hold_transcribe: StdMutex<Option<Arc<Hold>>>,
         fail_load: bool,
+        nan_progress: bool,
     }
 
     impl Store {
@@ -470,6 +533,7 @@ mod tests {
                 hold_load: lock(&self.hold_load).take(),
                 hold_transcribe: lock(&self.hold_transcribe).take(),
                 fail_load: self.fail_load,
+                nan_progress: self.nan_progress,
                 preview: model == ModelId::ParakeetTdtV2,
                 loaded: false,
             }))
@@ -838,5 +902,52 @@ mod tests {
         );
         let _ = release.send(());
         assert_eq!(first.await.ok(), Some(Ok(())));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn unload_during_load_error_does_not_overwrite_not_ready() {
+        let store = Arc::new(Store {
+            fail_load: true,
+            ..Store::with(&[V2])
+        });
+        let (hold, started, release) = Hold::new();
+        *lock(&store.hold_load) = Some(hold);
+        let (service, states) = service(store);
+        service.set_desired(V2);
+        let load = tokio::spawn({
+            let service = service.clone();
+            async move { service.ensure_loaded().await }
+        });
+        let _ = started.recv();
+        service.unload().await;
+        let _ = release.send(());
+        assert_eq!(load.await.ok(), Some(Err(LoadError::Cancelled)));
+        let published = lock(&states);
+        assert_eq!(published.last(), Some(&ModelState::NotReady));
+        assert!(
+            !published
+                .iter()
+                .any(|state| matches!(state, ModelState::Error { .. })),
+            "stale load failure must not overwrite NotReady: {published:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn non_finite_load_progress_omits_fraction() {
+        let store = Arc::new(Store {
+            nan_progress: true,
+            ..Store::with(&[V2])
+        });
+        let (service, states) = service(store);
+        service.set_desired(V2);
+        assert_eq!(service.ensure_loaded().await, Ok(()));
+        let published = lock(&states);
+        assert!(published.iter().all(|state| match state {
+            ModelState::Loading {
+                progress: Some(fraction),
+                ..
+            } => fraction.is_finite(),
+            _ => true,
+        }));
     }
 }

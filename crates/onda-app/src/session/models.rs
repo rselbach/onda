@@ -234,7 +234,13 @@ impl Actor {
         let onboarding_update = match &update.kind {
             DownloadUpdateKind::Started | DownloadUpdateKind::Progress(_) => {
                 let progress = match update.kind {
-                    DownloadUpdateKind::Progress(progress) => progress,
+                    DownloadUpdateKind::Progress(progress) if progress.is_finite() => {
+                        progress.clamp(0.0, 1.0)
+                    }
+                    DownloadUpdateKind::Progress(_) => self
+                        .downloads
+                        .get(model.as_str())
+                        .map_or(0.0, |d| d.progress),
                     _ => 0.0,
                 };
                 self.downloads.progressed(ModelDownload {
