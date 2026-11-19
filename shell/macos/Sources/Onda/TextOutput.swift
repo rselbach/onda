@@ -29,9 +29,10 @@ final class TextOutput: TextOutputPort, @unchecked Sendable {
 
     func fieldText(target: TargetApp?) -> FieldContents? {
         guard let element = Self.focusedElement(target: target, timeout: Self.readTimeout),
-              let value = Self.stringValue(element),
+              let kind = Self.fieldKind(element),
+              let value = Self.stringAttribute(element, kAXValueAttribute),
               let range = Self.selectedRange(element) else { return nil }
-        return FieldContents(text: value, caretUtf16: UInt64(max(range.location, 0)))
+        return FieldContents(text: value, caretUtf16: UInt64(max(range.location, 0)), kind: kind)
     }
 
     func insert(text: String, target: TargetApp?, delivery: Delivery) -> InsertResult {
@@ -147,7 +148,8 @@ final class TextOutput: TextOutputPort, @unchecked Sendable {
     /// the delivery was cancelled during the reads.
     private func insertViaAccessibility(_ text: String, target: TargetApp?, delivery: Delivery) -> Bool {
         guard let element = Self.focusedElement(target: target, timeout: Self.insertTimeout),
-              let value = Self.stringValue(element),
+              Self.fieldKind(element) != nil,
+              let value = Self.stringAttribute(element, kAXValueAttribute),
               let selected = Self.selectedRange(element) else { return false }
         let current = value as NSString
         let location = max(0, min(selected.location, current.length))
@@ -258,9 +260,42 @@ final class TextOutput: TextOutputPort, @unchecked Sendable {
         return unsafeDowncast(value, to: AXUIElement.self)
     }
 
-    private static func stringValue(_ element: AXUIElement) -> String? {
+    private static func fieldKind(_ element: AXUIElement) -> FieldKind? {
+        guard let role = stringAttribute(element, kAXRoleAttribute) else { return nil }
         var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &value) == .success else {
+        let status = AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString, &value)
+        let subrole: String?
+        switch status {
+        case .success:
+            guard let name = value as? String else { return nil }
+            subrole = name
+        case .attributeUnsupported, .noValue:
+            subrole = nil
+        default:
+            return nil
+        }
+        return fieldKind(role: role, subrole: subrole) {
+            var pid: pid_t = 0
+            guard AXUIElementGetPid(element, &pid) == .success else { return nil }
+            return NSRunningApplication(processIdentifier: pid)?.bundleIdentifier
+        }
+    }
+
+    static func fieldKind(role: String, subrole: String?, bundleID: () -> String?) -> FieldKind? {
+        guard role != kAXSecureTextFieldSubrole, subrole != kAXSecureTextFieldSubrole else { return nil }
+        // macOS has no public terminal role. The terminal screen in these apps is a text area.
+        if role == kAXTextAreaRole {
+            switch bundleID() {
+            case "com.apple.Terminal", "com.googlecode.iterm2": return .terminal
+            default: break
+            }
+        }
+        return .prose
+    }
+
+    private static func stringAttribute(_ element: AXUIElement, _ attribute: String) -> String? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else {
             return nil
         }
         return value as? String

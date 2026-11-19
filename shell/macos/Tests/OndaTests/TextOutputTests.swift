@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import CoreGraphics
 @testable import Onda
 import OndaCore
@@ -58,6 +59,26 @@ struct UnicodeEventTests {
         var length = 0
         event.keyboardGetUnicodeString(maxStringLength: buffer.count, actualStringLength: &length, unicodeString: &buffer)
         return Array(buffer.prefix(length))
+    }
+}
+
+struct FieldKindTests {
+    @Test
+    func `secure fields provide no context even in a terminal`() {
+        for (role, subrole) in [(kAXTextFieldRole, kAXSecureTextFieldSubrole), (kAXSecureTextFieldSubrole, nil)] {
+            #expect(TextOutput.fieldKind(role: role, subrole: subrole) { "com.apple.Terminal" } == nil)
+        }
+    }
+
+    @Test(arguments: ["com.apple.Terminal", "com.googlecode.iterm2"])
+    func `a terminal screen keeps its case, but its text fields use prose`(bundleID: String) {
+        #expect(TextOutput.fieldKind(role: kAXTextAreaRole, subrole: nil) { bundleID } == .terminal)
+        #expect(TextOutput.fieldKind(role: kAXTextFieldRole, subrole: nil) { bundleID } == .prose)
+    }
+
+    @Test
+    func `an ordinary editor uses prose`() {
+        #expect(TextOutput.fieldKind(role: kAXTextAreaRole, subrole: nil) { "com.apple.TextEdit" } == .prose)
     }
 }
 

@@ -85,6 +85,17 @@ pub struct FieldContents {
     pub text: String,
     /// Selection start in UTF-16 code units.
     pub caret_utf16: u64,
+    /// Whether the field holds prose or a terminal screen.
+    pub kind: FieldKind,
+}
+
+/// What the focused field holds.
+#[uniffi::remote(Enum)]
+pub enum FieldKind {
+    /// Text the user writes.
+    Prose,
+    /// A terminal's screen.
+    Terminal,
 }
 
 /// How an insertion through the OUT-3 strategies ended.
@@ -450,8 +461,7 @@ impl TextOutput for Shell {
             .map(|field| FieldText {
                 text: field.text,
                 caret_utf16: usize::try_from(field.caret_utf16).unwrap_or(usize::MAX),
-                // the Swift shell does not say what the field holds
-                kind: FieldKind::Prose,
+                kind: field.kind,
             })
     }
 

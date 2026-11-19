@@ -16,9 +16,9 @@ The Swift shell renders complete view models from `CoreEvent` and calls
 - Call `mainWindowAppeared()` when the main window shows and
   `mainWindowClosed()` when it closes. Closing flushes the Replacements and
   API key edits, cancels a cleanup test, and ends a recorder capture.
-- `AppPresenceChanged(regular)`: set the activation policy (`.regular` /
-  `.accessory`). The core counts the main window, onboarding, and the update
-  notice (UI-2). The current shell only logs it, since it has no windows yet.
+- On `AppPresenceChanged(regular)`, set the activation policy to `.regular`
+  when `regular` is true and `.accessory` otherwise. The core counts the main
+  window, onboarding, and the update notice (UI-2).
 - `OpenMainWindow(page)`: show the main window (create once, keep it,
   UI-3) and select `page`, even if already open (UI-4).
 - `ActivateApp`: bring Onda to the front (after a Keychain prompt, CLN-25).
