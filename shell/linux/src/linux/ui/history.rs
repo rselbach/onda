@@ -28,9 +28,9 @@ pub(super) struct Page {
     updating: Cell<bool>,
     confirming: Cell<bool>,
     showing_error: Cell<bool>,
-    menu_open: Cell<bool>,
+    menu_open: Cell<usize>,
     // rebuilding the rows would close the open row menu, so a view that
-    // arrives meanwhile waits here until the menu closes
+    // arrives meanwhile waits here until all row menus close
     deferred: RefCell<Option<HistoryPage>>,
 }
 
@@ -68,7 +68,7 @@ impl Page {
             updating: Cell::new(false),
             confirming: Cell::new(false),
             showing_error: Cell::new(false),
-            menu_open: Cell::new(false),
+            menu_open: Cell::new(0),
             deferred: RefCell::new(None),
         }
     }
@@ -121,7 +121,7 @@ impl Page {
     }
 
     pub fn update(&self, owner: &Rc<Window>, view: HistoryPage) {
-        if self.menu_open.get() {
+        if self.menu_open.get() > 0 {
             self.deferred.replace(Some(view));
             return;
         }
@@ -270,7 +270,10 @@ impl Page {
                 self.entries.append(
                     &adw::StatusPage::builder()
                         .title("No matching transcripts")
-                        .description(format!("No results for “{query}”."))
+                        .description(format!(
+                            "No results for “{}”.",
+                            glib::markup_escape_text(&query)
+                        ))
                         .icon_name("edit-find-symbolic")
                         .build(),
                 );
@@ -367,17 +370,31 @@ fn row_menu(owner: &Rc<Window>, id: Uuid, items: Vec<HistoryMenuItem>) -> gtk::M
     button.add_css_class("flat");
     button.insert_action_group("row", Some(&actions));
     let weak = Rc::downgrade(owner);
+    let was_open = Cell::new(false);
     button.connect_active_notify(move |button| {
         let Some(owner) = weak.upgrade() else {
             return;
         };
-        owner.history.menu_open.set(button.is_active());
-        if button.is_active() {
+        let active = button.is_active();
+        if active == was_open.get() {
+            return;
+        }
+        was_open.set(active);
+        let count = owner.history.menu_open.get();
+        if active {
+            owner.history.menu_open.set(count.saturating_add(1));
+            return;
+        }
+        let remaining = count.saturating_sub(1);
+        owner.history.menu_open.set(remaining);
+        if remaining > 0 {
             return;
         }
         // this handler runs inside the button that the update removes
         glib::idle_add_local_once(move || {
-            if let Some(view) = owner.history.deferred.take() {
+            if owner.history.menu_open.get() == 0
+                && let Some(view) = owner.history.deferred.take()
+            {
                 owner.history.update(&owner, view);
             }
         });

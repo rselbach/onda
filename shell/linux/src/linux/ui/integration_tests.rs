@@ -533,16 +533,16 @@ pub(super) fn exercise_pages(owner: &Rc<Window>) {
     capture(owner, "replacements");
     owner.stack.set_visible_child_name("general");
     wait_for(|| {
-        widgets::<adw::SwitchRow>(&owner.general)
+        widgets::<adw::SwitchRow>(&owner.general.widget)
             .iter()
             .any(|row| row.title() == "Check for updates automatically")
     });
-    let automatic = widgets::<adw::SwitchRow>(&owner.general)
+    let automatic = widgets::<adw::SwitchRow>(&owner.general.widget)
         .into_iter()
         .find(|row| row.title() == "Check for updates automatically")
         .unwrap();
     assert!(automatic.is_active());
-    assert!(button(&owner.general, "Check for Updates…").is_sensitive());
+    assert!(button(&owner.general.widget, "Check for Updates…").is_sensitive());
     automatic.set_active(false);
     wait_for(|| {
         std::fs::read(
@@ -554,7 +554,7 @@ pub(super) fn exercise_pages(owner: &Rc<Window>) {
         .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
         .is_some_and(|prefs| prefs["automatic_checks"] == false)
     });
-    let media = widgets::<adw::SwitchRow>(&owner.general)
+    let media = widgets::<adw::SwitchRow>(&owner.general.widget)
         .into_iter()
         .find(|row| row.title() == "Pause media while recording")
         .unwrap();
@@ -566,7 +566,7 @@ pub(super) fn exercise_pages(owner: &Rc<Window>) {
     );
     media.set_active(true);
     wait_for(|| owner.core.settings.pause_media_during_recording());
-    let terminal = widgets::<adw::SwitchRow>(&owner.general)
+    let terminal = widgets::<adw::SwitchRow>(&owner.general.widget)
         .into_iter()
         .find(|row| row.title() == "Terminal paste shortcut")
         .unwrap();

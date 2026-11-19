@@ -35,14 +35,15 @@ pub struct Media {
     /// bus names of the players this session paused; `play` resumes these
     /// and no others
     paused: Mutex<BTreeSet<String>>,
-    mutes: MuteRecord,
+    mutes: Arc<MuteRecord>,
 }
 
-/// Media control for the data folder `data`. A mute that an earlier run
-/// left behind is undone before this returns.
+/// Media control for the data folder `data`. Any mute left behind by an earlier
+/// run is restored on a background thread so startup does not block the UI.
 pub fn start(data: &Path) -> Arc<Media> {
-    let mutes = MuteRecord(data.join("muted-output"));
-    mutes.restore();
+    let mutes = Arc::new(MuteRecord::new(data.join("muted-output")));
+    let restore = mutes.clone();
+    std::thread::spawn(move || restore.restore());
     Arc::new(Media {
         paused: Mutex::default(),
         mutes,
@@ -401,13 +402,24 @@ fn set_mute(sink: &str, muted: bool) -> anyhow::Result<()> {
 /// File in the data folder that lists, one per line, the names of the sinks
 /// Onda muted, so a run that crashed or was killed mid-session is undone at
 /// the next launch.
-struct MuteRecord(PathBuf);
+struct MuteRecord {
+    path: PathBuf,
+    lock: Mutex<()>,
+}
 
 impl MuteRecord {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            lock: Mutex::default(),
+        }
+    }
+
     /// Unmutes the sinks an earlier run muted and never unmuted. A sink
     /// stays listed until it is seen unmuted, so one that is unplugged now
     /// is unmuted at a later launch.
     fn restore(&self) {
+        let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         let recorded = self.read();
         if recorded.is_empty() {
             return;
@@ -431,6 +443,7 @@ impl MuteRecord {
     /// Mutes the default sink when `sink_to_mute` says so and returns its
     /// index for `unmute`.
     fn mute_default_sink(&self) -> anyhow::Result<Option<u32>> {
+        let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut playing: Vec<Stream> = list("sink-inputs")?;
         if playing.iter().any(Stream::active) {
             // Onda's start cue is still sounding, and it is not another
@@ -467,6 +480,7 @@ impl MuteRecord {
     }
 
     fn unmute(&self, device: u32) -> anyhow::Result<()> {
+        let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         let sinks: Vec<Sink> = list("sinks")?;
         let recorded = self.read();
         // an index can name another sink after the audio server restarted
@@ -487,7 +501,7 @@ impl MuteRecord {
     }
 
     fn read(&self) -> Vec<String> {
-        std::fs::read_to_string(&self.0)
+        std::fs::read_to_string(&self.path)
             .map(|text| text.lines().map(str::to_owned).collect())
             .unwrap_or_default()
     }
@@ -495,15 +509,15 @@ impl MuteRecord {
     /// writes `names`, or deletes the record when there are none
     fn write(&self, names: &[String]) -> std::io::Result<()> {
         if names.is_empty() {
-            return match std::fs::remove_file(&self.0) {
+            return match std::fs::remove_file(&self.path) {
                 Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
                 _ => Ok(()),
             };
         }
         // renamed into place, so a crash never leaves half a record
-        let partial = self.0.with_extension("partial");
+        let partial = self.path.with_extension("partial");
         std::fs::write(&partial, names.join("\n"))?;
-        std::fs::rename(partial, &self.0)
+        std::fs::rename(partial, &self.path)
     }
 }
 
@@ -717,13 +731,13 @@ mod tests {
     #[test]
     fn the_mute_record_lists_sinks_until_none_is_left() {
         let folder = tempfile::tempdir().unwrap();
-        let record = MuteRecord(folder.path().join("muted-output"));
+        let record = MuteRecord::new(folder.path().join("muted-output"));
         assert!(record.read().is_empty());
         let names = ["greendale-speakers".to_owned(), "troy-headset".to_owned()];
         record.write(&names).unwrap();
         assert_eq!(record.read(), names);
         record.write(&[]).unwrap();
-        assert!(!record.0.exists(), "an empty record is deleted");
+        assert!(!record.path.exists(), "an empty record is deleted");
         record.write(&[]).unwrap();
     }
 }

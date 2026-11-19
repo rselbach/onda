@@ -56,7 +56,7 @@ fn send(sender: &async_channel::Sender<Message>, message: Message) {
 
 fn application_id() -> String {
     // Scratch runs isolate both application activation and stored credentials.
-    match std::env::var_os("ONDA_DATA_DIR") {
+    match std::env::var_os("ONDA_DATA_DIR").filter(|value| !value.is_empty()) {
         Some(path) => {
             use std::hash::{Hash, Hasher};
             let mut hash = std::hash::DefaultHasher::new();

@@ -33,12 +33,17 @@ pub struct Core {
 }
 
 pub fn data_dir() -> anyhow::Result<PathBuf> {
-    if let Some(path) = std::env::var_os("ONDA_DATA_DIR") {
+    if let Some(path) = std::env::var_os("ONDA_DATA_DIR").filter(|value| !value.is_empty()) {
         return Ok(path.into());
     }
     let root = std::env::var_os("XDG_DATA_HOME")
+        .filter(|value| !value.is_empty())
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .filter(|value| !value.is_empty())
+                .map(|home| PathBuf::from(home).join(".local/share"))
+        })
         .ok_or_else(|| anyhow::anyhow!("No application data directory"))?;
     Ok(root.join("onda"))
 }

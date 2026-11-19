@@ -14,7 +14,7 @@ use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use x11rb::{
     connection::Connection,
     protocol::{
-        Event,
+        Event, randr,
         shape::{self, ConnectionExt as _},
         xproto::*,
     },
@@ -171,6 +171,7 @@ fn layer(
 
 struct X11 {
     connection: RustConnection,
+    screen: Screen,
     window: Window,
     gc: Gcontext,
     depth: u8,
@@ -220,13 +221,14 @@ impl X11 {
             }
             None => (screen.root_depth, screen.root_visual),
         };
+        let (x, y) = panel_position(&connection, &screen, (width, height));
         connection
             .create_window(
                 depth,
                 window,
                 screen.root,
-                (i32::from(screen.width_in_pixels) - size.0).max(0) as i16 / 2,
-                (i32::from(screen.height_in_pixels) - size.1 - BOTTOM_MARGIN).max(0) as i16,
+                x as i16,
+                y as i16,
                 width,
                 height,
                 0,
@@ -271,6 +273,7 @@ impl X11 {
         connection.flush()?;
         Ok(Rc::new(Self {
             connection,
+            screen,
             window,
             gc,
             depth,
@@ -302,18 +305,21 @@ impl X11 {
             &pressable,
         )?;
         self.button.set(button);
+        let (x, y) = panel_position(&self.connection, &self.screen, self.size);
+        let mut configure = ConfigureWindowAux::new().x(x).y(y);
         if self.events.borrow().is_none() {
             // a window created at startup sits below every window opened since
-            self.connection.configure_window(
-                self.window,
-                &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE),
-            )?;
+            configure = configure.stack_mode(StackMode::ABOVE);
+        }
+        self.connection.configure_window(self.window, &configure)?;
+        if self.events.borrow().is_none() {
             self.connection.map_window(self.window)?;
             let this = Rc::downgrade(self);
             let events = glib::timeout_add_local(X11_EVENTS, move || {
-                if let Some(this) = this.upgrade() {
-                    this.read_events();
-                }
+                let Some(this) = this.upgrade() else {
+                    return glib::ControlFlow::Break;
+                };
+                this.read_events();
                 glib::ControlFlow::Continue
             });
             self.events.replace(Some(events));
@@ -389,6 +395,42 @@ impl Drop for X11 {
             events.remove();
         }
     }
+}
+
+fn monitor_geometry(connection: &RustConnection, screen: &Screen) -> (i16, i16, u16, u16) {
+    if let Ok(pointer_cookie) = connection.query_pointer(screen.root)
+        && let Ok(pointer) = pointer_cookie.reply()
+        && let Ok(monitors_cookie) = randr::get_monitors(connection, screen.root, true)
+        && let Ok(monitors) = monitors_cookie.reply()
+        && !monitors.monitors.is_empty()
+    {
+        let (px, py) = (i32::from(pointer.root_x), i32::from(pointer.root_y));
+        if let Some(monitor) = monitors.monitors.iter().find(|monitor| {
+            let x = i32::from(monitor.x);
+            let y = i32::from(monitor.y);
+            let w = i32::from(monitor.width);
+            let h = i32::from(monitor.height);
+            px >= x && px < x + w && py >= y && py < y + h
+        }) {
+            return (monitor.x, monitor.y, monitor.width, monitor.height);
+        }
+        if let Some(primary) = monitors
+            .monitors
+            .iter()
+            .find(|monitor| monitor.primary)
+            .or_else(|| monitors.monitors.first())
+        {
+            return (primary.x, primary.y, primary.width, primary.height);
+        }
+    }
+    (0, 0, screen.width_in_pixels, screen.height_in_pixels)
+}
+
+fn panel_position(connection: &RustConnection, screen: &Screen, size: (u16, u16)) -> (i32, i32) {
+    let (mx, my, mw, mh) = monitor_geometry(connection, screen);
+    let x = i32::from(mx) + (i32::from(mw) - i32::from(size.0)).max(0) / 2;
+    let y = i32::from(my) + (i32::from(mh) - i32::from(size.1) - BOTTOM_MARGIN).max(0);
+    (x, y)
 }
 
 /// One rectangle per row of a `width` by `height` window whose corners are

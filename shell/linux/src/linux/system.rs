@@ -98,8 +98,18 @@ fn show_item(path: &Path, activation_token: &str) -> Result<(), glib::Error> {
 
 fn autostart() -> Option<PathBuf> {
     let root = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|value| !value.is_empty())
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
+        .or_else(|| {
+            std::env::var_os("ONDA_DATA_DIR")
+                .filter(|value| !value.is_empty())
+                .map(|data| PathBuf::from(data).join("config"))
+        })
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .filter(|value| !value.is_empty())
+                .map(|home| PathBuf::from(home).join(".config"))
+        })?;
     Some(root.join("autostart/com.rselbach.onda.desktop"))
 }
 
@@ -169,6 +179,9 @@ impl SecretSource for Secrets {
         let Some(account) = onda_settings::key_account(provider) else {
             return Ok(());
         };
+        if !process::available("secret-tool") {
+            return Err("Install libsecret's secret-tool to store API keys.".into());
+        }
         let args = if value.trim().is_empty() {
             vec![
                 "clear",

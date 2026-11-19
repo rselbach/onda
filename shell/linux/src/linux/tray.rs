@@ -80,7 +80,7 @@ fn submenu(title: &str, submenu: Vec<ksni::MenuItem<Tray>>) -> ksni::MenuItem<Tr
 
 impl ksni::Tray for Tray {
     fn id(&self) -> String {
-        super::APP_ID.into()
+        super::application_id()
     }
     fn title(&self) -> String {
         self.view.accessibility_label.clone()

@@ -37,7 +37,7 @@ pub struct Window {
     window: adw::ApplicationWindow,
     stack: gtk::Stack,
     getting_started: getting_started::Page,
-    models: gtk::Box,
+    speech: speech::Page,
     history: history::Page,
     hotkey: hotkey::Page,
     recorder: recorder::KeyMonitor,
@@ -46,8 +46,7 @@ pub struct Window {
     replacements: replacements::Page,
     about: gtk::Box,
     section: Cell<MainWindowSection>,
-    speech_alert: Cell<Option<u64>>,
-    general: gtk::Box,
+    general: general::Page,
     post_processing: post_processing::Page,
     toast: adw::ToastOverlay,
     overlay: Overlay,
@@ -100,9 +99,9 @@ impl Window {
             Some("dictation"),
             MainWindowSection::GettingStarted.title(),
         );
-        let models = page();
+        let speech = speech::Page::new();
         stack.add_titled(
-            &scrolled(&models),
+            &scrolled(&speech.widget),
             Some("speech"),
             MainWindowSection::Speech.title(),
         );
@@ -118,9 +117,9 @@ impl Window {
             Some("history"),
             MainWindowSection::History.title(),
         );
-        let general = page();
+        let general = general::Page::new(core.settings.terminal_paste_shortcut());
         stack.add_titled(
-            &scrolled(&general),
+            &scrolled(&general.widget),
             Some("general"),
             MainWindowSection::General.title(),
         );
@@ -147,7 +146,7 @@ impl Window {
             window,
             stack,
             getting_started,
-            models,
+            speech,
             history,
             hotkey,
             recorder: recorder::KeyMonitor::default(),
@@ -156,7 +155,6 @@ impl Window {
             replacements,
             about,
             section: Cell::new(MainWindowSection::GettingStarted),
-            speech_alert: Cell::new(None),
             general,
             post_processing,
             toast,
@@ -166,6 +164,8 @@ impl Window {
             tray,
         });
         this.getting_started.connect(&this);
+        this.speech.connect(&this);
+        this.general.connect(&this);
         this.post_processing.connect(&this);
         this.hotkey.connect(&this);
         this.history.connect(&this);
@@ -323,8 +323,9 @@ impl Window {
                 let _ = reply.send(self.activation_token());
             }
             Message::Notice(title, body) => {
-                self.toast
-                    .add_toast(adw::Toast::new(&format!("{title}: {body}")));
+                let toast = adw::Toast::new(&format!("{title}: {body}"));
+                toast.set_use_markup(false);
+                self.toast.add_toast(toast);
                 if !self.window.is_active()
                     && let Some(app) = self.window.application()
                 {
@@ -380,13 +381,13 @@ impl Window {
                         .set_detail(if view.visible { &text } else { IDLE_HINT });
                     self.getting_started.set_level(level);
                 }
-                Event::SpeechChanged(page) => self.speech(*page),
+                Event::SpeechChanged(page) => self.speech.update(self, *page),
                 Event::MenuChanged(menu) => {
                     if let Some(tray) = &self.tray {
                         tray.update(|tray| tray.menu = Some(*menu));
                     }
                 }
-                Event::GeneralChanged(page) => self.settings(*page),
+                Event::GeneralChanged(page) => self.general.update(self, *page),
                 Event::HistoryPageChanged(page) => self.history.update(self, *page),
                 Event::HotkeyPageChanged(page) => self.hotkey.update(*page),
                 Event::ReplacementsChanged(page) => self.replacements.update(self, *page),

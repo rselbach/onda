@@ -94,9 +94,9 @@ pub fn engine(id: ModelId, directory: &Path) -> Option<Box<dyn SpeechEngine>> {
     let manifest = manifest(id)?;
     Some(Box::new(Gguf {
         path: directory.join(manifest.files[0].path),
-        model: None,
         previews: previews(id, cpus()),
         stream: None,
+        model: None,
     }))
 }
 
@@ -110,9 +110,10 @@ fn previews(id: ModelId, cpus: usize) -> bool {
 
 struct Gguf {
     path: PathBuf,
-    model: Option<Model>,
     previews: bool,
+    // Drop the worker stream before unloading the model it borrows from.
     stream: Option<PreviewStream>,
+    model: Option<Model>,
 }
 
 impl SpeechEngine for Gguf {
@@ -209,9 +210,9 @@ impl SpeechEngine for Gguf {
 /// A library stream borrows its session, so both live on a thread of their
 /// own that takes audio and answers with the text so far.
 struct PreviewStream {
-    audio: mpsc::Sender<Vec<f32>>,
+    audio: Option<mpsc::Sender<Vec<f32>>>,
     text: mpsc::Receiver<Result<String, transcribe_cpp::Error>>,
-    worker: JoinHandle<()>,
+    worker: Option<JoinHandle<()>>,
     /// Samples of the recording the stream has taken.
     fed: usize,
     /// Samples the last call carried, which a capped feed leaves above `fed`.
@@ -246,9 +247,9 @@ impl PreviewStream {
             })
             .map_err(failed)?;
         let stream = PreviewStream {
-            audio,
+            audio: Some(audio),
             text,
-            worker,
+            worker: Some(worker),
             fed: 0,
             heard: 0,
         };
@@ -261,7 +262,11 @@ impl PreviewStream {
     fn feed(&mut self, samples: &[f32]) -> Result<String, AsrError> {
         self.heard = samples.len();
         let end = samples.len().min(self.fed + PREVIEW_FEED_SAMPLES);
-        self.audio
+        let audio = self
+            .audio
+            .as_ref()
+            .ok_or_else(|| failed("preview stream ended"))?;
+        audio
             .send(samples[self.fed..end].to_vec())
             .map_err(failed)?;
         let text = self.answer()?;
@@ -276,8 +281,16 @@ impl PreviewStream {
     /// Ends the stream and waits until the library has let go of it, so the
     /// next offline run is not refused.
     fn end(self) {
-        drop(self.audio);
-        if self.worker.join().is_err() {
+        drop(self);
+    }
+}
+
+impl Drop for PreviewStream {
+    fn drop(&mut self) {
+        self.audio.take();
+        if let Some(worker) = self.worker.take()
+            && worker.join().is_err()
+        {
             tracing::error!("the preview stream panicked");
         }
     }
