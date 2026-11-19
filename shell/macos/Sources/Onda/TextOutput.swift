@@ -1,5 +1,6 @@
 import AppKit
 @preconcurrency import ApplicationServices
+import Carbon
 import OndaCore
 
 /// Delivers text into other apps (OUT-2..OUT-7). Called on core threads;
@@ -16,6 +17,8 @@ final class TextOutput: TextOutputPort, @unchecked Sendable {
     private static let pasteDelay: TimeInterval = 0.05
     private static let restoreDelay: TimeInterval = 0.5
     private static let vKey: CGKeyCode = 0x09
+    private static let keyLookupTimeout: DispatchTimeInterval = .milliseconds(100)
+    static let transientType = NSPasteboard.PasteboardType("org.nspasteboard.TransientType")
 
     func focusedTarget() -> TargetApp? {
         guard let pid = Self.focusedPid() else { return nil }
@@ -65,9 +68,19 @@ final class TextOutput: TextOutputPort, @unchecked Sendable {
     }
 
     func copy(text: String) -> Bool {
-        let pasteboard = NSPasteboard.general
+        Self.writeTranscript(text, to: .general, transient: false)
+    }
+
+    static func writeTranscript(_ text: String, to pasteboard: NSPasteboard, transient: Bool) -> Bool {
+        let item = NSPasteboardItem()
+        guard item.setString(text, forType: .string),
+              !transient || item.setData(Data(), forType: transientType)
+        else {
+            Log.output.error("Could not copy the transcript to the clipboard")
+            return false
+        }
         pasteboard.clearContents()
-        let copied = pasteboard.setString(text, forType: .string)
+        let copied = pasteboard.writeObjects([item])
         if !copied {
             Log.output.error("Could not copy the transcript to the clipboard")
         }
@@ -151,6 +164,9 @@ final class TextOutput: TextOutputPort, @unchecked Sendable {
               Self.fieldKind(element) != nil,
               let value = Self.stringAttribute(element, kAXValueAttribute),
               let selected = Self.selectedRange(element) else { return false }
+        var settable = DarwinBoolean(false)
+        guard AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable) == .success,
+              settable.boolValue else { return false }
         let current = value as NSString
         let location = max(0, min(selected.location, current.length))
         let length = max(0, min(selected.length, current.length - location))
@@ -177,7 +193,7 @@ final class TextOutput: TextOutputPort, @unchecked Sendable {
     private func pasteWithRestore(_ text: String) -> InsertResult {
         let pasteboard = NSPasteboard.general
         let snapshot = PasteboardSnapshot.capture(from: pasteboard)
-        guard copy(text: text) else {
+        guard Self.writeTranscript(text, to: pasteboard, transient: true) else {
             // OUT-6: put back what was there before reporting
             if !snapshot.restore(to: pasteboard) {
                 Log.output.error("Could not restore the clipboard after a failed copy")
@@ -187,8 +203,9 @@ final class TextOutput: TextOutputPort, @unchecked Sendable {
         let written = pasteboard.changeCount
         Thread.sleep(forTimeInterval: Self.pasteDelay)
         let source = CGEventSource(stateID: .hidSystemState)
-        guard let down = CGEvent(keyboardEventSource: source, virtualKey: Self.vKey, keyDown: true),
-              let up = CGEvent(keyboardEventSource: source, virtualKey: Self.vKey, keyDown: false) else {
+        let pasteKey = Self.virtualKeyForV()
+        guard let down = CGEvent(keyboardEventSource: source, virtualKey: pasteKey, keyDown: true),
+              let up = CGEvent(keyboardEventSource: source, virtualKey: pasteKey, keyDown: false) else {
             // OUT-4: the transcript stays on the clipboard
             Log.output.error("Could not create the paste key event")
             return .pasteFailed
@@ -208,6 +225,61 @@ final class TextOutput: TextOutputPort, @unchecked Sendable {
             Log.output.error("Could not restore the previous clipboard")
             return .clipboardRestoreFailed
         }
+    }
+
+    /// Finds the physical virtual keycode mapped to 'v' on the active keyboard
+    /// layout, falling back to ANSI V (`0x09`) if unavailable.
+    static func virtualKeyForV() -> CGKeyCode {
+        if Thread.isMainThread {
+            return lookupVirtualKeyForV()
+        }
+        final class Box: @unchecked Sendable {
+            var code: CGKeyCode?
+        }
+        let box = Box()
+        let done = DispatchSemaphore(value: 0)
+        DispatchQueue.main.async {
+            box.code = lookupVirtualKeyForV()
+            done.signal()
+        }
+        _ = done.wait(timeout: .now() + keyLookupTimeout)
+        return box.code ?? vKey
+    }
+
+    private static func lookupVirtualKeyForV() -> CGKeyCode {
+        guard let source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
+              let raw = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData)
+        else { return vKey }
+        let data = Unmanaged<CFData>.fromOpaque(raw).takeUnretainedValue()
+        guard let bytes = CFDataGetBytePtr(data) else { return vKey }
+        let layout = UnsafeRawPointer(bytes).assumingMemoryBound(to: UCKeyboardLayout.self)
+        let keyboardType = UInt32(LMGetKbdType())
+        var uppercaseFallback: CGKeyCode?
+        for code in UInt16(0) ..< UInt16(128) {
+            var deadKeyState: UInt32 = 0
+            var chars: [UniChar] = [0, 0, 0, 0]
+            var length = 0
+            let status = UCKeyTranslate(
+                layout,
+                code,
+                UInt16(kUCKeyActionDisplay),
+                0,
+                keyboardType,
+                OptionBits(kUCKeyTranslateNoDeadKeysBit),
+                &deadKeyState,
+                chars.count,
+                &length,
+                &chars
+            )
+            guard status == noErr, length == 1 else { continue }
+            if chars[0] == 0x76 {
+                return CGKeyCode(code)
+            }
+            if chars[0] == 0x56, uppercaseFallback == nil {
+                uppercaseFallback = CGKeyCode(code)
+            }
+        }
+        return uppercaseFallback ?? vKey
     }
 
     // MARK: - Accessibility helpers
@@ -286,8 +358,16 @@ final class TextOutput: TextOutputPort, @unchecked Sendable {
         // macOS has no public terminal role. The terminal screen in these apps is a text area.
         if role == kAXTextAreaRole {
             switch bundleID() {
-            case "com.apple.Terminal", "com.googlecode.iterm2": return .terminal
-            default: break
+            case "com.apple.Terminal",
+                 "com.googlecode.iterm2",
+                 "com.mitchellh.ghostty",
+                 "net.kovidgoyal.kitty",
+                 "org.alacritty",
+                 "com.github.wez.wezterm",
+                 "dev.warp.Warp-Stable":
+                return .terminal
+            default:
+                break
             }
         }
         return .prose
@@ -313,19 +393,32 @@ final class TextOutput: TextOutputPort, @unchecked Sendable {
 
 /// Every item and type on the clipboard, for OUT-3 strategy 4.
 struct PasteboardSnapshot {
-    private let items: [[NSPasteboard.PasteboardType: Data]]
+    static let maxSnapshotBytes = 32 * 1024 * 1024
 
-    static func capture(from pasteboard: NSPasteboard) -> PasteboardSnapshot {
-        let items = (pasteboard.pasteboardItems ?? []).map { item in
-            var types: [NSPasteboard.PasteboardType: Data] = [:]
+    private let items: [[NSPasteboard.PasteboardType: Data?]]
+    let restorable: Bool
+
+    static func capture(
+        from pasteboard: NSPasteboard,
+        maxBytes: Int = PasteboardSnapshot.maxSnapshotBytes
+    ) -> PasteboardSnapshot {
+        var captured: [[NSPasteboard.PasteboardType: Data?]] = []
+        var totalBytes = 0
+        for item in pasteboard.pasteboardItems ?? [] {
+            var types: [NSPasteboard.PasteboardType: Data?] = [:]
             for type in item.types {
-                if let data = item.data(forType: type) {
-                    types[type] = data
+                let data = item.data(forType: type)
+                if let data {
+                    totalBytes += data.count
+                    if totalBytes > maxBytes {
+                        return PasteboardSnapshot(items: [], restorable: false)
+                    }
                 }
+                types.updateValue(data, forKey: type)
             }
-            return types
+            captured.append(types)
         }
-        return PasteboardSnapshot(items: items)
+        return PasteboardSnapshot(items: captured, restorable: true)
     }
 
     /// What a restore after the paste did (OUT-3 strategy 4).
@@ -342,22 +435,31 @@ struct PasteboardSnapshot {
     /// left it at change count `written`.
     func restore(to pasteboard: NSPasteboard, ifChangeCountIs written: Int) -> RestoreOutcome {
         guard pasteboard.changeCount == written else { return .changed }
-        return restore(to: pasteboard) ? .restored : .failed
+        guard let restored = buildItems() else { return .failed }
+        guard pasteboard.changeCount == written else { return .changed }
+        pasteboard.clearContents()
+        return (restored.isEmpty || pasteboard.writeObjects(restored)) ? .restored : .failed
     }
 
     /// OUT-5: builds the items before clearing, so a failure never leaves
     /// the clipboard empty.
     func restore(to pasteboard: NSPasteboard) -> Bool {
+        guard let restored = buildItems() else { return false }
+        pasteboard.clearContents()
+        return restored.isEmpty || pasteboard.writeObjects(restored)
+    }
+
+    private func buildItems() -> [NSPasteboardItem]? {
+        guard restorable else { return nil }
         var restored: [NSPasteboardItem] = []
         restored.reserveCapacity(items.count)
         for item in items {
             let pasteboardItem = NSPasteboardItem()
             for (type, data) in item {
-                guard pasteboardItem.setData(data, forType: type) else { return false }
+                guard pasteboardItem.setData(data ?? Data(), forType: type) else { return nil }
             }
             restored.append(pasteboardItem)
         }
-        pasteboard.clearContents()
-        return restored.isEmpty || pasteboard.writeObjects(restored)
+        return restored
     }
 }
