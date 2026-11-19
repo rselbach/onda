@@ -19,15 +19,15 @@ Packages made locally on newer distributions require those newer libraries.
 
 Archive runtime dependencies on Ubuntu:
   sudo apt install libgtk-4-1 libadwaita-1-0 libasound2t64 libstdc++6 \
-    libsecret-tools wl-clipboard wtype xclip xdotool xdg-utils xdg-desktop-portal
+    libsecret-tools wl-clipboard wtype xclip xdg-desktop-portal
 
 Archive runtime dependencies on Fedora:
   sudo dnf install gtk4 libadwaita alsa-lib libstdc++ libsecret \
-    wl-clipboard wtype xclip xdotool xdg-utils xdg-desktop-portal
+    wl-clipboard wtype xclip xdg-desktop-portal
 
 Archive runtime dependencies on Arch Linux:
   sudo pacman -S --needed gtk4 libadwaita alsa-lib gcc-libs libsecret \
-    wl-clipboard wtype xclip xdotool xdg-utils xdg-desktop-portal
+    wl-clipboard wtype xclip xdg-desktop-portal
 
 Muting other audio while you dictate also needs pactl, from pulseaudio-utils
 on Ubuntu and Fedora and from libpulse on Arch Linux.

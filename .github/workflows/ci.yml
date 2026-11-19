@@ -63,7 +63,9 @@ jobs:
 
       - name: Shell lint
         run: |
-          shellcheck scripts/build-linux.sh scripts/install-linux.sh \
+          shellcheck scripts/build-ffi.sh scripts/build-linux.sh \
+            scripts/bundle-app.sh scripts/deploy-site.sh \
+            scripts/install-linux.sh scripts/release.sh \
             scripts/test-linux-dictation.sh scripts/test-linux-gui.sh \
             scripts/test-linux-overlay.sh \
             .agents/skills/verify-onda/scripts/verify-onda \

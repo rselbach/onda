@@ -44,7 +44,7 @@ def focused(window):
         try:
             if current.get_state_set().contains(Atspi.StateType.FOCUSED):
                 return current, visited
-            for index in range(current.get_child_count()):
+            for index in range(current.get_child_count() - 1, -1, -1):
                 child = current.get_child_at_index(index)
                 if child is not None:
                     stack.append(child)

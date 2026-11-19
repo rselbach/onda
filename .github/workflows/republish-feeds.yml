@@ -34,16 +34,22 @@ jobs:
           RUN_ID: ${{ inputs.run_id }}
         run: |
           [[ "${RUN_ID}" =~ ^[0-9]+$ ]]
-          tag="$(gh api "repos/${GH_REPO}/actions/runs/${RUN_ID}" \
+          run_info="$(gh api "repos/${GH_REPO}/actions/runs/${RUN_ID}" \
             --jq 'select(.path == ".github/workflows/release.yml" and
-              .event == "push" and (.head_branch | startswith("v"))) | .head_branch')"
-          if [[ -z "${tag}" ]]; then
+              .event == "push" and (.head_branch | startswith("v"))) | "\(.head_branch)\t\(.head_sha)"')"
+          if [[ -z "${run_info}" ]]; then
             echo "::error::run ${RUN_ID} is not a tagged Release run" >&2
+            exit 1
+          fi
+          IFS=$'\t' read -r tag head_sha <<<"${run_info}"
+          tag_sha="$(gh api "repos/${GH_REPO}/commits/${tag}" --jq '.sha')"
+          if [[ "${head_sha}" != "${tag_sha}" ]]; then
+            echo "::error::run ${RUN_ID} commit ${head_sha} does not match ${tag} (${tag_sha})" >&2
             exit 1
           fi
           # publish verified the assets and built the feeds; the run as a
           # whole failed when deploy-feeds did, which is what this recovers
-          publish="$(gh api "repos/${GH_REPO}/actions/runs/${RUN_ID}/jobs" \
+          publish="$(gh api --paginate "repos/${GH_REPO}/actions/runs/${RUN_ID}/jobs" \
             --jq '.jobs[] | select(.name == "publish") | .conclusion')"
           if [[ "${publish}" != "success" ]]; then
             echo "::error::run ${RUN_ID} did not publish ${tag}" >&2

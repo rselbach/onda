@@ -27,6 +27,10 @@ main() {
     [[ -s "${work}/display" ]] && break
     sleep 0.1
   done
+  if [[ ! -s "${work}/display" ]]; then
+    echo "Xvfb did not write a display number" >&2
+    return 1
+  fi
   DISPLAY=":$(cat "${work}/display")"
   export DISPLAY
   # GTK starts once in a process, so each test gets its own

@@ -35,10 +35,12 @@ signing_identity() {
     echo "${SIGNING_IDENTITY}"
     return
   fi
-  local identities
+  local identities sha1
   identities="$(security find-identity -v -p codesigning)"
-  if grep -q "\"${DEVELOPER_ID}" <<<"${identities}"; then
-    echo "${DEVELOPER_ID}"
+  sha1="$(awk -v dev="${DEVELOPER_ID}" \
+    '$0 ~ "\"" dev && $2 ~ /^[0-9A-Fa-f]{40}$/ { print $2; exit }' <<<"${identities}")"
+  if [[ -n "${sha1}" ]]; then
+    echo "${sha1}"
     return
   fi
   echo "-"

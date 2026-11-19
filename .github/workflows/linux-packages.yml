@@ -33,7 +33,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Normalize release tag
-        run: echo "VERSION=${VERSION#v}" >> "${GITHUB_ENV}"
+        run: |
+          if [[ "${VERSION}" == *$'\n'* || ! "${VERSION}" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Invalid VERSION input" >&2
+            exit 1
+          fi
+          echo "VERSION=${VERSION#v}" >> "${GITHUB_ENV}"
       - name: Install build and package verification dependencies
         run: |
           sudo apt-get update

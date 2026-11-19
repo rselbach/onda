@@ -35,10 +35,7 @@ on:
       - 'v*'
 
 permissions:
-  actions: read
-  contents: write
-  pages: write
-  id-token: write
+  contents: read
 
 concurrency:
   group: release
@@ -133,6 +130,8 @@ jobs:
   macos:
     needs: check-tag
     runs-on: xcode-27
+    permissions:
+      contents: read
     environment: release
     steps:
       - name: Checkout
@@ -177,6 +176,8 @@ jobs:
           CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
           CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
         run: |
+          umask 077
+          trap 'rm -f "${RUNNER_TEMP}/certificate.p12"' EXIT
           keychain_path="${RUNNER_TEMP}/signing.keychain-db"
           keychain_password="$(openssl rand -base64 32)"
           security create-keychain -p "${keychain_password}" "${keychain_path}"
@@ -187,7 +188,7 @@ jobs:
           security import "${RUNNER_TEMP}/certificate.p12" \
             -P "${CERTIFICATE_PASSWORD}" -A -t cert -f pkcs12 \
             -k "${keychain_path}"
-          rm "${RUNNER_TEMP}/certificate.p12"
+          rm -f "${RUNNER_TEMP}/certificate.p12"
 
           security set-key-partition-list -S apple-tool:,apple:,codesign: \
             -s -k "${keychain_password}" "${keychain_path}"
@@ -231,6 +232,9 @@ jobs:
   publish:
     needs: [linux, macos, release-notes]
     runs-on: xcode-27
+    permissions:
+      actions: read
+      contents: write
     environment: release
     steps:
       - name: Checkout
@@ -422,6 +426,10 @@ jobs:
   deploy-feeds:
     needs: publish
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

@@ -15,7 +15,9 @@ readonly SWIFT_OUT="${SHELL_DIR}/Sources/OndaCore/Generated"
 readonly TARGET="aarch64-apple-darwin"
 # keep the static library's objects, including cc-built C code, at the app's
 # minimum macOS (Info.plist LSMinimumSystemVersion)
-export MACOSX_DEPLOYMENT_TARGET="26.0"
+MACOSX_DEPLOYMENT_TARGET="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' \
+  "${SHELL_DIR}/Info.plist")"
+export MACOSX_DEPLOYMENT_TARGET
 STAGING=""
 
 # keeps the failing status: bash 3.2 (macOS's /bin/bash) otherwise exits with

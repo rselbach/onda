@@ -19,8 +19,10 @@ import os
 import re
 import sys
 import urllib.request
+from pathlib import Path
 
-OUTPUT = "crates/onda-asr-coreml/src/manifest.rs"
+ROOT = Path(__file__).resolve().parent.parent
+OUTPUT = ROOT / "crates/onda-asr-coreml/src/manifest.rs"
 
 # model id -> (repo, required top-level entries); mirrors FluidAudio's
 # ModelNames required sets for the variants Jabber loads

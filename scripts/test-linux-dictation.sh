@@ -398,6 +398,10 @@ ENTRY
     [[ -s "${work}/display" ]] && break
     sleep 0.1
   done
+  if [[ ! -s "${work}/display" ]]; then
+    echo "Xvfb did not write a display number" >&2
+    return 1
+  fi
   DISPLAY=":$(cat "${work}/display")"
   export DISPLAY
   dbus-update-activation-environment DISPLAY XDG_RUNTIME_DIR XDG_CONFIG_HOME \
@@ -673,6 +677,7 @@ ${menu_tail}"
   fi
   "${binary}" --quit
   wait "${app_pid}"
+  app_pid=""
   start_onda
   python3 "${root}/shell/linux/tests/mpris-player.py" --ignore-pause \
     troy "${work}/troy.log" &
@@ -694,6 +699,7 @@ ${menu_tail}"
   [[ "$(cat "${ONDA_DATA_DIR}/muted-output")" == 'onda-speakers' ]]
   kill -KILL "${app_pid}"
   wait "${app_pid}" || true
+  app_pid=""
   escape_reaches_target 'after Onda was killed in a recording'
   speakers_muted
   write_settings false
@@ -717,6 +723,7 @@ ${menu_tail}"
   wait_until 'the Onda window' onda_window_visible
   tray click 'Quit Onda'
   wait "${app_pid}"
+  app_pid=""
   kill "${music_pid}"
   wait "${music_pid}" || true
   music_pid=""

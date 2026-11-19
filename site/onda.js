@@ -47,6 +47,14 @@
     }
   }
 
+  function isNotesUrl(url) {
+    try {
+      return typeof url === "string" && new URL(url).href.startsWith("https://github.com/rselbach/onda/");
+    } catch {
+      return false;
+    }
+  }
+
   // returns { os: "macos" | "linux" | "windows" | "other", arch?: "arm64" | "x86_64" }
   async function detectPlatform() {
     const ua = navigator.userAgent;
@@ -68,16 +76,26 @@
     }
 
     let arch;
+    let is32Bit = false;
     if (uaData && uaData.getHighEntropyValues && (os === "macos" || os === "linux")) {
       try {
-        const { architecture } = await uaData.getHighEntropyValues(["architecture"]);
-        arch = { arm: "arm64", x86: "x86_64" }[architecture];
+        const { architecture, bitness } = await uaData.getHighEntropyValues([
+          "architecture",
+          "bitness",
+        ]);
+        if (bitness === "32") {
+          is32Bit = true;
+        } else {
+          arch = { arm: "arm64", x86: "x86_64" }[architecture];
+        }
       } catch {
         // the user agent declined; fall back to the defaults below
       }
     }
-    if (!arch && os === "linux") arch = /aarch64|arm64|armv8/i.test(ua) ? "arm64" : "x86_64";
-    if (!arch && os === "macos") arch = "arm64"; // Safari always reports Intel
+    if (!arch && !is32Bit && os === "linux") {
+      arch = /aarch64|arm64|armv8/i.test(ua) ? "arm64" : "x86_64";
+    }
+    if (!arch && !is32Bit && os === "macos") arch = "arm64"; // Safari always reports Intel
     return { os, arch };
   }
 
@@ -121,11 +139,15 @@
     heading.className = "label";
     heading.textContent = primary ? "Other downloads" : "Downloads";
     container.replaceChildren(heading);
+    const kindRank = (kind) => {
+      const index = KINDS.indexOf(kind);
+      return index === -1 ? KINDS.length : index;
+    };
     let first = true;
     for (const group of GROUPS) {
       const items = rest
         .filter((a) => a.os === group.os && a.arch === group.arch)
-        .sort((a, b) => KINDS.indexOf(a.kind) - KINDS.indexOf(b.kind));
+        .sort((a, b) => kindRank(a.kind) - kindRank(b.kind));
       if (items.length === 0) continue;
       first = false;
       const span = document.createElement("span");
@@ -157,7 +179,7 @@
     }
 
     const version = `Version ${release.version}`;
-    const notes = typeof release.notes_url === "string" && release.notes_url.startsWith("https://github.com/rselbach/onda/")
+    const notes = isNotesUrl(release.notes_url)
       ? link(version, release.notes_url)
       : version;
     meta.replaceChildren(notes, ` · ${requirement(primary, platform)}`);

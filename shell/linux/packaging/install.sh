@@ -29,7 +29,10 @@ main() {
     install -Dm644 "${file}" "${data}/${relative}"
   done < <(find "${source}/share" -type f -print0)
   if command -v update-desktop-database >/dev/null; then
-    update-desktop-database "${data}/applications"
+    update-desktop-database "${data}/applications" || true
+  fi
+  if command -v gtk-update-icon-cache >/dev/null; then
+    gtk-update-icon-cache -f -t "${data}/icons/hicolor" || true
   fi
   echo "Installed ${prefix}/bin/onda; ensure ${prefix}/bin is in PATH."
   echo "Restart Onda to use the new version."

@@ -23,14 +23,15 @@ configure_nginx() {
   # shellcheck disable=SC2087 # expand the constants locally on purpose
   ssh "${HOST}" bash -s <<REMOTE
 set -euo pipefail
+server_conf="\$(readlink -f "${SERVER_CONF}")"
 backup="\$(mktemp -d)"
 trap 'sudo rm -rf "\${backup}" "${upload}"' EXIT
-sudo cp -p "${SERVER_CONF}" "\${backup}/server.conf"
+sudo cp -p "\${server_conf}" "\${backup}/server.conf"
 if [[ -f "${SNIPPET}" ]]; then
   sudo cp -p "${SNIPPET}" "\${backup}/snippet.conf"
 fi
 restore() {
-  sudo cp -p "\${backup}/server.conf" "${SERVER_CONF}"
+  sudo cp -p "\${backup}/server.conf" "\${server_conf}"
   if [[ -f "\${backup}/snippet.conf" ]]; then
     sudo cp -p "\${backup}/snippet.conf" "${SNIPPET}"
   else
@@ -39,13 +40,14 @@ restore() {
 }
 
 sudo install -m 644 "${upload}/site-nginx.conf" "${SNIPPET}"
-if ! grep -qF "include ${SNIPPET};" "${SERVER_CONF}"; then
-  if (( \$(grep -c '^ *server_name rselbach.com;' "${SERVER_CONF}") != 1 )); then
-    echo "expected one 'server_name rselbach.com;' in ${SERVER_CONF}" >&2
+if ! grep -qF "include ${SNIPPET};" "\${server_conf}"; then
+  if (( \$(grep -c '^ *server_name rselbach.com;' "\${server_conf}") != 1 )); then
+    restore
+    echo "expected one 'server_name rselbach.com;' in \${server_conf}" >&2
     exit 1
   fi
   sudo sed -i '/^ *server_name rselbach.com;/a\\    include ${SNIPPET};' \\
-    "${SERVER_CONF}"
+    "\${server_conf}"
 fi
 
 if ! sudo nginx -t 2>"\${backup}/nginx-t.log"; then
@@ -94,7 +96,14 @@ main() {
   # a private folder, not a fixed /tmp name another user could claim
   local upload
   upload="$(ssh "${HOST}" mktemp -d)"
-  scp -q "${repo}/scripts/site-nginx.conf" "${HOST}:${upload}/site-nginx.conf"
+  if [[ ! "${upload}" =~ ^/tmp/tmp\.[A-Za-z0-9]+$ ]]; then
+    die "unexpected remote temp dir: '${upload}'"
+  fi
+  if ! scp -q "${repo}/scripts/site-nginx.conf" "${HOST}:${upload}/site-nginx.conf"; then
+    # shellcheck disable=SC2029 # upload was validated as a /tmp/tmp.* directory
+    ssh "${HOST}" "rm -rf '${upload}'" || true
+    die "failed to upload nginx configuration"
+  fi
   configure_nginx "${upload}"
   verify
 }

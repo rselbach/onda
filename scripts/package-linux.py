@@ -39,22 +39,31 @@ def copy(source, destination, mode=0o644):
 
 def nfpm(arch):
     directory = ROOT / "build/tools" / f"nfpm-{NFPM_VERSION}-{arch}"
-    binary = directory / "nfpm"
-    if binary.is_file():
-        return binary
     directory.mkdir(parents=True, exist_ok=True)
     name = f"nfpm_{NFPM_VERSION}_Linux_{arch}.tar.gz"
-    url = f"https://github.com/goreleaser/nfpm/releases/download/v{NFPM_VERSION}/{name}"
-    with urllib.request.urlopen(url, timeout=120) as response:
-        data = response.read()
-    if hashlib.sha256(data).hexdigest() != NFPM_CHECKSUMS[arch]:
-        raise ValueError("nFPM download checksum mismatch")
     archive = directory / name
-    archive.write_bytes(data)
-    with tarfile.open(archive) as tar:
-        tar.extract("nfpm", directory, filter="data")
-    binary.chmod(0o755)
-    archive.unlink()
+    expected = NFPM_CHECKSUMS[arch]
+    valid = False
+    if archive.is_file():
+        with archive.open("rb") as stream:
+            valid = hashlib.file_digest(stream, "sha256").hexdigest() == expected
+    if not valid:
+        url = f"https://github.com/goreleaser/nfpm/releases/download/v{NFPM_VERSION}/{name}"
+        with urllib.request.urlopen(url, timeout=120) as response:
+            data = response.read()
+        if hashlib.sha256(data).hexdigest() != expected:
+            raise ValueError("nFPM download checksum mismatch")
+        with tempfile.NamedTemporaryFile(dir=directory, delete=False) as tmp:
+            tmp.write(data)
+            tmp_archive = Path(tmp.name)
+        os.replace(tmp_archive, archive)
+    binary = directory / "nfpm"
+    with tempfile.TemporaryDirectory(dir=directory) as extract_dir:
+        with tarfile.open(archive) as tar:
+            tar.extract("nfpm", extract_dir, filter="data")
+        staged = Path(extract_dir) / "nfpm"
+        staged.chmod(0o755)
+        os.replace(staged, binary)
     return binary
 
 
@@ -113,18 +122,22 @@ def dependencies(binary, library):
         re.findall(r"\bGLIBC_(\d+(?:\.\d+)+)", symbols),
         key=lambda v: tuple(map(int, v.split("."))),
     )
-    cxx = output(os.environ.get("CXX", "c++"), "-dumpfullversion", "-dumpversion")
+    compiler = os.environ.get("CXX", "c++")
+    compiler_version = output(compiler, "--version").lower()
+    is_gcc = (
+        any(tok in compiler_version for tok in ("gcc", "g++", "free software foundation"))
+        and "clang" not in compiler_version
+    )
+    cxx = output(compiler, "-dumpfullversion", "-dumpversion") if is_gcc else None
     common = [
         "wl-clipboard",
         "wtype",
         "xclip",
-        "xdotool",
-        "xdg-utils",
         "xdg-desktop-portal",
     ]
     deb = common + [
         f"libc6 (>= {glibc})",
-        f"libstdc++6 (>= {cxx})",
+        *( [f"libstdc++6 (>= {cxx})"] if cxx else [] ),
         "libgcc-s1",
         f"libgtk-4-1 (>= {versions['gtk4']})",
         f"libadwaita-1-0 (>= {versions['libadwaita-1']})",
@@ -142,7 +155,7 @@ def dependencies(binary, library):
     ]
     archlinux = common + [
         f"glibc>={glibc}",
-        f"gcc-libs>={cxx}",
+        *( [f"gcc-libs>={cxx}"] if cxx else [] ),
         f"gtk4>={versions['gtk4']}",
         f"libadwaita>={versions['libadwaita-1']}",
         f"glib2>={versions['glib-2.0']}",
@@ -189,8 +202,11 @@ def package(version, arch, stage, destination, target):
     copy(
         ROOT / "shell/linux/licenses/hex.txt", stage / "share/doc/onda/licenses/hex.txt"
     )
+    layer_license = prefix / "share/licenses/gtk4-layer-shell/LICENSE"
+    if not layer_license.is_file():
+        layer_license = Path("/usr/share/doc/libgtk4-layer-shell0/copyright")
     copy(
-        prefix / "share/licenses/gtk4-layer-shell/LICENSE",
+        layer_license,
         stage / "share/doc/onda/licenses/gtk4-layer-shell.txt",
     )
     copy(ROOT / "shell/linux/packaging/README.txt", stage / "share/doc/onda/README.txt")
@@ -276,8 +292,16 @@ def package(version, arch, stage, destination, target):
     (stage / "lib/onda/package-kind").write_text("tar.gz\n")
     copy(ROOT / "shell/linux/packaging/README.txt", stage / "README.txt")
     archive = destination / f"{stage.name}.tar.gz"
+    def normalize_tarinfo(info):
+        info.uid = 0
+        info.gid = 0
+        info.uname = ""
+        info.gname = ""
+        info.mtime = 0
+        return info
+
     with tarfile.open(archive, "w:gz") as tar:
-        tar.add(stage, arcname=stage.name)
+        tar.add(stage, arcname=stage.name, filter=normalize_tarinfo)
     artifacts.append(archive)
     sums = destination / f"{stage.name}.sha256"
     checksums = []
