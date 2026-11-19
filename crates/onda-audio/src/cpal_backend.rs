@@ -148,6 +148,10 @@ struct Shared {
     dropped: Arc<AtomicUsize>,
 }
 
+fn sanitize_sample(sample: f32) -> f32 {
+    if sample.is_finite() { sample } else { 0.0 }
+}
+
 fn build_stream<T>(
     device: &cpal::Device,
     config: StreamConfig,
@@ -165,7 +169,7 @@ where
         // realtime: whole buffers in or out, no locks, no allocation
         move |data: &[T], _| match producer.write_chunk_uninit(data.len()) {
             Ok(chunk) => {
-                chunk.fill_from_iter(data.iter().map(|s| s.to_sample::<f32>()));
+                chunk.fill_from_iter(data.iter().map(|s| sanitize_sample(s.to_sample::<f32>())));
             }
             Err(_) => {
                 dropped.fetch_add(1, Ordering::Relaxed);
@@ -354,5 +358,19 @@ impl Snapshot {
             default: host.default_input_device(),
             devices,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_sample_zeros_non_finite_values() {
+        assert_eq!(sanitize_sample(f32::NAN), 0.0);
+        assert_eq!(sanitize_sample(f32::INFINITY), 0.0);
+        assert_eq!(sanitize_sample(f32::NEG_INFINITY), 0.0);
+        assert_eq!(sanitize_sample(-0.5), -0.5);
+        assert_eq!(sanitize_sample(0.25), 0.25);
     }
 }

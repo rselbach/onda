@@ -8,7 +8,7 @@ use std::fmt;
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 
-use onda_domain::level::{LevelThrottle, rms_level};
+use onda_domain::level::{LevelThrottle, SILENT_MIC_THRESHOLD, rms_level};
 use onda_domain::pre_roll::{PreRoll, SESSION_RESERVE_SAMPLES};
 use onda_domain::speech_gate::{self, GateVerdict};
 use onda_domain::types::MonoTime;
@@ -587,12 +587,21 @@ impl<B: Backend> Engine<B> {
 
     fn request_rebuild(&mut self, reason: RebuildReason, now: MonoTime) {
         self.needs_rebuild = true;
-        if self.prepared.is_none() && self.capture.is_none() {
-            info!(%reason, "deferring input rebuild until capture is prepared");
+        if let Some(rebuild) = self.rebuild.as_mut() {
+            if reason == RebuildReason::SelectionChanged {
+                self.retried_missing_first_buffer = false;
+                rebuild.reason = reason;
+                rebuild.attempts = 0;
+                rebuild.next_at = now;
+                info!(%reason, "restarting input rebuild for updated selection");
+                self.attempt_rebuild(now);
+            } else {
+                info!(%reason, "coalescing input rebuild");
+            }
             return;
         }
-        if self.rebuild.is_some() {
-            info!(%reason, "coalescing input rebuild");
+        if self.prepared.is_none() && self.capture.is_none() {
+            info!(%reason, "deferring input rebuild until capture is prepared");
             return;
         }
         if reason != RebuildReason::MissingFirstBuffer {
@@ -683,23 +692,35 @@ impl<B: Backend> Engine<B> {
 // else `current`: channels of similar energy, like a stereo pair, would
 // otherwise trade places every batch and splice their waveforms
 fn pick_channel(raw: &[f32], channels: usize, current: usize) -> usize {
-    let energy = |channel: usize| -> f32 {
-        raw.iter()
+    if channels <= 1 || raw.is_empty() {
+        return 0;
+    }
+    let current = current.min(channels - 1);
+    let frames = raw.len() / channels;
+    if frames == 0 {
+        return current;
+    }
+    let mut loudest = (0, 0.0_f32);
+    let mut current_energy = 0.0_f32;
+    for channel in 0..channels {
+        let energy: f32 = raw
+            .iter()
             .skip(channel)
             .step_by(channels)
             .map(|sample| sample * sample)
-            .sum()
-    };
-    let mut loudest = (0, energy(0));
-    for channel in 1..channels {
-        let energy = energy(channel);
-        if energy > loudest.1 {
+            .sum();
+        if channel == current {
+            current_energy = energy;
+        }
+        if channel == 0 || energy > loudest.1 {
             loudest = (channel, energy);
         }
     }
-    match loudest.1 > 4.0 * energy(current) {
-        true => loudest.0,
-        false => current,
+    let floor = frames as f32 * SILENT_MIC_THRESHOLD * SILENT_MIC_THRESHOLD;
+    if loudest.1 > floor && loudest.1 > 4.0 * current_energy {
+        loudest.0
+    } else {
+        current
     }
 }
 
@@ -1561,5 +1582,63 @@ mod tests {
             };
             assert_eq!(recording.speech_gate(), tc.want, "{}", tc.name);
         }
+    }
+
+    #[test]
+    fn pick_channel_ignores_noise_below_floor_and_fast_paths_mono() {
+        assert_eq!(pick_channel(&[], 1, 0), 0);
+        assert_eq!(pick_channel(&[0.5, -0.2], 1, 2), 0);
+
+        let frames = 160;
+        let mut quiet = Vec::with_capacity(frames * 2);
+        for _ in 0..frames {
+            quiet.push(0.0002);
+            quiet.push(0.0);
+        }
+        assert_eq!(pick_channel(&quiet, 2, 1), 1);
+
+        let mut speech = Vec::with_capacity(frames * 2);
+        for _ in 0..frames {
+            speech.push(0.01);
+            speech.push(0.0);
+        }
+        assert_eq!(pick_channel(&speech, 2, 1), 0);
+    }
+
+    #[test]
+    fn selection_change_mid_recovery_resets_attempts_and_reason_aud_10() {
+        let mut h = Harness::new(DeviceSelection::Device(TROY.to_owned()));
+        h.start().expect("start");
+        h.world.borrow_mut().devices.clear();
+        h.engine
+            .device_changed(DeviceChange::DeviceListChanged, h.now);
+        h.advance(REBUILD_RETRY_DELAY * 3);
+        assert_eq!(h.events().len(), 0);
+
+        h.engine
+            .set_selection(DeviceSelection::Device(ABED.to_owned()), h.now);
+        h.advance(REBUILD_RETRY_DELAY * 3);
+        assert_eq!(h.events().len(), 0);
+
+        h.world.borrow_mut().plug(ABED, "Abed's Podcast Mic");
+        h.advance(REBUILD_RETRY_DELAY);
+        let rebuilt: Vec<_> = h
+            .events()
+            .into_iter()
+            .filter_map(|e| match e {
+                AudioEvent::Rebuilt {
+                    reason,
+                    device_name,
+                } => Some((reason, device_name)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            rebuilt,
+            vec![(
+                RebuildReason::SelectionChanged,
+                "Abed's Podcast Mic".to_owned(),
+            )]
+        );
     }
 }

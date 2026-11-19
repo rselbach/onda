@@ -89,6 +89,8 @@ impl Resampler {
             let (used, made) = match chunk {
                 Ok(counts) => counts,
                 Err(err) => {
+                    let dropped = self.pending.len().saturating_sub(offset);
+                    self.fed = self.fed.saturating_sub(dropped);
                     self.pending.clear();
                     return Err(err);
                 }
@@ -317,5 +319,31 @@ mod tests {
             Resampler::new(0),
             Err(AudioError::ConverterUnavailable)
         ));
+    }
+
+    #[test]
+    fn process_error_subtracts_dropped_samples_from_fed() {
+        let mut resampler = Resampler::new(48_000).expect("resampler");
+        let chunk_len = resampler.fft.as_ref().expect("fft").input_frames_next();
+        let mut out = Vec::new();
+        resampler
+            .process(&vec![0.1; chunk_len + 100], &mut out)
+            .expect("initial chunk");
+        assert_eq!(resampler.fed, chunk_len + 100);
+        assert_eq!(resampler.pending.len(), 100);
+
+        let saved_scratch_len = resampler.scratch.len();
+        resampler.scratch.clear();
+        let err = resampler
+            .process(&vec![0.1; chunk_len], &mut out)
+            .expect_err("truncated scratch must fail run_chunk");
+        assert!(matches!(err, AudioError::ConversionFailed(_)));
+        assert!(resampler.pending.is_empty());
+        assert_eq!(resampler.fed, chunk_len);
+
+        resampler.scratch.resize(saved_scratch_len, 0.0);
+        resampler.flush(&mut out).expect("flush");
+        let want = (chunk_len as f64 * resampler.ratio).ceil() as usize;
+        assert_eq!(out.len(), want);
     }
 }
