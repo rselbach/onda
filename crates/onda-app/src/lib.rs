@@ -453,8 +453,9 @@ impl App {
 
     // --- status menu (UI-6..UI-11) ---
 
-    /// The status menu is opening: re-read permissions and the updater, and
-    /// record the current language as recent (UI-6, LANG-8).
+    /// Refreshes permissions, the updater, and recent transcripts when the
+    /// status menu opens. Records the current language as recent (UI-6,
+    /// LANG-8, HIS-28).
     pub fn menu_will_open(&self) {
         self.ui(UiMsg::MenuWillOpen);
     }

@@ -187,6 +187,25 @@ pub trait CleanupTransport: Send + Sync {
     ) -> BoxFuture<'static, Result<Vec<CleanupModel>, CleanupError>>;
 }
 
+/// Which saved history policy a pruning request is allowed to apply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetentionRequest {
+    /// Apply the current policy at launch or when History opens.
+    Current,
+    /// Apply this policy only if it is still the saved setting.
+    IfCurrent(HistoryRetention),
+}
+
+impl RetentionRequest {
+    /// Resolves the request against the setting read at prune time.
+    pub fn resolve(self, current: HistoryRetention) -> Option<HistoryRetention> {
+        match self {
+            Self::Current => Some(current),
+            Self::IfCurrent(want) => (want == current).then_some(current),
+        }
+    }
+}
+
 /// Transcript history (`onda-history` in the app).
 pub trait HistorySink: Send + Sync {
     /// Saves one entry with the current history preferences (HIS-1, HIS-2).
@@ -206,10 +225,10 @@ pub trait HistorySink: Send + Sync {
     /// "Clear History" (HIS-16a). Blocking.
     fn delete_all(&self) -> Result<(), String>;
 
-    /// Applies `retention` to the whole list at `now` (HIS-16). Blocking.
-    /// `Ok(true)` when it deleted entries or removed recordings, so the
-    /// app announces the change (HIS-10).
-    fn apply_retention(&self, retention: HistoryRetention, now: Timestamp) -> Result<bool, String>;
+    /// Checks the current settings and applies `request` at `now` (HIS-16).
+    /// Blocking. `Ok(true)` when it deleted entries or removed recordings
+    /// (HIS-10).
+    fn apply_retention(&self, request: RetentionRequest, now: Timestamp) -> Result<bool, String>;
 
     /// The recording of entry `id`; the error is the message to show, e.g.
     /// "The recording for this dictation is missing." (HIS-24). Blocking.

@@ -25,8 +25,8 @@ use onda_app::ports::{
 };
 use onda_app::seams::{
     AudioSource, BoxFuture, CaptureInfo, CleanupTransport, DownloadUpdate, DownloadUpdateKind,
-    HistorySink, InputDeviceInfo, ModelStore, SecretSource, SettingChange, Settings,
-    SettingsSource,
+    HistorySink, InputDeviceInfo, ModelStore, RetentionRequest, SecretSource, SettingChange,
+    Settings, SettingsSource,
 };
 use onda_app::system_speech::SystemSpeechEngine;
 use onda_app::views::UpdaterState;
@@ -838,7 +838,8 @@ impl HistorySink for FakeHistory {
     }
 
     fn recent_transcripts(&self) -> Vec<RecentTranscript> {
-        let recent = onda_domain::history::recent_transcripts(&lock(&self.stored), true);
+        let enabled = lock(&self.settings.settings).history_enabled;
+        let recent = onda_domain::history::recent_transcripts(&lock(&self.stored), enabled);
         let hold = lock(&self.hold_recent).take();
         if let Some(hold) = hold {
             hold.wait();
@@ -876,7 +877,11 @@ impl HistorySink for FakeHistory {
         Ok(())
     }
 
-    fn apply_retention(&self, retention: HistoryRetention, now: Timestamp) -> Result<bool, String> {
+    fn apply_retention(&self, request: RetentionRequest, now: Timestamp) -> Result<bool, String> {
+        let Some(retention) = request.resolve(lock(&self.settings.settings).history_retention)
+        else {
+            return Ok(false);
+        };
         lock(&self.ops).push(format!("retention {retention:?}"));
         let plan = plan_retention(&lock(&self.stored), now, retention, None);
         let changed = !plan.is_noop();

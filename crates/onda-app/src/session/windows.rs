@@ -276,6 +276,7 @@ impl Actor {
                 self.refresh_downloaded();
                 self.refresh_updater();
                 self.record_recent_languages();
+                self.refresh_recent();
             }
             UiMsg::SelectLanguageFromMenu(language) => {
                 self.refresh_settings();
@@ -353,7 +354,7 @@ impl Actor {
             UiMsg::SetRuleTriggers(id, text) => self.edit_rule(&id, Some(text), None),
             UiMsg::SetRuleReplacement(id, text) => self.edit_rule(&id, None, Some(text)),
             UiMsg::DeleteRule(id) => self.delete_rule(&id),
-            UiMsg::SetHistoryEnabled(on) => self.apply_setting(SettingChange::HistoryEnabled(on)),
+            UiMsg::SetHistoryEnabled(on) => self.set_history_enabled(on),
             UiMsg::SetHistoryRetention(retention) => self.set_history_retention(retention),
             UiMsg::SetHistoryKeepsAudio(on) => {
                 self.apply_setting(SettingChange::HistoryKeepsAudio(on));

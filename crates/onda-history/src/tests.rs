@@ -194,7 +194,7 @@ fn retention_retries_a_failed_metadata_write() {
     std::fs::create_dir(&metadata).expect("block the metadata write");
     assert!(
         f.store
-            .apply_retention(HistoryRetention::Month, at(NOW))
+            .apply_retention(|| Some(HistoryRetention::Month), at(NOW))
             .is_err()
     );
     assert!(
@@ -207,14 +207,14 @@ fn retention_retries_a_failed_metadata_write() {
     std::fs::write(&metadata, bytes).expect("restore the old metadata");
     assert!(
         f.store
-            .apply_retention(HistoryRetention::Month, at(NOW))
+            .apply_retention(|| Some(HistoryRetention::Month), at(NOW))
             .expect("retry")
     );
     assert!(!read_entry(&folder).has_audio());
     assert!(!f.reopen().entries().expect("reloaded entries")[1].has_audio());
     assert!(
         !f.store
-            .apply_retention(HistoryRetention::Month, at(NOW))
+            .apply_retention(|| Some(HistoryRetention::Month), at(NOW))
             .expect("no more work")
     );
 }
@@ -363,6 +363,35 @@ fn opt_out_wins_while_save_waits_for_history_lock() {
     assert!(!f.history.exists());
     assert!(std::fs::read(&lock_path).unwrap().is_empty());
     assert_eq!(f.changes(), 0);
+}
+
+#[test]
+fn pruning_uses_the_policy_current_when_it_gets_the_history_lock() {
+    let f = Fixture::new();
+    f.save(1, DAY * 10, true, HistoryRetention::Forever);
+    let policy = Mutex::new(HistoryRetention::Week);
+    let changed = std::thread::scope(|scope| {
+        let lock = File::open(f.history.with_added_extension("lock")).unwrap();
+        lock.lock().unwrap();
+        let pruning = scope.spawn(|| {
+            f.store
+                .apply_retention(|| Some(*policy.lock().unwrap()), at(NOW))
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while f.store.state.try_lock().is_ok() {
+            assert!(
+                Instant::now() < deadline,
+                "prune did not queue for History.lock"
+            );
+            std::thread::yield_now();
+        }
+        *policy.lock().unwrap() = HistoryRetention::Forever;
+        drop(lock);
+        pruning.join().unwrap().unwrap()
+    });
+
+    assert!(!changed);
+    assert_eq!(ids(&f.reopen().entries().unwrap()), [1]);
 }
 
 #[test]
@@ -709,7 +738,7 @@ fn apply_retention_on_demand_his_16() {
 
     let changed = f
         .store
-        .apply_retention(HistoryRetention::Month, at(NOW))
+        .apply_retention(|| Some(HistoryRetention::Month), at(NOW))
         .expect("month");
     assert!(!changed, "nothing expired (HIS-10)");
     assert_eq!(f.changes(), 0, "nothing expired, no change");
@@ -721,7 +750,7 @@ fn apply_retention_on_demand_his_16() {
 
     let changed = f
         .store
-        .apply_retention(HistoryRetention::Week, at(NOW))
+        .apply_retention(|| Some(HistoryRetention::Week), at(NOW))
         .expect("week");
     assert!(changed, "an entry expired (HIS-10)");
     assert_eq!(f.changes(), 1);
@@ -962,7 +991,7 @@ fn another_store_refreshes_entries_and_retention_after_external_changes() {
     assert_eq!(ids(&other.entries().unwrap()), [1]);
     assert!(
         other
-            .apply_retention(HistoryRetention::Week, at(NOW))
+            .apply_retention(|| Some(HistoryRetention::Week), at(NOW))
             .unwrap()
     );
     assert!(f.store.entries().unwrap().is_empty());

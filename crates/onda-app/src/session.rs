@@ -183,6 +183,7 @@ pub(crate) enum Msg {
     LaunchChecked(Vec<ModelId>),
     Recent {
         generation: u64,
+        read: u64,
         recent: Vec<RecentTranscript>,
     },
 }
@@ -649,8 +650,12 @@ impl Actor {
             Msg::Permissions(snapshot) => self.permissions = snapshot,
             Msg::Downloaded(models) => self.downloaded = models,
             Msg::LaunchChecked(models) => self.launch_checked(models),
-            Msg::Recent { generation, recent } => {
-                if generation == self.ui.history.generation {
+            Msg::Recent {
+                generation,
+                read,
+                recent,
+            } => {
+                if generation == self.ui.history.generation && read == self.ui.history.recent_read {
                     self.recent = recent;
                 }
             }
@@ -1945,15 +1950,6 @@ impl Actor {
         }));
     }
 
-    fn refresh_recent(&self) {
-        let history = self.ports.history.clone();
-        let generation = self.ui.history.generation;
-        tokio::spawn(blocking_send(self.messages.clone(), move || Msg::Recent {
-            generation,
-            recent: history.recent_transcripts(),
-        }));
-    }
-
     fn current_id(&self) -> Option<SessionId> {
         match &self.phase {
             Phase::Idle | Phase::Starting(_) | Phase::Aborting(_) => None,
@@ -2087,7 +2083,6 @@ impl Actor {
             phase,
             output_mode: settings.output_mode,
             last_transcript_preview: self.last_transcript.as_deref().map(menu_preview),
-            history_enabled: settings.history_enabled,
             recent_transcripts,
             has_failed_dictation: self.failed_audio.is_some(),
             can_start_session: matches!(self.phase, Phase::Idle),

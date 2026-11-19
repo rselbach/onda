@@ -56,9 +56,7 @@ pub struct StatusMenuInput<'a> {
     pub output_mode: OutputMode,
     /// One-line preview of the last transcript, if there is one (DICT-26).
     pub last_transcript_preview: Option<String>,
-    /// History is on (HIS-28).
-    pub history_enabled: bool,
-    /// Recent transcripts from history (HIS-28).
+    /// Recent transcripts, empty when history is off (HIS-28).
     pub recent_transcripts: Vec<RecentTranscriptItem>,
     /// Failed-dictation audio is kept (DICT-22).
     pub has_failed_dictation: bool,
@@ -199,8 +197,8 @@ impl StatusMenu {
         let failed_dictation = input
             .has_failed_dictation
             .then_some(input.can_start_session);
-        let recent_transcripts = (input.history_enabled && !input.recent_transcripts.is_empty())
-            .then_some(RecentTranscriptsMenu {
+        let recent_transcripts =
+            (!input.recent_transcripts.is_empty()).then_some(RecentTranscriptsMenu {
                 title: "Recent Transcripts",
                 items: input.recent_transcripts,
                 items_enabled: idle,
@@ -311,7 +309,6 @@ mod tests {
             phase: SessionPhase::Idle,
             output_mode: OutputMode::Type,
             last_transcript_preview: None,
-            history_enabled: true,
             recent_transcripts: vec![],
             has_failed_dictation: false,
             can_start_session: true,
@@ -584,7 +581,6 @@ mod tests {
     fn his_28_dict_27_recent_transcripts() {
         struct Case {
             name: &'static str,
-            history_enabled: bool,
             items: Vec<RecentTranscriptItem>,
             phase: SessionPhase,
             want_titles: Option<Vec<&'static str>>,
@@ -599,7 +595,6 @@ mod tests {
         let cases = [
             Case {
                 name: "entries while idle",
-                history_enabled: true,
                 items: items(),
                 phase: SessionPhase::Idle,
                 want_titles: Some(vec![
@@ -609,16 +604,7 @@ mod tests {
                 want_enabled: true,
             },
             Case {
-                name: "history off hides",
-                history_enabled: false,
-                items: items(),
-                phase: SessionPhase::Idle,
-                want_titles: None,
-                want_enabled: false,
-            },
-            Case {
                 name: "nothing to show hides",
-                history_enabled: true,
                 items: vec![],
                 phase: SessionPhase::Idle,
                 want_titles: None,
@@ -626,7 +612,6 @@ mod tests {
             },
             Case {
                 name: "busy recording disables",
-                history_enabled: true,
                 items: items(),
                 phase: SessionPhase::Recording { provisional: false },
                 want_titles: Some(vec![
@@ -638,7 +623,6 @@ mod tests {
         ];
         for tc in cases {
             let got = StatusMenu::resolve(StatusMenuInput {
-                history_enabled: tc.history_enabled,
                 recent_transcripts: tc.items,
                 phase: tc.phase,
                 ..input(&READY)

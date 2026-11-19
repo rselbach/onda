@@ -4,9 +4,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use jiff::Timestamp;
-use onda_app::seams::HistorySink;
+use onda_app::seams::{HistorySink, RetentionRequest};
 use onda_domain::history::{HistoryEntry, NewEntry, RecentTranscript, recent_transcripts};
-use onda_domain::types::HistoryRetention;
 use onda_history::{HistoryPreferences, HistoryStore};
 use onda_settings::Settings;
 use uuid::Uuid;
@@ -44,7 +43,7 @@ impl HistorySink for History {
 
     fn recent_transcripts(&self) -> Vec<RecentTranscript> {
         match self.store.entries() {
-            Ok(entries) => recent_transcripts(&entries, self.settings.history_enabled()),
+            Ok(entries) => recent_transcripts(&entries, self.settings.reopen().history_enabled()),
             Err(error) => {
                 tracing::error!(%error, "could not read history for the menu");
                 Vec::new()
@@ -64,9 +63,12 @@ impl HistorySink for History {
         self.store.delete_all().map_err(|error| error.to_string())
     }
 
-    fn apply_retention(&self, retention: HistoryRetention, now: Timestamp) -> Result<bool, String> {
+    fn apply_retention(&self, request: RetentionRequest, now: Timestamp) -> Result<bool, String> {
         self.store
-            .apply_retention(retention, now)
+            .apply_retention(
+                || request.resolve(self.settings.reopen().history_retention()),
+                now,
+            )
             .map_err(|error| error.to_string())
     }
 
@@ -82,6 +84,7 @@ mod tests {
     use std::time::Duration;
 
     use onda_domain::history::{AUDIO_FILENAME, METADATA_FILENAME, entry_directory_name};
+    use onda_domain::types::HistoryRetention;
     use onda_history::HistoryHooks;
 
     use super::*;
@@ -138,6 +141,96 @@ mod tests {
         );
         assert!(!history.store.directory().exists());
         assert!(settings.history_enabled(), "session cache stays unchanged");
+    }
+
+    #[test]
+    fn recent_transcripts_follow_independent_opt_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let history = history(dir.path(), Arc::new(Settings::open(&path)));
+        assert!(
+            history
+                .save(new_entry(1, Timestamp::now()), SAMPLES)
+                .unwrap()
+        );
+        assert_eq!(history.recent_transcripts().len(), 1);
+
+        let writer = Settings::open(&path);
+        writer.set_history_enabled(false).unwrap();
+        assert!(history.recent_transcripts().is_empty());
+        assert_eq!(history.entries().unwrap().len(), 1);
+
+        writer.set_history_enabled(true).unwrap();
+        assert_eq!(history.recent_transcripts().len(), 1);
+    }
+
+    #[test]
+    fn delayed_retention_change_does_not_prune_after_the_setting_changes_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let settings = Arc::new(Settings::open(&path));
+        let history = history(dir.path(), settings.clone());
+        let now = Timestamp::now();
+        let old = now
+            .checked_sub(Duration::from_secs(8 * 24 * 60 * 60))
+            .unwrap();
+        assert!(history.save(new_entry(1, old), SAMPLES).unwrap());
+        settings
+            .set_history_retention(HistoryRetention::Week)
+            .unwrap();
+        Settings::open(&path)
+            .set_history_retention(HistoryRetention::Forever)
+            .unwrap();
+
+        assert!(
+            !history
+                .apply_retention(RetentionRequest::IfCurrent(HistoryRetention::Week), now)
+                .unwrap()
+        );
+        assert_eq!(history.entries().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn automatic_pruning_uses_current_retention() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let settings = Arc::new(Settings::open(&path));
+        let history = history(dir.path(), settings.clone());
+        let now = Timestamp::now();
+        let old = now
+            .checked_sub(Duration::from_secs(8 * 24 * 60 * 60))
+            .unwrap();
+        assert!(history.save(new_entry(1, old), SAMPLES).unwrap());
+        settings
+            .set_history_retention(HistoryRetention::Week)
+            .unwrap();
+        let writer = Settings::open(&path);
+
+        writer
+            .set_history_retention(HistoryRetention::Forever)
+            .unwrap();
+        assert!(
+            !history
+                .apply_retention(RetentionRequest::Current, now)
+                .unwrap()
+        );
+        fs::write(&path, "{").unwrap();
+        assert!(
+            !history
+                .apply_retention(RetentionRequest::Current, now)
+                .unwrap()
+        );
+        assert_eq!(history.entries().unwrap().len(), 1);
+
+        writer
+            .set_history_retention(HistoryRetention::Week)
+            .unwrap();
+        assert!(
+            history
+                .apply_retention(RetentionRequest::Current, now)
+                .unwrap()
+        );
+        assert!(history.entries().unwrap().is_empty());
     }
 
     #[test]

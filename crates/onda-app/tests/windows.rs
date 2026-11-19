@@ -2804,6 +2804,26 @@ async fn his_27_a_page_read_older_than_a_failed_one_keeps_the_error() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn reopening_the_menu_hides_recents_after_an_external_opt_out() {
+    let h = Harness::unstarted(|_| {});
+    *lock(&h.history.stored) = vec![entry("Troy Barnes", None, None, 1.hours())];
+    h.app.ui_ready();
+    sleep(10).await;
+    assert_eq!(menu_texts(&h), ["Troy Barnes"]);
+
+    let held = h.history.hold_next_recent();
+    h.app.menu_will_open();
+    eventually("the old menu read", || held.started()).await;
+    lock(&h.settings.settings).history_enabled = false;
+    h.app.menu_will_open();
+    eventually("the menu after the opt-out", || menu_texts(&h).is_empty()).await;
+
+    held.release();
+    sleep(10).await;
+    assert!(menu_texts(&h).is_empty());
+}
+
+#[tokio::test(start_paused = true)]
 async fn his_10_a_menu_read_older_than_a_delete_does_not_bring_it_back() {
     let h = Harness::unstarted(|_| {});
     let troy = entry("Troy Barnes", None, None, 1.hours());

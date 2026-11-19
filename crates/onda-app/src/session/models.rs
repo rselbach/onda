@@ -52,25 +52,7 @@ impl Actor {
     pub(super) fn launch_checked(&mut self, downloaded: Vec<ModelId>) {
         self.downloaded = downloaded;
         self.refresh_settings();
-        // HIS-16: entries may have expired while Onda was not running; this
-        // also preloads the list for the tray menu
-        let history = self.ports.history.clone();
-        let retention = self.settings.history_retention;
-        let generation = self.ui.history.generation;
-        tokio::spawn(blocking_send(self.messages.clone(), move || {
-            match history.apply_retention(retention, jiff::Timestamp::now()) {
-                // HIS-10: announce what expired; the menu re-reads
-                Ok(true) => return Msg::Ui(UiMsg::HistoryOpDone(Ok(()))),
-                Ok(false) => {}
-                Err(error) => {
-                    tracing::error!(%error, "could not apply history retention at launch");
-                }
-            }
-            Msg::Recent {
-                generation,
-                recent: history.recent_transcripts(),
-            }
-        }));
+        self.preload_history();
         let plan = launch_plan(self.settings.onboarding);
         if let Some(delay) = plan.show_onboarding_after {
             self.ui.launch_onboarding = Some(self.timer(delay, Msg::Ui(UiMsg::AutoOnboarding)));

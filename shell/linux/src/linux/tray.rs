@@ -260,7 +260,6 @@ mod tests {
             phase: SessionPhase::Idle,
             output_mode: OutputMode::Type,
             last_transcript_preview: Some("Troy Barnes joined the study group.".into()),
-            history_enabled: true,
             recent_transcripts: [
                 "Troy Barnes joined the study group.",
                 "save it as troy_barnes",

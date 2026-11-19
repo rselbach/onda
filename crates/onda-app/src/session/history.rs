@@ -16,10 +16,10 @@ use onda_domain::types::HistoryRetention;
 use tokio::task::spawn_blocking;
 use uuid::Uuid;
 
-use super::{Actor, Msg, Task, UiMsg};
+use super::{Actor, Msg, Task, UiMsg, blocking_send};
 use crate::events::Event;
 use crate::ports::{CopyOutcome, Delivery};
-use crate::seams::{HistorySink, SettingChange};
+use crate::seams::{HistorySink, RetentionRequest, SettingChange};
 use crate::views::{HistoryInputs, HistoryPage, MainWindowSection, history_page};
 
 /// How long a row's copy button shows the checkmark (HIS-22).
@@ -65,6 +65,7 @@ pub(super) struct HistoryState {
     // bumped when a mutation starts or finishes, so a read begun earlier
     // cannot overwrite the page or the menu with what it removed
     pub(super) generation: u64,
+    pub(super) recent_read: u64,
     // the latest page read; an earlier one landing after it is dropped
     page_read: u64,
     // only the latest successful read can authorize a retention change
@@ -102,10 +103,46 @@ impl Actor {
         }
     }
 
+    pub(super) fn set_history_enabled(&mut self, enabled: bool) {
+        self.apply_setting(SettingChange::HistoryEnabled(enabled));
+        if !self.settings.history_enabled {
+            self.recent.clear();
+        }
+        self.refresh_recent();
+    }
+
+    pub(super) fn preload_history(&mut self) {
+        self.fetch_recent(Some(RetentionRequest::Current));
+    }
+
+    pub(super) fn refresh_recent(&mut self) {
+        self.fetch_recent(None);
+    }
+
+    fn fetch_recent(&mut self, prune: Option<RetentionRequest>) {
+        let history = self.ports.history.clone();
+        let generation = self.ui.history.generation;
+        self.ui.history.recent_read += 1;
+        let read = self.ui.history.recent_read;
+        tokio::spawn(blocking_send(self.messages.clone(), move || {
+            if let Some(request) = prune {
+                match history.apply_retention(request, Timestamp::now()) {
+                    Ok(true) => return Msg::Ui(UiMsg::HistoryOpDone(Ok(()))),
+                    Ok(false) => {}
+                    Err(error) => tracing::error!(%error, "could not apply history retention"),
+                }
+            }
+            Msg::Recent {
+                generation,
+                read,
+                recent: history.recent_transcripts(),
+            }
+        }));
+    }
+
     // HIS-16: retention also applies when the page appears
     pub(super) fn reload_history(&mut self, apply_retention: bool) {
         let history = self.ports.history.clone();
-        let retention = self.settings.history_retention;
         let messages = self.messages.clone();
         let generation = self.ui.history.generation;
         self.ui.history.page_read += 1;
@@ -114,7 +151,7 @@ impl Actor {
         tokio::spawn(async move {
             let loaded = spawn_blocking(move || {
                 let retained = match apply_retention {
-                    true => history.apply_retention(retention, Timestamp::now()),
+                    true => history.apply_retention(RetentionRequest::Current, Timestamp::now()),
                     false => Ok(false),
                 };
                 (retained, history.entries())
@@ -219,7 +256,7 @@ impl Actor {
         }
         self.history_op(move |history| {
             history
-                .apply_retention(retention, Timestamp::now())
+                .apply_retention(RetentionRequest::IfCurrent(retention), Timestamp::now())
                 .map(|_| ())
         });
     }

@@ -135,14 +135,22 @@ impl HistoryStore {
 
     /// Applies retention to the whole list (HIS-16): at launch (which also
     /// preloads the list), when the History page appears, and when the
-    /// retention setting changes. `Ok(true)` when it deleted entries or
-    /// removed recordings (HIS-10).
+    /// retention setting changes. Reads `policy` after locking history and
+    /// loading its entries. `None` skips pruning. `Ok(true)` when entries or
+    /// recordings were removed (HIS-10).
     pub fn apply_retention(
         &self,
-        retention: HistoryRetention,
+        policy: impl FnOnce() -> Option<HistoryRetention>,
         now: Timestamp,
     ) -> Result<bool, HistoryError> {
-        self.with_mutation(|state| self.enforce_retention(state, retention, now, None))
+        self.with_state(|state, lock| {
+            self.load_once(&mut state.entries)?;
+            let Some(retention) = policy() else {
+                return Ok(false);
+            };
+            self.advance_generation(state, lock)?;
+            self.enforce_retention(state, retention, now, None)
+        })
     }
 
     /// Deletes one entry's folder. An unknown id is not an error.
