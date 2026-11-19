@@ -125,7 +125,7 @@ impl<'a> TokenFilter<'a> {
             && let Some((id, probability)) = self.best(top_k, Script::Latin, true)
         {
             *label = id;
-            *score = probability;
+            *score = probability.clamp(0.0, 1.0);
         }
     }
 
@@ -137,7 +137,10 @@ impl<'a> TokenFilter<'a> {
         let mut best: Option<usize> = None;
         for index in 0..count {
             let id = top_k.ids[index];
-            if skip_blocklist && (id == self.blank || ENGLISH_BLOCKLIST.contains(&id)) {
+            if id == self.blank || (skip_blocklist && ENGLISH_BLOCKLIST.contains(&id)) {
+                continue;
+            }
+            if !top_k.logits[index].is_finite() {
                 continue;
             }
             let Some(text) = self.vocab.get(id) else {
@@ -152,15 +155,30 @@ impl<'a> TokenFilter<'a> {
         }
         let best = best?;
         let logits = &top_k.logits[..count];
-        let max = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let max = logits
+            .iter()
+            .copied()
+            .filter(|l| l.is_finite())
+            .fold(f32::NEG_INFINITY, f32::max);
         if !max.is_finite() {
             return Some((top_k.ids[best], 0.0));
         }
-        let sum: f32 = logits.iter().map(|l| (l - max).exp()).sum();
-        if sum <= 0.0 {
+        let sum: f32 = logits
+            .iter()
+            .copied()
+            .filter(|l| l.is_finite())
+            .map(|l| (l - max).exp())
+            .sum();
+        if !sum.is_finite() || sum <= 0.0 {
             return Some((top_k.ids[best], 0.0));
         }
-        Some((top_k.ids[best], (logits[best] - max).exp() / sum))
+        let probability = (logits[best] - max).exp() / sum;
+        let probability = if probability.is_finite() {
+            probability.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        Some((top_k.ids[best], probability))
     }
 }
 
@@ -306,8 +324,29 @@ mod tests {
             let (mut label, mut score) = (tc.label, 0.9);
             filter.apply(&mut label, &mut score, tc.top_k.as_ref());
             assert_eq!(label, tc.want, "{}", tc.name);
-            assert!((0.0..=1.0).contains(&score), "{}", tc.name);
+            assert!(
+                score.is_finite() && (0.0..=1.0).contains(&score),
+                "{}",
+                tc.name
+            );
         }
+
+        let vocab_with_blank_entry =
+            Vocabulary::new(["▁Troy", "▁Трой", "▁"].map(str::to_owned).to_vec());
+        let french = Language::from_code("fr").expect("French");
+        let filter = TokenFilter::new(french, &vocab_with_blank_entry, 2).expect("filter");
+        let mut label = 1;
+        let mut score = 0.9;
+        let top_k = TopK {
+            ids: vec![1, 2, 0],
+            logits: vec![f32::NAN, 9.0, 2.0],
+        };
+        filter.apply(&mut label, &mut score, Some(&top_k));
+        assert_eq!(
+            label, 0,
+            "blank and NaN logits skipped even on wrong-script pass"
+        );
+        assert!(score.is_finite() && (0.0..=1.0).contains(&score));
     }
 
     #[test]

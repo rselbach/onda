@@ -66,19 +66,78 @@ impl Model {
         Ok(Model { model, options })
     }
 
-    /// Runs one synchronous prediction.
+    /// Runs one synchronous prediction with pre-bound owned inputs.
+    pub(crate) fn predict_bound(&self, input: &BoundInputs) -> Result<Features, String> {
+        self.predict_provider(&input.provider)
+    }
+
+    /// Runs one synchronous prediction borrowing temporary input arrays for
+    /// the duration of the call.
+    pub(crate) fn predict_borrowed(&self, arrays: &[(&str, &Array)]) -> Result<Features, String> {
+        let provider = build_provider(arrays)?;
+        self.predict_provider(&provider)
+    }
+
+    /// Runs one synchronous prediction forwarding outputs from an earlier step.
     pub(crate) fn predict(&self, input: &Features) -> Result<Features, String> {
-        // SAFETY: both arguments are valid objects; the call is synchronous.
+        self.predict_provider(&input.provider)
+    }
+
+    fn predict_provider(
+        &self,
+        provider: &ProtocolObject<dyn MLFeatureProvider>,
+    ) -> Result<Features, String> {
+        // SAFETY: both arguments are valid objects; the call is synchronous and
+        // any borrowed inputs remain valid for the whole call.
         let output = guarded("prediction", || unsafe {
             self.model
-                .predictionFromFeatures_options_error(&input.provider, &self.options)
+                .predictionFromFeatures_options_error(provider, &self.options)
         })?
         .map_err(|error| describe(&error))?;
         Ok(Features { provider: output })
     }
 }
 
-/// Named model inputs or outputs.
+/// Owned `MLMultiArray` buffers bound into a CoreML feature provider.
+///
+/// The provider holds references to the same backing arrays, so mutations only
+/// go through `&mut BoundInputs`, preventing concurrent access with prediction.
+pub(crate) struct BoundInputs {
+    arrays: Vec<Array>,
+    provider: Retained<ProtocolObject<dyn MLFeatureProvider>>,
+}
+
+// SAFETY: owned arrays and an immutable dictionary feature provider over them
+// have no thread affinity; `BoundInputs` is not `Sync`.
+unsafe impl Send for BoundInputs {}
+
+impl BoundInputs {
+    /// Wraps `named` arrays into a reusable feature provider.
+    pub(crate) fn new(named: Vec<(&str, Array)>) -> Result<BoundInputs, String> {
+        let pairs: Vec<(&str, &Array)> = named.iter().map(|(name, array)| (*name, array)).collect();
+        let provider = build_provider(&pairs)?;
+        let arrays = named.into_iter().map(|(_, array)| array).collect();
+        Ok(BoundInputs { arrays, provider })
+    }
+
+    /// Overwrites the `f32` input at `index` in row-major order.
+    pub(crate) fn write_f32(&mut self, index: usize, values: &[f32]) -> Result<(), String> {
+        self.arrays
+            .get_mut(index)
+            .ok_or_else(|| format!("input index {index} out of range"))?
+            .write_f32(values)
+    }
+
+    /// Overwrites the `i32` input at `index` in row-major order.
+    pub(crate) fn write_i32(&mut self, index: usize, values: &[i32]) -> Result<(), String> {
+        self.arrays
+            .get_mut(index)
+            .ok_or_else(|| format!("input index {index} out of range"))?
+            .write_i32(values)
+    }
+}
+
+/// Read-only named model outputs.
 pub(crate) struct Features {
     provider: Retained<ProtocolObject<dyn MLFeatureProvider>>,
 }
@@ -87,41 +146,36 @@ pub(crate) struct Features {
 // affinity; `Features` is not `Sync`.
 unsafe impl Send for Features {}
 
-impl Features {
-    /// Inputs that reference `arrays` by name. Writing to an array later
-    /// changes what the next prediction sees.
-    pub(crate) fn new(arrays: &[(&str, &Array)]) -> Result<Features, String> {
-        let keys: Vec<Retained<NSString>> = arrays
+fn build_provider(
+    arrays: &[(&str, &Array)],
+) -> Result<Retained<ProtocolObject<dyn MLFeatureProvider>>, String> {
+    let keys: Vec<Retained<NSString>> = arrays
+        .iter()
+        .map(|(name, _)| NSString::from_str(name))
+        .collect();
+    // SAFETY: wrapping a valid multi-array in a feature value.
+    let values: Vec<Retained<MLFeatureValue>> = guarded("wrapping inputs", || {
+        arrays
             .iter()
-            .map(|(name, _)| NSString::from_str(name))
-            .collect();
-        // SAFETY: wrapping a valid multi-array in a feature value.
-        let values: Vec<Retained<MLFeatureValue>> = guarded("wrapping inputs", || {
-            arrays
-                .iter()
-                .map(|(_, array)| unsafe {
-                    MLFeatureValue::featureValueWithMultiArray(&array.array)
-                })
-                .collect()
-        })?;
-        let key_refs: Vec<&NSString> = keys.iter().map(|key| &**key).collect();
-        let value_refs: Vec<&AnyObject> =
-            values.iter().map(|value| -> &AnyObject { value }).collect();
-        let dictionary = NSDictionary::<NSString, AnyObject>::from_slices(&key_refs, &value_refs);
-        // SAFETY: every value in the dictionary is an MLFeatureValue, which
-        // is what the initializer expects.
-        let provider = guarded("creating inputs", || unsafe {
-            MLDictionaryFeatureProvider::initWithDictionary_error(
-                MLDictionaryFeatureProvider::alloc(),
-                &dictionary,
-            )
-        })?
-        .map_err(|error| describe(&error))?;
-        Ok(Features {
-            provider: ProtocolObject::from_retained(provider),
-        })
-    }
+            .map(|(_, array)| unsafe { MLFeatureValue::featureValueWithMultiArray(&array.array) })
+            .collect()
+    })?;
+    let key_refs: Vec<&NSString> = keys.iter().map(|key| &**key).collect();
+    let value_refs: Vec<&AnyObject> = values.iter().map(|value| -> &AnyObject { value }).collect();
+    let dictionary = NSDictionary::<NSString, AnyObject>::from_slices(&key_refs, &value_refs);
+    // SAFETY: every value in the dictionary is an MLFeatureValue, which
+    // is what the initializer expects.
+    let provider = guarded("creating inputs", || unsafe {
+        MLDictionaryFeatureProvider::initWithDictionary_error(
+            MLDictionaryFeatureProvider::alloc(),
+            &dictionary,
+        )
+    })?
+    .map_err(|error| describe(&error))?;
+    Ok(ProtocolObject::from_retained(provider))
+}
 
+impl Features {
     /// The multi-array feature called `name`.
     pub(crate) fn array(&self, name: &str) -> Result<Array, String> {
         let key = NSString::from_str(name);
@@ -149,23 +203,30 @@ unsafe impl Send for Array {}
 impl Array {
     /// A zeroed `f32` array.
     pub(crate) fn zeros_f32(shape: &[usize]) -> Result<Array, String> {
-        let array = Array::new(shape, MLMultiArrayDataType::Float32)?;
-        array.write_f32(&vec![0.0; shape.iter().product()])?;
+        let count = checked_element_count(shape)?;
+        let mut array = Array::new(shape, MLMultiArrayDataType::Float32)?;
+        array.write_f32(&vec![0.0; count])?;
         Ok(array)
     }
 
     /// A zeroed `i32` array.
     pub(crate) fn zeros_i32(shape: &[usize]) -> Result<Array, String> {
-        let array = Array::new(shape, MLMultiArrayDataType::Int32)?;
-        array.write_i32(&vec![0; shape.iter().product()])?;
+        let count = checked_element_count(shape)?;
+        let mut array = Array::new(shape, MLMultiArrayDataType::Int32)?;
+        array.write_i32(&vec![0; count])?;
         Ok(array)
     }
 
     fn new(shape: &[usize], data_type: MLMultiArrayDataType) -> Result<Array, String> {
+        let _ = checked_element_count(shape)?;
         let dims: Vec<Retained<NSNumber>> = shape
             .iter()
-            .map(|&dim| NSNumber::new_isize(dim as isize))
-            .collect();
+            .map(|&dim| {
+                isize::try_from(dim)
+                    .map(NSNumber::new_isize)
+                    .map_err(|_| format!("dimension {dim} overflows isize"))
+            })
+            .collect::<Result<_, _>>()?;
         let shape = NSArray::from_retained_slice(&dims);
         // SAFETY: a valid shape and a supported data type.
         let array = guarded("creating a multi-array", || unsafe {
@@ -176,54 +237,75 @@ impl Array {
     }
 
     /// Overwrites the `f32` array with `values` in row-major order.
-    pub(crate) fn write_f32(&self, values: &[f32]) -> Result<(), String> {
+    pub(crate) fn write_f32(&mut self, values: &[f32]) -> Result<(), String> {
         self.write(MLMultiArrayDataType::Float32, values)
     }
 
     /// Overwrites the `i32` array with `values` in row-major order.
-    pub(crate) fn write_i32(&self, values: &[i32]) -> Result<(), String> {
+    pub(crate) fn write_i32(&mut self, values: &[i32]) -> Result<(), String> {
         self.write(MLMultiArrayDataType::Int32, values)
     }
 
-    fn write<T: Copy>(&self, data_type: MLMultiArrayDataType, values: &[T]) -> Result<(), String> {
+    fn write<T: Scalar>(
+        &mut self,
+        data_type: MLMultiArrayDataType,
+        values: &[T],
+    ) -> Result<(), String> {
         self.check_type(data_type)?;
         let shape = self.shape()?;
-        if values.len() != shape.iter().product::<usize>() {
-            return Err(format!(
-                "expected {} values, got {}",
-                shape.iter().product::<usize>(),
-                values.len()
-            ));
+        let expected = checked_element_count(&shape)?;
+        if values.len() != expected {
+            return Err(format!("expected {expected} values, got {}", values.len()));
         }
-        let outcome: RefCell<Result<(), String>> = RefCell::new(Ok(()));
+        let outcome: RefCell<Result<(), String>> =
+            RefCell::new(Err("multi-array write handler did not run".to_owned()));
         let handler = StackBlock::new(
             |bytes: NonNull<c_void>, size: NSInteger, strides: NonNull<NSArray<NSNumber>>| {
-                // SAFETY: CoreML passes a valid strides array for the
-                // duration of the call.
-                let strides = numbers(unsafe { strides.as_ref() });
-                let Some(len) = storage_len(&shape, &strides) else {
-                    *outcome.borrow_mut() = Err("invalid strides".to_owned());
-                    return;
-                };
-                if len * size_of::<T>() > size as usize {
-                    *outcome.borrow_mut() = Err("buffer smaller than its shape".to_owned());
-                    return;
-                }
-                let base = bytes.cast::<T>().as_ptr();
-                if is_row_major(&shape, &strides) {
-                    // SAFETY: a row-major buffer of `values.len()` scalars
-                    // spans exactly `len` elements, checked against the
-                    // buffer size above; the buffer is ours inside the
-                    // handler and cannot overlap `values`.
-                    unsafe { std::ptr::copy_nonoverlapping(values.as_ptr(), base, values.len()) };
-                    return;
-                }
-                for (value, offset) in values.iter().zip(offsets(&shape, &strides)) {
-                    // SAFETY: every offset is below `len`, checked against
-                    // the buffer size above; the buffer is ours to mutate
-                    // inside the handler.
-                    unsafe { base.add(offset).write(*value) };
-                }
+                let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    // SAFETY: CoreML passes a valid strides array for the
+                    // duration of the call.
+                    let strides = numbers(unsafe { strides.as_ref() })?;
+                    let len = storage_len(&shape, &strides)
+                        .ok_or_else(|| "invalid strides".to_owned())?;
+                    let byte_size = usize::try_from(size)
+                        .map_err(|_| "negative multi-array buffer size".to_owned())?;
+                    let needed = len
+                        .checked_mul(size_of::<T>())
+                        .ok_or_else(|| "multi-array byte size overflow".to_owned())?;
+                    if needed > byte_size {
+                        return Err("buffer smaller than its shape".to_owned());
+                    }
+                    let base = bytes.as_ptr().cast::<u8>();
+                    if is_row_major(&shape, &strides) {
+                        let copy_bytes = values
+                            .len()
+                            .checked_mul(size_of::<T>())
+                            .ok_or_else(|| "multi-array byte size overflow".to_owned())?;
+                        // SAFETY: a row-major buffer of `values.len()` scalars spans
+                        // `copy_bytes <= needed <= byte_size`, the buffer is exclusively
+                        // owned inside the handler, and `values` cannot overlap it.
+                        unsafe {
+                            std::ptr::copy_nonoverlapping(
+                                values.as_ptr().cast::<u8>(),
+                                base,
+                                copy_bytes,
+                            );
+                        }
+                        return Ok(());
+                    }
+                    for (value, offset) in values.iter().zip(offsets(&shape, &strides)) {
+                        let byte_offset = offset
+                            .checked_mul(size_of::<T>())
+                            .ok_or_else(|| "multi-array offset overflow".to_owned())?;
+                        // SAFETY: every offset is below `len`, checked against
+                        // `byte_size` above, and `write_unaligned` handles arbitrary
+                        // buffer alignment.
+                        unsafe { base.add(byte_offset).cast::<T>().write_unaligned(*value) };
+                    }
+                    Ok(())
+                }))
+                .unwrap_or_else(|_| Err("multi-array write handler panicked".to_owned()));
+                *outcome.borrow_mut() = result;
             },
         );
         // SAFETY: the handler runs synchronously and only touches the buffer
@@ -241,7 +323,7 @@ impl Array {
         // SAFETY: reading the strides property has no preconditions.
         let strides = numbers(&*guarded("reading strides", || unsafe {
             self.array.strides()
-        })?);
+        })?)?;
         let len = storage_len(&shape, &strides).ok_or_else(|| "invalid strides".to_owned())?;
         Ok(Tensor {
             data: self.read(len)?,
@@ -257,11 +339,12 @@ impl Array {
         // SAFETY: reading the strides property has no preconditions.
         let strides = numbers(&*guarded("reading strides", || unsafe {
             self.array.strides()
-        })?);
+        })?)?;
         let len = storage_len(&shape, &strides).ok_or_else(|| "invalid strides".to_owned())?;
         let data = self.read::<i32>(len)?;
         if is_row_major(&shape, &strides) {
-            return Ok(data[..shape.iter().product::<usize>().min(len)].to_vec());
+            let count = checked_element_count(&shape)?.min(len);
+            return Ok(data[..count].to_vec());
         }
         Ok(offsets(&shape, &strides)
             .map(|offset| data.get(offset).copied().unwrap_or(0))
@@ -271,27 +354,52 @@ impl Array {
     /// The first scalar of an `i32` array.
     pub(crate) fn first_i32(&self) -> Result<i32, String> {
         self.check_type(MLMultiArrayDataType::Int32)?;
-        Ok(self.read::<i32>(1)?[0])
+        self.read::<i32>(1)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| "empty multi-array".to_owned())
     }
 
     /// The first scalar of an `f32` array.
     pub(crate) fn first_f32(&self) -> Result<f32, String> {
         self.check_type(MLMultiArrayDataType::Float32)?;
-        Ok(self.read::<f32>(1)?[0])
+        self.read::<f32>(1)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| "empty multi-array".to_owned())
     }
 
     /// The first `len` scalars of storage.
-    fn read<T: Copy>(&self, len: usize) -> Result<Vec<T>, String> {
-        let outcome: RefCell<Result<Vec<T>, String>> = RefCell::new(Ok(Vec::new()));
+    fn read<T: Scalar>(&self, len: usize) -> Result<Vec<T>, String> {
+        let outcome: RefCell<Result<Vec<T>, String>> =
+            RefCell::new(Err("multi-array read handler did not run".to_owned()));
         let handler = StackBlock::new(|bytes: NonNull<c_void>, size: NSInteger| {
-            if len * size_of::<T>() > size as usize {
-                *outcome.borrow_mut() = Err("buffer smaller than its shape".to_owned());
-                return;
-            }
-            // SAFETY: the buffer holds at least `len` scalars of type `T`
-            // (checked above) and stays valid for the duration of the call.
-            let slice = unsafe { std::slice::from_raw_parts(bytes.cast::<T>().as_ptr(), len) };
-            *outcome.borrow_mut() = Ok(slice.to_vec());
+            let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                let byte_size = usize::try_from(size)
+                    .map_err(|_| "negative multi-array buffer size".to_owned())?;
+                let needed = len
+                    .checked_mul(size_of::<T>())
+                    .ok_or_else(|| "multi-array byte size overflow".to_owned())?;
+                if needed > byte_size {
+                    return Err("buffer smaller than its shape".to_owned());
+                }
+                let mut out = vec![T::default(); len];
+                if needed > 0 {
+                    // SAFETY: `bytes` stays valid for `byte_size >= needed` bytes during the call,
+                    // `out` has `len` initialized `T` elements, and byte-wise copy avoids
+                    // alignment assumptions on `bytes`.
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            bytes.as_ptr().cast::<u8>(),
+                            out.as_mut_ptr().cast::<u8>(),
+                            needed,
+                        );
+                    }
+                }
+                Ok(out)
+            }))
+            .unwrap_or_else(|_| Err("multi-array read handler panicked".to_owned()));
+            *outcome.borrow_mut() = result;
         });
         // SAFETY: the handler runs synchronously and reads within bounds.
         guarded("reading a multi-array", || unsafe {
@@ -303,9 +411,9 @@ impl Array {
     /// The array's dimensions.
     pub(crate) fn shape(&self) -> Result<Vec<usize>, String> {
         // SAFETY: reading the shape property has no preconditions.
-        Ok(numbers(&*guarded("reading a shape", || unsafe {
+        numbers(&*guarded("reading a shape", || unsafe {
             self.array.shape()
-        })?))
+        })?)
     }
 
     fn check_type(&self, want: MLMultiArrayDataType) -> Result<(), String> {
@@ -318,10 +426,31 @@ impl Array {
     }
 }
 
-fn numbers(array: &NSArray<NSNumber>) -> Vec<usize> {
+/// Primitive scalar types whose bit patterns have no padding bytes and can be
+/// safely copied byte-for-byte.
+///
+/// # Safety
+///
+/// Implementors must be initialized plain-old-data numeric primitives with no
+/// uninitialized padding bytes or invalid bit patterns.
+unsafe trait Scalar: Copy + Default {}
+unsafe impl Scalar for f32 {}
+unsafe impl Scalar for i32 {}
+
+fn checked_element_count(shape: &[usize]) -> Result<usize, String> {
+    shape
+        .iter()
+        .try_fold(1usize, |acc, &dim| acc.checked_mul(dim))
+        .ok_or_else(|| "multi-array element count overflows usize".to_owned())
+}
+
+fn numbers(array: &NSArray<NSNumber>) -> Result<Vec<usize>, String> {
     array
         .iter()
-        .map(|number| usize::try_from(number.as_isize()).unwrap_or(usize::MAX))
+        .map(|number| {
+            usize::try_from(number.as_isize())
+                .map_err(|_| format!("negative tensor dimension {}", number.as_isize()))
+        })
         .collect()
 }
 
@@ -361,5 +490,13 @@ mod tests {
         assert!(error.starts_with("indexing raised"), "{error}");
         assert!(error.contains("NSRangeException"), "{error}");
         assert_eq!(guarded("nothing", || 7), Ok(7));
+    }
+
+    #[test]
+    fn shape_overflow_returns_error() {
+        let err = Array::zeros_f32(&[usize::MAX, 2])
+            .err()
+            .expect("overflowing shape must fail");
+        assert!(err.contains("overflow"), "{err}");
     }
 }

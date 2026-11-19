@@ -11,7 +11,7 @@ use onda_domain::models::ModelId;
 
 use crate::chunk::{self, FRAME_SAMPLES, Layout, MAX_MODEL_SAMPLES, MIN_SAMPLES, SAMPLE_RATE};
 use crate::chunk::{PreviewWindows, WindowRequest};
-use crate::coreml::{Array, ComputeUnits, Features, Model};
+use crate::coreml::{Array, BoundInputs, ComputeUnits, Model};
 use crate::language::TokenFilter;
 use crate::recovery::{self, LengthPolicy, RECOVERY_POLICIES};
 use crate::tdt::{self, DecodeSpan, Hypothesis, JointDecision, TdtConfig, Token, TopK, Transducer};
@@ -322,20 +322,16 @@ impl Loaded {
             vocab = vocab.without_splice_guard();
         }
 
-        let buffers = || -> Result<(Array, Array, Features, Array, StepIo), String> {
+        let buffers = || -> Result<(BoundInputs, Array, StepIo), String> {
             let audio = Array::zeros_f32(&[1, MAX_MODEL_SAMPLES])?;
             let audio_length = Array::zeros_i32(&[1])?;
-            let inputs =
-                Features::new(&[("audio_signal", &audio), ("audio_length", &audio_length)])?;
-            Ok((
-                audio,
-                audio_length,
-                inputs,
-                Array::zeros_i32(&[1])?,
-                StepIo::new()?,
-            ))
+            let inputs = BoundInputs::new(vec![
+                ("audio_signal", audio),
+                ("audio_length", audio_length),
+            ])?;
+            Ok((inputs, Array::zeros_i32(&[1])?, StepIo::new()?))
         };
-        let (audio, audio_length, preprocessor_inputs, full_mel_length, steps) =
+        let (preprocessor_inputs, full_mel_length, steps) =
             buffers().map_err(|error| load_failed("input buffers", error))?;
         progress(LoadProgress {
             status: String::new(),
@@ -350,8 +346,6 @@ impl Loaded {
                 decoder,
                 joint,
                 config,
-                audio,
-                audio_length,
                 preprocessor_inputs,
                 full_mel_length,
                 steps,
@@ -391,9 +385,7 @@ struct Runtime {
     decoder: Model,
     joint: Model,
     config: TdtConfig,
-    audio: Array,
-    audio_length: Array,
-    preprocessor_inputs: Features,
+    preprocessor_inputs: BoundInputs,
     full_mel_length: Array,
     steps: StepIo,
 }
@@ -460,21 +452,27 @@ impl Runtime {
             if let Some(tail) = audio.get_mut(silenced) {
                 tail.fill(0.0);
             }
-            self.audio.write_f32(&audio).map_err(failed)?;
+            self.preprocessor_inputs
+                .write_f32(0, &audio)
+                .map_err(failed)?;
             declared = trimmed;
             audio_frames = trimmed.div_ceil(FRAME_SAMPLES);
         } else {
-            self.audio.write_f32(padded).map_err(failed)?;
+            self.preprocessor_inputs
+                .write_f32(0, padded)
+                .map_err(failed)?;
         }
         if policy.preprocessor_full {
             declared = MAX_MODEL_SAMPLES;
         }
         let length = i32::try_from(declared).map_err(|_| failed("audio length overflow"))?;
-        self.audio_length.write_i32(&[length]).map_err(failed)?;
+        self.preprocessor_inputs
+            .write_i32(1, &[length])
+            .map_err(failed)?;
 
         let mel = self
             .preprocessor
-            .predict(&self.preprocessor_inputs)
+            .predict_bound(&self.preprocessor_inputs)
             .map_err(failed)?;
         let encoded = if policy.encoder_full {
             let features = mel.array(self.spec.mel).map_err(failed)?;
@@ -486,12 +484,12 @@ impl Runtime {
                 .ok_or_else(|| failed("mel has no dimensions"))?;
             let frames = i32::try_from(frames).map_err(|_| failed("mel length overflow"))?;
             self.full_mel_length.write_i32(&[frames]).map_err(failed)?;
-            let inputs = Features::new(&[
-                (self.spec.mel, &features),
-                ("mel_length", &self.full_mel_length),
-            ])
-            .map_err(failed)?;
-            self.encoder.predict(&inputs).map_err(failed)?
+            self.encoder
+                .predict_borrowed(&[
+                    (self.spec.mel, &features),
+                    ("mel_length", &self.full_mel_length),
+                ])
+                .map_err(failed)?
         } else {
             self.encoder.predict(&mel).map_err(failed)?
         };
@@ -542,59 +540,75 @@ pub(crate) struct Prediction {
 
 /// Inputs of the prediction (decoder) and joint networks.
 pub(crate) struct StepIo {
-    pub targets: Array,
-    pub hidden_in: Array,
-    pub cell_in: Array,
-    pub decoder_inputs: Features,
-    pub encoder_step: Array,
-    pub decoder_step: Array,
-    pub joint_inputs: Features,
+    decoder_inputs: BoundInputs,
+    joint_inputs: BoundInputs,
 }
 
 impl StepIo {
+    const TARGETS: usize = 0;
+    const HIDDEN_IN: usize = 2;
+    const CELL_IN: usize = 3;
+    const ENCODER_STEP: usize = 0;
+    const DECODER_STEP: usize = 1;
+
     pub(crate) fn new() -> Result<StepIo, String> {
         let targets = Array::zeros_i32(&[1, 1])?;
-        let target_length = Array::zeros_i32(&[1])?;
+        let mut target_length = Array::zeros_i32(&[1])?;
         target_length.write_i32(&[1])?;
         let state = [DECODER_LAYERS, 1, DECODER_HIDDEN];
         let hidden_in = Array::zeros_f32(&state)?;
         let cell_in = Array::zeros_f32(&state)?;
-        let decoder_inputs = Features::new(&[
-            ("targets", &targets),
-            ("target_length", &target_length),
-            ("h_in", &hidden_in),
-            ("c_in", &cell_in),
+        let decoder_inputs = BoundInputs::new(vec![
+            ("targets", targets),
+            ("target_length", target_length),
+            ("h_in", hidden_in),
+            ("c_in", cell_in),
         ])?;
         let encoder_step = Array::zeros_f32(&[1, ENCODER_HIDDEN, 1])?;
         let decoder_step = Array::zeros_f32(&[1, DECODER_HIDDEN, 1])?;
-        let joint_inputs = Features::new(&[
-            ("encoder_step", &encoder_step),
-            ("decoder_step", &decoder_step),
+        let joint_inputs = BoundInputs::new(vec![
+            ("encoder_step", encoder_step),
+            ("decoder_step", decoder_step),
         ])?;
         Ok(StepIo {
-            targets,
-            hidden_in,
-            cell_in,
             decoder_inputs,
-            encoder_step,
-            decoder_step,
             joint_inputs,
         })
     }
 
+    pub(crate) fn write_encoder_step(&mut self, values: &[f32]) -> Result<(), String> {
+        self.joint_inputs.write_f32(Self::ENCODER_STEP, values)
+    }
+
+    pub(crate) fn write_decoder_step(&mut self, values: &[f32]) -> Result<(), String> {
+        self.joint_inputs.write_f32(Self::DECODER_STEP, values)
+    }
+
+    pub(crate) fn joint_inputs(&self) -> &BoundInputs {
+        &self.joint_inputs
+    }
+
     /// Runs the prediction network on `token` from state `(hidden, cell)`.
     pub(crate) fn predict(
-        &self,
+        &mut self,
         decoder: &Model,
         token: usize,
         hidden: &[f32],
         cell: &[f32],
     ) -> Result<Prediction, AsrError> {
         let token = i32::try_from(token).map_err(|_| failed("token id overflow"))?;
-        self.targets.write_i32(&[token]).map_err(failed)?;
-        self.hidden_in.write_f32(hidden).map_err(failed)?;
-        self.cell_in.write_f32(cell).map_err(failed)?;
-        let output = decoder.predict(&self.decoder_inputs).map_err(failed)?;
+        self.decoder_inputs
+            .write_i32(Self::TARGETS, &[token])
+            .map_err(failed)?;
+        self.decoder_inputs
+            .write_f32(Self::HIDDEN_IN, hidden)
+            .map_err(failed)?;
+        self.decoder_inputs
+            .write_f32(Self::CELL_IN, cell)
+            .map_err(failed)?;
+        let output = decoder
+            .predict_bound(&self.decoder_inputs)
+            .map_err(failed)?;
         let read = |name: &str, len: usize| -> Result<Vec<f32>, AsrError> {
             let values = output
                 .array(name)
@@ -640,8 +654,7 @@ impl Transducer for CoreMlTransducer<'_> {
         self.hidden = prediction.hidden;
         self.cell = prediction.cell;
         self.io
-            .decoder_step
-            .write_f32(&prediction.output)
+            .write_decoder_step(&prediction.output)
             .map_err(failed)
     }
 
@@ -650,8 +663,11 @@ impl Transducer for CoreMlTransducer<'_> {
             .frames
             .frame(frame)
             .ok_or_else(|| failed(format!("encoder frame {frame} out of range")))?;
-        self.io.encoder_step.write_f32(encoder).map_err(failed)?;
-        let output = self.joint.predict(&self.io.joint_inputs).map_err(failed)?;
+        self.io.write_encoder_step(encoder).map_err(failed)?;
+        let output = self
+            .joint
+            .predict_bound(self.io.joint_inputs())
+            .map_err(failed)?;
         let token = output
             .array("token_id")
             .and_then(|a| a.first_i32())

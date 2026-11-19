@@ -63,7 +63,10 @@ pub(crate) fn offsets<'a>(
     let count = if shape.is_empty() {
         0
     } else {
-        shape.iter().product()
+        shape
+            .iter()
+            .try_fold(1usize, |acc, &dim| acc.checked_mul(dim))
+            .unwrap_or(0)
     };
     let mut index = vec![0usize; shape.len()];
     (0..count).map(move |n| {
@@ -76,7 +79,9 @@ pub(crate) fn offsets<'a>(
                 index[axis] = 0;
             }
         }
-        index.iter().zip(strides).map(|(i, s)| i * s).sum()
+        index.iter().zip(strides).fold(0usize, |acc, (&i, &s)| {
+            acc.saturating_add(i.saturating_mul(s))
+        })
     })
 }
 
@@ -91,9 +96,18 @@ impl EncoderFrames {
     /// Reads `[1, hidden, time]` or `[1, time, hidden]` output, keeping the
     /// first `valid` frames.
     pub(crate) fn new(tensor: &Tensor, hidden: usize, valid: usize) -> Result<Self, String> {
+        if hidden == 0 {
+            return Err("encoder hidden size must be positive".to_owned());
+        }
         let [batch, a, b] = tensor.shape[..] else {
             return Err(format!("encoder output has shape {:?}", tensor.shape));
         };
+        if tensor.strides.len() != 3 {
+            return Err(format!(
+                "encoder output strides {:?} do not match shape {:?}",
+                tensor.strides, tensor.shape
+            ));
+        }
         if batch != 1 {
             return Err(format!("encoder output has batch {batch}"));
         }
@@ -104,10 +118,20 @@ impl EncoderFrames {
         };
         let frames = valid.min(tensor.shape[time_axis]);
         let (time_stride, hidden_stride) = (tensor.strides[time_axis], tensor.strides[hidden_axis]);
-        let mut data = Vec::with_capacity(frames * hidden);
+        let total = frames
+            .checked_mul(hidden)
+            .ok_or_else(|| "encoder output size overflow".to_owned())?;
+        let mut data = Vec::with_capacity(total);
         for frame in 0..frames {
+            let base = frame
+                .checked_mul(time_stride)
+                .ok_or_else(|| "encoder output stride overflow".to_owned())?;
             for h in 0..hidden {
-                let value = tensor.data.get(frame * time_stride + h * hidden_stride);
+                let offset = h
+                    .checked_mul(hidden_stride)
+                    .and_then(|o| base.checked_add(o))
+                    .ok_or_else(|| "encoder output stride overflow".to_owned())?;
+                let value = tensor.data.get(offset);
                 data.push(
                     value
                         .copied()
@@ -219,5 +243,29 @@ mod tests {
         assert_eq!(frames.frame(0), Some(&[1.0, 4.0][..]));
         assert_eq!(frames.frame(1), Some(&[2.0, 5.0][..]));
         assert_eq!(frames.frame(2), None);
+    }
+
+    #[test]
+    fn encoder_frames_rejects_mismatched_strides_zero_hidden_and_overflow() {
+        let bad_strides = Tensor {
+            data: vec![1.0; 6],
+            shape: vec![1, 2, 3],
+            strides: vec![6, 3],
+        };
+        assert!(EncoderFrames::new(&bad_strides, 2, 2).is_err());
+
+        let valid_tensor = Tensor {
+            data: vec![1.0; 6],
+            shape: vec![1, 2, 3],
+            strides: vec![6, 3, 1],
+        };
+        assert!(EncoderFrames::new(&valid_tensor, 0, 2).is_err());
+
+        let overflow = Tensor {
+            data: vec![1.0; 4],
+            shape: vec![1, 2, 2],
+            strides: vec![1, 1, usize::MAX],
+        };
+        assert!(EncoderFrames::new(&overflow, 2, 2).is_err());
     }
 }

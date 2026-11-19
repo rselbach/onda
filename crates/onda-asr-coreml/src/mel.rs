@@ -69,7 +69,11 @@ impl MelExtractor {
             .iter_mut()
             .enumerate()
         {
-            let sample = audio.get(n).copied().unwrap_or(0.0);
+            let sample = audio
+                .get(n)
+                .copied()
+                .filter(|s| s.is_finite())
+                .unwrap_or(0.0);
             *slot = sample - PREEMPHASIS * previous;
             previous = sample;
         }
@@ -325,5 +329,17 @@ mod tests {
                 "bin {k}: {got} vs {want}"
             );
         }
+    }
+
+    #[test]
+    fn non_finite_audio_samples_are_sanitized() {
+        let extractor = MelExtractor::new(1_600);
+        let mut audio = vec![0.1f32; 800];
+        audio[0] = f32::NAN;
+        audio[123] = f32::INFINITY;
+        audio[456] = f32::NEG_INFINITY;
+        let (mel, valid) = extractor.features(&audio);
+        assert_eq!(valid, 5);
+        assert!(mel.iter().all(|v| v.is_finite()));
     }
 }

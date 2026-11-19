@@ -21,7 +21,7 @@ use onda_domain::preview::{
     UNIFIED_LOOKAHEAD_FRAMES, UnifiedStream,
 };
 
-use crate::coreml::{Array, ComputeUnits, Features, Model};
+use crate::coreml::{Array, BoundInputs, ComputeUnits, Model};
 use crate::engine::{Prediction, StepIo, failed, load_failed, load_model, zero_state};
 use crate::mel::{MelExtractor, N_MELS};
 use crate::tensor::EncoderFrames;
@@ -349,9 +349,7 @@ struct Loaded {
     encoder: Model,
     decoder: Model,
     joint: Model,
-    mel_input: Array,
-    mel_length: Array,
-    encoder_inputs: Features,
+    encoder_inputs: BoundInputs,
     steps: StepIo,
     session: Session,
 }
@@ -377,13 +375,13 @@ impl Loaded {
         let vocab =
             Vocabulary::parse(&json, BLANK).map_err(|error| load_failed(VOCABULARY, error))?;
         let mel = MelExtractor::new(WINDOW_SAMPLES);
-        let buffers = || -> Result<(Array, Array, Features, StepIo), String> {
+        let buffers = || -> Result<(BoundInputs, StepIo), String> {
             let mel_input = Array::zeros_f32(&[1, N_MELS, mel.total_frames()])?;
             let mel_length = Array::zeros_i32(&[1])?;
-            let inputs = Features::new(&[("mel", &mel_input), ("mel_length", &mel_length)])?;
-            Ok((mel_input, mel_length, inputs, StepIo::new()?))
+            let inputs = BoundInputs::new(vec![("mel", mel_input), ("mel_length", mel_length)])?;
+            Ok((inputs, StepIo::new()?))
         };
-        let (mel_input, mel_length, encoder_inputs, steps) =
+        let (encoder_inputs, steps) =
             buffers().map_err(|error| load_failed("input buffers", error))?;
         progress(LoadProgress {
             status: String::new(),
@@ -395,8 +393,6 @@ impl Loaded {
             encoder,
             decoder,
             joint,
-            mel_input,
-            mel_length,
             encoder_inputs,
             steps,
             session: Session::new(),
@@ -409,10 +405,13 @@ impl Loaded {
             .get(plan.start..plan.end)
             .ok_or_else(|| failed("streaming window outside the audio"))?;
         let (mel, valid) = self.mel.features(window);
-        self.mel_input.write_f32(&mel).map_err(failed)?;
+        self.encoder_inputs.write_f32(0, &mel).map_err(failed)?;
         let valid = i32::try_from(valid).map_err(|_| failed("mel length overflow"))?;
-        self.mel_length.write_i32(&[valid]).map_err(failed)?;
-        let encoded = self.encoder.predict(&self.encoder_inputs).map_err(failed)?;
+        self.encoder_inputs.write_i32(1, &[valid]).map_err(failed)?;
+        let encoded = self
+            .encoder
+            .predict_bound(&self.encoder_inputs)
+            .map_err(failed)?;
         let length = encoded
             .array("encoder_length")
             .and_then(|a| a.first_i32())
@@ -434,7 +433,7 @@ impl Loaded {
             decoder: &self.decoder,
             joint: &self.joint,
             frames: &frames,
-            io: &self.steps,
+            io: &mut self.steps,
         };
         let tokens = decode_frames(&mut rnnt, &mut self.session.decoder, range)?;
         self.session.append(&self.vocab, &tokens);
@@ -446,7 +445,7 @@ struct CoreMlRnnt<'a> {
     decoder: &'a Model,
     joint: &'a Model,
     frames: &'a EncoderFrames,
-    io: &'a StepIo,
+    io: &'a mut StepIo,
 }
 
 impl Rnnt for CoreMlRnnt<'_> {
@@ -464,9 +463,12 @@ impl Rnnt for CoreMlRnnt<'_> {
             .frames
             .frame(frame)
             .ok_or_else(|| failed(format!("encoder frame {frame} out of range")))?;
-        self.io.encoder_step.write_f32(encoder).map_err(failed)?;
-        self.io.decoder_step.write_f32(prediction).map_err(failed)?;
-        let output = self.joint.predict(&self.io.joint_inputs).map_err(failed)?;
+        self.io.write_encoder_step(encoder).map_err(failed)?;
+        self.io.write_decoder_step(prediction).map_err(failed)?;
+        let output = self
+            .joint
+            .predict_bound(self.io.joint_inputs())
+            .map_err(failed)?;
         let token = output
             .array("token_id")
             .and_then(|a| a.first_i32())

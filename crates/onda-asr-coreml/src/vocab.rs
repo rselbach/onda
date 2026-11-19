@@ -11,6 +11,8 @@ pub(crate) const WORD_BOUNDARY: char = '▁';
 pub(crate) const UNKNOWN: &str = "<unk>";
 
 /// Token pieces indexed by id.
+const MAX_VOCAB_SIZE: usize = 262_144;
+
 #[derive(Debug)]
 pub(crate) struct Vocabulary {
     pieces: Vec<String>,
@@ -47,12 +49,18 @@ impl Vocabulary {
             }
             _ => return Err("vocabulary has an unexpected format".to_owned()),
         }
-        let len = entries
-            .iter()
-            .map(|(id, _)| id + 1)
-            .max()
-            .unwrap_or(0)
-            .max(blank);
+        let mut len = blank;
+        for (id, _) in &entries {
+            let needed = id
+                .checked_add(1)
+                .ok_or_else(|| "vocabulary token id overflow".to_owned())?;
+            len = len.max(needed);
+        }
+        if len > MAX_VOCAB_SIZE {
+            return Err(format!(
+                "vocabulary size {len} exceeds maximum {MAX_VOCAB_SIZE}"
+            ));
+        }
         let mut pieces: Vec<Option<String>> = vec![None; len];
         for (id, piece) in entries {
             pieces[id] = Some(piece);
@@ -307,6 +315,12 @@ pub(crate) mod tests {
                 name: "not a vocabulary",
                 json: r#""Señor Chang""#,
                 blank: 1,
+                want: Err(()),
+            },
+            Case {
+                name: "absurdly large id is rejected cleanly",
+                json: r#"{"999999999999": "▁Troy"}"#,
+                blank: 0,
                 want: Err(()),
             },
         ];
