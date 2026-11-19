@@ -49,6 +49,12 @@ pub fn keycode(code: &str) -> Option<u8> {
     u8::try_from(key + XKB_OFFSET).ok()
 }
 
+/// Every W3C `KeyboardEvent.code` in the table.
+#[cfg(test)]
+pub fn codes() -> impl Iterator<Item = &'static str> {
+    KEYS.iter().map(|(_, code)| *code)
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;

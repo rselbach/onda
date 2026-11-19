@@ -273,7 +273,10 @@ impl Window {
             Command::Show => self.present(),
             Command::MenuWillOpen => app.menu_will_open(),
             Command::FixPermissions => app.fix_permissions(),
-            Command::ToggleDictation => app.toggle_dictation_from_menu(),
+            Command::ToggleDictation => {
+                self.core.output.held.update(false);
+                app.toggle_dictation_from_menu();
+            }
             Command::CancelDictation => app.cancel_dictation(),
             Command::DeliverLastTranscript => app.deliver_last_transcript(),
             Command::DeliverTranscript(text) => app.deliver_transcript(text),

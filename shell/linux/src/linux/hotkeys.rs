@@ -40,14 +40,20 @@ impl HeldKeys {
             match wait {
                 Some(wait) => std::thread::sleep(wait.min(Duration::from_millis(20))),
                 None => {
-                    anyhow::ensure!(
-                        !state.is_some_and(|(held, _)| held),
-                        "shortcut keys are still held"
-                    );
+                    if state.is_some_and(|(held, _)| held) {
+                        tracing::warn!("shortcut release event was missed; clearing held state");
+                        self.update(false);
+                    }
                     return Ok(());
                 }
             }
-            anyhow::ensure!(Instant::now() < deadline, "shortcut keys did not settle");
+            if Instant::now() >= deadline {
+                if state.is_some_and(|(held, _)| held) {
+                    tracing::warn!("shortcut release event was missed; clearing held state");
+                    self.update(false);
+                }
+                return Ok(());
+            }
         }
     }
 }
@@ -70,7 +76,8 @@ impl std::fmt::Display for Taken {
 impl std::error::Error for Taken {}
 
 pub struct Hotkeys {
-    sender: watch::Sender<Option<Shortcut>>,
+    sender: Option<watch::Sender<Option<Shortcut>>>,
+    worker: Option<std::thread::JoinHandle<()>>,
     events: async_channel::Sender<Message>,
     // held from a session's start to its end, on X11 only
     escape: Mutex<Option<escape::Claim>>,
@@ -85,7 +92,7 @@ impl Hotkeys {
         let (sender, mut changes) = watch::channel(None);
         let runtime = runtime.clone();
         let hotkey_events = events.clone();
-        std::thread::spawn(move || {
+        let worker = std::thread::spawn(move || {
             let events = hotkey_events;
             loop {
                 let current = changes.borrow_and_update().clone();
@@ -126,9 +133,21 @@ impl Hotkeys {
             }
         });
         Self {
-            sender,
+            sender: Some(sender),
+            worker: Some(worker),
             events,
             escape: Mutex::default(),
+        }
+    }
+}
+
+impl Drop for Hotkeys {
+    fn drop(&mut self) {
+        self.sender.take();
+        if let Some(worker) = self.worker.take()
+            && worker.thread().id() != std::thread::current().id()
+        {
+            let _ = worker.join();
         }
     }
 }
@@ -139,11 +158,15 @@ impl HotkeySource for Hotkeys {
     // the core later as `Message::ShortcutUnavailable`.
     fn register(&self, shortcut: &Shortcut) -> Result<(), i32> {
         self.sender
+            .as_ref()
+            .ok_or(NO_STATUS)?
             .send(Some(shortcut.clone()))
             .map_err(|_| NO_STATUS)
     }
     fn unregister(&self) {
-        self.sender.send_replace(None);
+        if let Some(sender) = &self.sender {
+            sender.send_replace(None);
+        }
     }
     fn reenable_stream(&self) {}
     fn register_cancel(&self, modifiers: &[ModifierSet]) -> Result<(), String> {
@@ -171,10 +194,105 @@ impl HotkeySource for Hotkeys {
         GlobeKeyAction::Unknown
     }
     fn open_keyboard_settings(&self) {
-        if let Err(error) = super::process::launch("gnome-control-center", &["keyboard"]) {
-            tracing::debug!(%error);
+        const TOOLS: &[(&str, &[&str])] = &[
+            ("gnome-control-center", &["keyboard"]),
+            ("systemsettings", &["kcm_keys"]),
+            ("xfce4-keyboard-settings", &[]),
+            ("cinnamon-settings", &["keyboard"]),
+        ];
+        for (program, args) in TOOLS {
+            if !super::process::available(program) {
+                continue;
+            }
+            if let Err(error) = super::process::launch(program, args) {
+                tracing::warn!(%error, program, "could not open desktop keyboard settings");
+            }
+            return;
         }
+        tracing::warn!("no supported desktop keyboard settings tool was found");
     }
+}
+
+fn xkb_key_name(code: &str) -> anyhow::Result<String> {
+    if let Some(letter) = code.strip_prefix("Key")
+        && letter.len() == 1
+        && letter.bytes().all(|b| b.is_ascii_uppercase())
+    {
+        return Ok(letter.to_ascii_lowercase());
+    }
+    if let Some(digit) = code.strip_prefix("Digit")
+        && digit.len() == 1
+        && digit.bytes().all(|b| b.is_ascii_digit())
+    {
+        return Ok(digit.to_owned());
+    }
+    if let Some(digit) = code.strip_prefix("Numpad")
+        && digit.len() == 1
+        && digit.bytes().all(|b| b.is_ascii_digit())
+    {
+        return Ok(format!("KP_{digit}"));
+    }
+    if let Some(num) = code.strip_prefix('F')
+        && num.parse::<u8>().is_ok_and(|n| (1..=24).contains(&n))
+        && !num.starts_with('0')
+    {
+        return Ok(code.to_owned());
+    }
+    let mapped = match code {
+        "Space" => "space",
+        "Enter" => "Return",
+        "Backspace" => "BackSpace",
+        "Tab" => "Tab",
+        "Escape" => "Escape",
+        "Delete" => "Delete",
+        "Insert" => "Insert",
+        "Home" => "Home",
+        "End" => "End",
+        "PageUp" => "Page_Up",
+        "PageDown" => "Page_Down",
+        "ArrowLeft" => "Left",
+        "ArrowRight" => "Right",
+        "ArrowUp" => "Up",
+        "ArrowDown" => "Down",
+        "PrintScreen" => "Print",
+        "ContextMenu" => "Menu",
+        "Pause" => "Pause",
+        "CapsLock" => "Caps_Lock",
+        "NumLock" => "Num_Lock",
+        "ScrollLock" => "Scroll_Lock",
+        "Minus" => "minus",
+        "Equal" => "equal",
+        "BracketLeft" => "bracketleft",
+        "BracketRight" => "bracketright",
+        "Semicolon" => "semicolon",
+        "Quote" => "apostrophe",
+        "Backquote" => "grave",
+        "Backslash" => "backslash",
+        "Comma" => "comma",
+        "Period" => "period",
+        "Slash" => "slash",
+        "IntlBackslash" => "less",
+        "IntlRo" => "kana_RO",
+        "IntlYen" => "yen",
+        "NumpadAdd" => "KP_Add",
+        "NumpadSubtract" => "KP_Subtract",
+        "NumpadMultiply" => "KP_Multiply",
+        "NumpadDivide" => "KP_Divide",
+        "NumpadDecimal" => "KP_Decimal",
+        "NumpadEnter" => "KP_Enter",
+        "NumpadEqual" => "KP_Equal",
+        "NumpadComma" => "KP_Separator",
+        "ControlLeft" => "Control_L",
+        "ControlRight" => "Control_R",
+        "ShiftLeft" => "Shift_L",
+        "ShiftRight" => "Shift_R",
+        "AltLeft" => "Alt_L",
+        "AltRight" => "Alt_R",
+        "MetaLeft" => "Super_L",
+        "MetaRight" => "Super_R",
+        other => anyhow::bail!("{other} has no desktop shortcut key name"),
+    };
+    Ok(mapped.to_owned())
 }
 
 pub fn trigger(shortcut: &Shortcut) -> anyhow::Result<String> {
@@ -182,20 +300,7 @@ pub fn trigger(shortcut: &Shortcut) -> anyhow::Result<String> {
         !shortcut.is_lone_modifier(),
         "choose a key with Ctrl, Alt or Super"
     );
-    let key = shortcut.key().as_str();
-    let key = match key {
-        "Space" => "space",
-        "Enter" => "Return",
-        "Backspace" => "BackSpace",
-        "ArrowLeft" => "Left",
-        "ArrowRight" => "Right",
-        "ArrowUp" => "Up",
-        "ArrowDown" => "Down",
-        other => other
-            .strip_prefix("Key")
-            .or_else(|| other.strip_prefix("Digit"))
-            .unwrap_or(other),
-    };
+    let key = xkb_key_name(shortcut.key().as_str())?;
     let mut parts = Vec::new();
     for (modifier, name) in [
         (Modifier::Control, "CTRL"),
@@ -204,7 +309,7 @@ pub fn trigger(shortcut: &Shortcut) -> anyhow::Result<String> {
         (Modifier::Meta, "LOGO"),
     ] {
         if shortcut.modifiers().contains(modifier) {
-            parts.push(name);
+            parts.push(name.to_owned());
         }
     }
     parts.push(key);
@@ -431,9 +536,13 @@ fn wait_for_release(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    use onda_domain::hotkey::{KeyCode, Modifier, ModifierSet, Shortcut};
     use onda_domain::platform::Platform;
 
-    use super::trigger;
+    use super::{HeldKeys, keys, trigger, xkb_key_name};
 
     #[test]
     fn every_preset_linux_offers_has_a_trigger() {
@@ -443,5 +552,57 @@ mod tests {
             .map(|preset| trigger(&preset.shortcut()).expect("a combo the desktop can bind"))
             .collect();
         assert_eq!(got, ["CTRL+ALT+space", "ALT+LOGO+space", "CTRL+LOGO+space"]);
+    }
+
+    #[test]
+    fn every_known_w3c_code_maps_to_an_xkb_keysym() {
+        for code in keys::codes() {
+            assert!(xkb_key_name(code).is_ok(), "{code} missing XKB mapping");
+        }
+        assert!(xkb_key_name("Unidentified").is_err());
+
+        let modifiers = ModifierSet::EMPTY.with(Modifier::Control);
+        let cases = [
+            ("KeyA", "CTRL+a"),
+            ("Digit9", "CTRL+9"),
+            ("Minus", "CTRL+minus"),
+            ("Equal", "CTRL+equal"),
+            ("BracketLeft", "CTRL+bracketleft"),
+            ("BracketRight", "CTRL+bracketright"),
+            ("Semicolon", "CTRL+semicolon"),
+            ("Quote", "CTRL+apostrophe"),
+            ("Backquote", "CTRL+grave"),
+            ("Backslash", "CTRL+backslash"),
+            ("Comma", "CTRL+comma"),
+            ("Period", "CTRL+period"),
+            ("Slash", "CTRL+slash"),
+            ("PageUp", "CTRL+Page_Up"),
+            ("PageDown", "CTRL+Page_Down"),
+            ("PrintScreen", "CTRL+Print"),
+            ("ContextMenu", "CTRL+Menu"),
+            ("CapsLock", "CTRL+Caps_Lock"),
+            ("NumLock", "CTRL+Num_Lock"),
+            ("ScrollLock", "CTRL+Scroll_Lock"),
+            ("Numpad0", "CTRL+KP_0"),
+            ("NumpadAdd", "CTRL+KP_Add"),
+            ("NumpadEnter", "CTRL+KP_Enter"),
+            ("F24", "CTRL+F24"),
+        ];
+        for (code, want) in cases {
+            let parsed = KeyCode::parse(code).expect("valid code");
+            let shortcut = Shortcut::new(parsed, modifiers).expect("valid combo");
+            assert_eq!(trigger(&shortcut).expect("mapped trigger"), want, "{code}");
+        }
+    }
+
+    #[test]
+    fn expired_held_state_clears_instead_of_locking_out_paste() {
+        let past = Instant::now()
+            .checked_sub(Duration::from_secs(3))
+            .unwrap_or_else(Instant::now);
+        let held = HeldKeys(Mutex::new(Some((true, past))));
+        held.settle().expect("stale held state should clear");
+        let guard = held.0.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(matches!(*guard, Some((false, _))));
     }
 }

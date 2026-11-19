@@ -145,6 +145,7 @@ impl Page {
         let weak = Rc::downgrade(owner);
         self.record.connect_clicked(move |_| {
             if let Some(owner) = weak.upgrade() {
+                owner.core.output.held.update(false);
                 owner.core.app.toggle_dictation_from_menu();
             }
         });
