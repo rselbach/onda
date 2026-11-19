@@ -148,8 +148,7 @@ impl HistoryStore {
             let Some(retention) = policy() else {
                 return Ok(false);
             };
-            self.advance_generation(state, lock)?;
-            self.enforce_retention(state, retention, now, None)
+            self.enforce_retention(state, Some(lock), retention, now, None)
         })
     }
 
@@ -330,7 +329,8 @@ impl HistoryStore {
             "saved history entry"
         );
 
-        if let Err(err) = self.enforce_retention(state, preferences.retention, now, Some(entry.id))
+        if let Err(err) =
+            self.enforce_retention(state, None, preferences.retention, now, Some(entry.id))
         {
             tracing::error!(error = %err, "could not apply history retention after save");
         }
@@ -379,18 +379,27 @@ impl HistoryStore {
     fn enforce_retention(
         &self,
         state: &mut State,
+        lock: Option<&mut File>,
         retention: HistoryRetention,
         now: Timestamp,
         exempt: Option<Uuid>,
     ) -> Result<bool, HistoryError> {
-        let State {
-            entries, changed, ..
-        } = state;
-        let entries = self.load_once(entries)?;
-        let plan = plan_retention(entries, now, retention, exempt);
+        let plan = {
+            let entries = self.load_once(&mut state.entries)?;
+            plan_retention(entries, now, retention, exempt)
+        };
         if plan.is_noop() {
             return Ok(false);
         }
+        if let Some(lock) = lock {
+            self.advance_generation(state, lock)?;
+        }
+        let State {
+            entries, changed, ..
+        } = state;
+        let Some(entries) = entries.as_mut() else {
+            return Ok(false);
+        };
         for doomed in &plan.delete {
             self.remove_entry_folder(doomed)?;
             entries.retain(|entry| entry.id != doomed.id);
@@ -455,7 +464,13 @@ impl HistoryStore {
                         && suffix.bytes().all(|byte| byte.is_ascii_alphanumeric())
                 })
             {
-                remove_descendant(&self.directory, &path)?;
+                if let Err(err) = remove_descendant(&self.directory, &path) {
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %err,
+                        "could not remove leftover history staging folder"
+                    );
+                }
                 continue;
             }
             if !is_dir || name.starts_with('.') {

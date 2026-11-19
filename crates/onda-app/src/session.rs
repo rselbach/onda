@@ -505,6 +505,8 @@ impl Actor {
                 self.shut_down(done);
                 return;
             }
+            let overlay_only = matches!(msg, Msg::Audio(AudioSignal::Level(_)) | Msg::ClockTick);
+            let had_notice = self.overlay.has_notice();
             self.handle(msg);
             // a failed or aborted start returns to idle without go_idle
             if let Phase::Idle = self.phase {
@@ -521,7 +523,11 @@ impl Actor {
                     press.state.send_replace(PressState::Done(result));
                 }
             }
-            self.publish();
+            if overlay_only && self.overlay.has_notice() == had_notice {
+                self.publish_overlay();
+            } else {
+                self.publish();
+            }
         }
     }
 
@@ -2018,6 +2024,28 @@ impl Actor {
 
     // --- views (ARCH-5: complete view models, emitted when they change) ---
 
+    fn recording_clock(&self) -> Option<ClockDisplay> {
+        let Phase::Recording(recording) = &self.phase else {
+            return None;
+        };
+        let clock = RecordingClock::at(
+            recording.started_at.saturating_duration_since(self.origin),
+            mono(self.origin),
+        );
+        Some(ClockDisplay {
+            text: clock.text,
+            warning: clock.is_warning,
+        })
+    }
+
+    fn publish_overlay(&mut self) {
+        let overlay = self.overlay.view(self.recording_clock().as_ref());
+        if self.published.overlay.as_ref() != Some(&overlay) {
+            self.events.emit(Event::OverlayChanged(overlay.clone()));
+            self.published.overlay = Some(overlay);
+        }
+    }
+
     fn publish(&mut self) {
         let phase = self.session_phase();
         let selected = self.settings.selected_model.as_str();
@@ -2036,20 +2064,6 @@ impl Actor {
             self.ports.platform.privacy_naming(),
         );
         let menu = self.menu(status, missing, phase);
-        let clock = match &self.phase {
-            Phase::Recording(recording) => {
-                let clock = RecordingClock::at(
-                    recording.started_at.saturating_duration_since(self.origin),
-                    mono(self.origin),
-                );
-                Some(ClockDisplay {
-                    text: clock.text,
-                    warning: clock.is_warning,
-                })
-            }
-            Phase::Idle | Phase::Starting(_) | Phase::Aborting(_) | Phase::Transcribing(_) => None,
-        };
-        let overlay = self.overlay.view(clock.as_ref());
         let download = self.download_overlay.apply(
             &non_dictation,
             phase != SessionPhase::Idle,
@@ -2063,10 +2077,7 @@ impl Actor {
             self.events.emit(Event::MenuChanged(Box::new(menu.clone())));
             self.published.menu = Some(menu);
         }
-        if self.published.overlay.as_ref() != Some(&overlay) {
-            self.events.emit(Event::OverlayChanged(overlay.clone()));
-            self.published.overlay = Some(overlay);
-        }
+        self.publish_overlay();
         let hotkey = self.hotkey_view();
         if self.published.hotkey.as_ref() != Some(&hotkey) {
             self.events.emit(Event::HotkeyChanged(hotkey.clone()));

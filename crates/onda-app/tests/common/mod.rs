@@ -798,6 +798,7 @@ pub struct FakeHistory {
     pub hold_entries: Mutex<Option<Arc<Hold>>>,
     /// Holds the next menu read after it took its snapshot.
     pub hold_recent: Mutex<Option<Arc<Hold>>>,
+    pub entries_reads: AtomicUsize,
     /// What page reads fail with.
     pub entries_error: Mutex<Option<String>>,
     pub fail: AtomicBool,
@@ -850,6 +851,7 @@ impl HistorySink for FakeHistory {
     }
 
     fn entries(&self) -> Result<Vec<HistoryEntry>, String> {
+        self.entries_reads.fetch_add(1, Ordering::SeqCst);
         let entries = match lock(&self.entries_error).clone() {
             Some(error) => Err(error),
             None => Ok(lock(&self.stored).clone()),
@@ -1353,6 +1355,7 @@ impl Harness {
             hold_save: Mutex::default(),
             hold_entries: Mutex::default(),
             hold_recent: Mutex::default(),
+            entries_reads: AtomicUsize::default(),
             entries_error: Mutex::default(),
             fail: AtomicBool::default(),
         });

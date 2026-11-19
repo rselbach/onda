@@ -165,6 +165,7 @@ pub(crate) enum UiMsg {
     HistoryLoaded {
         generation: u64,
         read: u64,
+        retained: Result<bool, String>,
         result: Result<Vec<onda_domain::history::HistoryEntry>, String>,
     },
     HistoryOpDone(Result<(), String>),
@@ -461,8 +462,9 @@ impl Actor {
             UiMsg::HistoryLoaded {
                 generation,
                 read,
+                retained,
                 result,
-            } => self.history_loaded(generation, read, result),
+            } => self.history_loaded(generation, read, retained, result),
             UiMsg::HistoryOpDone(result) => self.history_op_done(result),
             UiMsg::HistoryCopied {
                 id,

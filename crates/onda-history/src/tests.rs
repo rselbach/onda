@@ -1032,3 +1032,41 @@ fn only_finished_entries_are_visible_in_the_history_directory() {
     assert_eq!(ids(&f.reopen().entries().unwrap()), [1]);
     assert!(destination.join(AUDIO_FILENAME).is_file());
 }
+
+#[test]
+fn noop_retention_does_not_advance_lock_generation() {
+    let f = Fixture::new();
+    f.save(1, DAY, false, HistoryRetention::Month);
+    let lock_path = f.history.with_added_extension("lock");
+    let before = std::fs::read(&lock_path).expect("read lock before");
+
+    let changed = f
+        .store
+        .apply_retention(|| Some(HistoryRetention::Month), at(NOW))
+        .expect("noop retention");
+    assert!(!changed);
+
+    let after = std::fs::read(&lock_path).expect("read lock after");
+    assert_eq!(
+        after, before,
+        "noop retention must not bump lock generation"
+    );
+}
+
+#[test]
+fn undeletable_staging_folder_does_not_abort_history_load() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let f = Fixture::new();
+    f.seed(1, DAY, None);
+    let staging = f.history.join(".onda-pending-0123456789abcdef");
+    std::fs::create_dir_all(&staging).unwrap();
+    std::fs::write(staging.join("partial"), b"tmp").unwrap();
+    std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+    let result = f.reopen().entries();
+    let _ = std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o755));
+
+    let loaded = result.expect("load skips undeletable staging folder");
+    assert_eq!(ids(&loaded), [1]);
+}

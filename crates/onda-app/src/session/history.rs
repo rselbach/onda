@@ -51,7 +51,7 @@ struct ViewKey {
     enabled: bool,
     keep_audio: bool,
     retention: HistoryRetention,
-    dialog: Option<String>,
+    dialog: Option<Confirmation>,
     error: Option<String>,
     copied: Option<Uuid>,
     today: Date,
@@ -157,24 +157,15 @@ impl Actor {
                 (retained, history.entries())
             })
             .await;
-            let (retained, entries) = match loaded {
+            let (retained, result) = match loaded {
                 Ok(loaded) => loaded,
                 Err(error) => (Ok(false), Err(error.to_string())),
             };
-            match retained {
-                Ok(false) => {}
-                // HIS-10: what retention removed leaves the menu too
-                Ok(true) => {
-                    let _ = messages.send(Msg::Ui(UiMsg::HistoryOpDone(Ok(()))));
-                }
-                Err(error) => {
-                    let _ = messages.send(Msg::Ui(UiMsg::HistoryOpDone(Err(error))));
-                }
-            }
             let _ = messages.send(Msg::Ui(UiMsg::HistoryLoaded {
                 generation,
                 read,
-                result: entries,
+                retained,
+                result,
             }));
         });
     }
@@ -183,16 +174,33 @@ impl Actor {
         &mut self,
         generation: u64,
         read: u64,
+        retained: Result<bool, String>,
         result: Result<Vec<HistoryEntry>, String>,
     ) {
-        if generation != self.ui.history.generation || read != self.ui.history.page_read {
+        let stale = generation != self.ui.history.generation || read != self.ui.history.page_read;
+        match retained {
+            Ok(false) => {}
+            // HIS-10: what retention removed leaves the menu too; bump
+            // generation so older menu/page reads cannot resurrect it,
+            // while keeping the post-retention entries read right after it.
+            Ok(true) => {
+                self.ui.history.generation += 1;
+                self.events.emit(Event::HistoryChanged);
+                self.refresh_recent();
+            }
+            Err(error) => {
+                tracing::error!(%error, "could not apply history retention");
+                self.ui.history.error = Some(error);
+            }
+        }
+        if stale {
             return;
         }
         match result {
             Ok(entries) => {
                 self.ui.history.entries = entries;
                 self.ui.history.entries_version += 1;
-                self.ui.history.entries_read = Some((generation, read));
+                self.ui.history.entries_read = Some((self.ui.history.generation, read));
             }
             Err(error) => {
                 tracing::error!(%error, "could not read history");
@@ -380,10 +388,7 @@ impl Actor {
             enabled: self.settings.history_enabled,
             keep_audio: self.settings.keep_audio,
             retention: self.settings.history_retention,
-            dialog: history
-                .dialog
-                .as_ref()
-                .map(|d| d.confirmation().title.clone()),
+            dialog: history.dialog.as_ref().map(|d| d.confirmation().clone()),
             error: history.error.clone(),
             copied: history.copied,
             today: now.to_zoned(tz.clone()).date(),

@@ -3647,6 +3647,7 @@ async fn his_10_his_16_retention_on_page_appear_refreshes_the_menu() {
     ];
     h.clear_events();
     let ops_before = lock(&h.history.ops).len();
+    let reads_before = h.history.entries_reads.load(Ordering::SeqCst);
     h.app.page_appeared(MainWindowSection::History);
     sleep(10).await;
     assert_eq!(
@@ -3654,7 +3655,20 @@ async fn his_10_his_16_retention_on_page_appear_refreshes_the_menu() {
         ["retention Month".to_owned()],
         "the page applies retention as it appears (HIS-16)"
     );
+    assert_eq!(
+        h.history.entries_reads.load(Ordering::SeqCst) - reads_before,
+        1,
+        "retention refresh reuses the post-retention entries read without a second read"
+    );
     assert_eq!(h.count(|e| matches!(e, Event::HistoryChanged)), 1);
+    let HistoryContent::Sections { sections } = history(&h).content else {
+        panic!("expected history list on page appear");
+    };
+    assert_eq!(sections.len(), 1);
+    assert_eq!(
+        sections[0].rows[0].transcript.as_deref(),
+        Some("Britta's in the study group")
+    );
     let recent = h.menu().recent_transcripts.expect("recent transcripts");
     let titles: Vec<&str> = recent.items.iter().map(|i| i.title.as_str()).collect();
     assert_eq!(titles, vec!["Britta's in the study group"]);
