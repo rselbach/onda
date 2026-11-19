@@ -11,6 +11,8 @@
 //! never followed, so a 3xx cannot replay the transcript, app name, or key
 //! to another origin, and response bodies are read up to a size cap.
 
+use std::time::Duration;
+
 use onda_domain::cleanup::{
     ApiKey, CleanupError, CleanupModel, CleanupProvider, CleanupRequest, HttpCleanupRequest,
     MAX_MODEL_PAGES, ModelsRequest, REQUEST_TIMEOUT, finish_models, models_request,
@@ -25,6 +27,12 @@ mod tests;
 
 /// Transport message when a request runs past [`REQUEST_TIMEOUT`].
 const TIMED_OUT: &str = "The request timed out.";
+
+/// Total budget across all pages of a model listing.
+const MODELS_LIST_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Cap pre-allocation from untrusted Content-Length headers.
+const READ_BODY_PREALLOC_CAP: usize = 64 * 1024;
 
 /// Most bytes read from a cleanup response; a reply holds one transcript.
 const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
@@ -98,6 +106,7 @@ impl CleanupClient {
         };
         let model = http.model_slug.as_str();
         let provider = http.provider.id();
+        let secret = bearer_key(&http.headers);
         let exchanged = tokio::time::timeout(REQUEST_TIMEOUT, self.exchange(http, body))
             .await
             .unwrap_or_else(|_elapsed| Err(CleanupError::Transport(TIMED_OUT.to_owned())));
@@ -105,11 +114,12 @@ impl CleanupClient {
         let (status, body) = match exchanged {
             Ok(response) => response,
             Err(error) => {
+                let error = redact_error(error, secret);
                 tracing::warn!(provider, model, latency_ms, %error, "cleanup request failed");
                 return Err(error);
             }
         };
-        let result = parse_response(status, &body);
+        let result = parse_response(status, &body).map_err(|error| redact_error(error, secret));
         match &result {
             Ok(_) => tracing::info!(provider, model, status, latency_ms, "cleanup finished"),
             Err(error) => {
@@ -134,14 +144,18 @@ impl CleanupClient {
     }
 
     /// Fetches every page of `provider`'s models, each page capped at
-    /// [`REQUEST_TIMEOUT`], at most [`MAX_MODEL_PAGES`] pages. `key` is
-    /// sent only to providers that list with it.
+    /// [`REQUEST_TIMEOUT`], at most [`MAX_MODEL_PAGES`] pages and 60 s total.
+    /// `key` is sent only to providers that list with it.
     pub async fn list_models(
         &self,
         provider: CleanupProvider,
         key: Option<&ApiKey>,
     ) -> Result<Vec<CleanupModel>, CleanupError> {
-        let result = self.list_pages(provider, key).await;
+        let secret = key.map(ApiKey::expose);
+        let result = tokio::time::timeout(MODELS_LIST_TIMEOUT, self.list_pages(provider, key))
+            .await
+            .unwrap_or_else(|_elapsed| Err(CleanupError::Transport(TIMED_OUT.to_owned())))
+            .map_err(|error| redact_error(error, secret));
         let provider_id = provider.id();
         match &result {
             Ok(models) => {
@@ -242,7 +256,7 @@ async fn read_body(mut response: reqwest::Response, cap: usize) -> Result<Vec<u8
     if declared > cap as u64 {
         return Err(too_large());
     }
-    let mut body = Vec::with_capacity(declared as usize);
+    let mut body = Vec::with_capacity((declared as usize).min(READ_BODY_PREALLOC_CAP));
     while let Some(chunk) = response.chunk().await.map_err(transport_error)? {
         if chunk.len() > cap - body.len() {
             return Err(too_large());
@@ -269,6 +283,42 @@ fn header_map(pairs: &[(&'static str, String)]) -> Result<HeaderMap, CleanupErro
 
 fn transport_error(error: reqwest::Error) -> CleanupError {
     CleanupError::Transport(root_cause(error))
+}
+
+fn bearer_key<'a>(headers: &'a [(&'static str, String)]) -> Option<&'a str> {
+    headers.iter().find_map(|(name, value)| {
+        name.eq_ignore_ascii_case("authorization")
+            .then(|| {
+                value
+                    .strip_prefix("Bearer ")
+                    .or_else(|| value.strip_prefix("bearer "))
+                    .unwrap_or(value.as_str())
+            })
+            .filter(|secret| !secret.is_empty())
+    })
+}
+
+fn redact_secret(text: &str, key: &str) -> String {
+    if key.is_empty() {
+        return text.to_owned();
+    }
+    text.replace(key, "<redacted>")
+}
+
+fn redact_error(error: CleanupError, secret: Option<&str>) -> CleanupError {
+    let Some(secret) = secret.filter(|s| !s.is_empty()) else {
+        return error;
+    };
+    match error {
+        CleanupError::Http { status, message } => CleanupError::Http {
+            status,
+            message: message.map(|m| redact_secret(&m, secret)),
+        },
+        CleanupError::Transport(message) => {
+            CleanupError::Transport(redact_secret(&message, secret))
+        }
+        CleanupError::MissingKey | CleanupError::Malformed | CleanupError::Empty => error,
+    }
 }
 
 // the innermost cause reads best in a notice ("Connection refused (os error

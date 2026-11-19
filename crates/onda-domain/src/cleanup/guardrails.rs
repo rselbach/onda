@@ -89,7 +89,7 @@ pub fn check_guardrails(raw: &str, cleaned: &str) -> Result<(), GuardrailViolati
     let (raw, cleaned) = (raw.trim(), cleaned.trim());
     check_shrinkage(raw, cleaned)?;
     check_growth(raw, cleaned)?;
-    if begins_with_markdown(cleaned) && !contains_formatting_word(raw) {
+    if contains_markdown_structure(cleaned) && !contains_formatting_word(raw) {
         return Err(GuardrailViolation::RogueMarkdown);
     }
     Ok(())
@@ -164,15 +164,15 @@ fn contains_formatting_word(text: &str) -> bool {
         .any(|word| FORMATTING_WORDS.contains(&word))
 }
 
-// CLN-18: ATX heading, bullet, or ordered list on the first non-empty line.
+// CLN-18: ATX heading, bullet, ordered list, or fenced code block on a line.
 // each marker needs what Markdown needs after it, so prose that opens with
 // "3.5 percent", "2026. That year" or "#1 priority" is not taken for one.
-fn begins_with_markdown(text: &str) -> bool {
-    let Some(line) = text.split('\n').find(|line| !line.is_empty()) else {
-        return false;
-    };
+fn is_markdown_line(line: &str) -> bool {
     let line = line.trim();
-    if ["- ", "* ", "+ "].iter().any(|p| line.starts_with(p)) {
+    if ["- ", "* ", "+ ", "```", "~~~"]
+        .iter()
+        .any(|p| line.starts_with(p))
+    {
         return true;
     }
     let after_hashes = line.trim_start_matches('#');
@@ -183,6 +183,17 @@ fn begins_with_markdown(text: &str) -> bool {
     let after_digits = line.trim_start_matches(|c: char| c.is_ascii_digit());
     let digits = line.len() - after_digits.len();
     (1..=3).contains(&digits) && after_digits.starts_with(". ")
+}
+
+#[cfg(test)]
+fn begins_with_markdown(text: &str) -> bool {
+    text.split('\n')
+        .find(|line| !line.is_empty())
+        .is_some_and(is_markdown_line)
+}
+
+fn contains_markdown_structure(text: &str) -> bool {
+    text.lines().any(is_markdown_line)
 }
 
 #[cfg(test)]
@@ -314,6 +325,42 @@ mod tests {
                 "CLN-18 plain prose passes",
                 "hello world this is a test",
                 "Hello world, this is a test.",
+                Ok(()),
+            ),
+            case(
+                "CLN-18 markdown heading on later line is rejected",
+                "hello world this is a test of greendale study room plans",
+                "Hello world, this is a test.\n\n# Study Room Plans",
+                MARKDOWN,
+            ),
+            case(
+                "CLN-18 bullet list on later line is rejected",
+                "hello world go to class then study spanish with troy",
+                "Hello world:\n- Go to class\n- Study Spanish with Troy",
+                MARKDOWN,
+            ),
+            case(
+                "CLN-18 fenced code block is rejected",
+                "hello world this is a test transcript",
+                "```\nHello world, this is a test transcript.\n```",
+                MARKDOWN,
+            ),
+            case(
+                "CLN-18 tilde fence on later line is rejected",
+                "hello world this is a test transcript",
+                "Hello world:\n~~~\nthis is a test transcript\n~~~",
+                MARKDOWN,
+            ),
+            case(
+                "CLN-18 formatting word allows later-line markdown",
+                "make a list of study room plans and books",
+                "Study room:\n- Plans\n- Books",
+                Ok(()),
+            ),
+            case(
+                "CLN-18 multi-line prose with year keeps passing",
+                "in twenty twenty six that was the year troy left",
+                "In the spring:\n2026. That was the year Troy left.",
                 Ok(()),
             ),
             case(

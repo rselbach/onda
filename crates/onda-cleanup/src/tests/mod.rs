@@ -780,3 +780,40 @@ async fn cancelling_mid_body_aborts_the_request_cln_9() {
         .await
         .expect("connection closed");
 }
+
+#[test]
+fn redact_secret_scrubs_http_and_transport_errors() {
+    let secret = "sk-greendale-troy-barnes";
+    let headers = vec![
+        ("Content-Type", "application/json".to_owned()),
+        ("Authorization", format!("Bearer {secret}")),
+    ];
+    assert_eq!(bearer_key(&headers), Some(secret));
+    assert_eq!(
+        redact_secret(&format!("invalid key {secret} repeated {secret}"), secret),
+        "invalid key <redacted> repeated <redacted>"
+    );
+
+    let err = CleanupError::Http {
+        status: 401,
+        message: Some(format!("Rejected {secret}")),
+    };
+    assert_eq!(
+        redact_error(err, Some(secret)),
+        CleanupError::Http {
+            status: 401,
+            message: Some("Rejected <redacted>".to_owned()),
+        }
+    );
+    assert_eq!(
+        redact_error(
+            CleanupError::Transport(format!("auth {secret}")),
+            Some(secret)
+        ),
+        CleanupError::Transport("auth <redacted>".to_owned())
+    );
+    assert_eq!(
+        redact_error(CleanupError::Malformed, Some(secret)),
+        CleanupError::Malformed
+    );
+}
