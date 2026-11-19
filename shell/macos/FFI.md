@@ -53,7 +53,7 @@ The Swift shell renders complete view models from `CoreEvent` and calls
 | Language ▸ | `menu.language` (subtitle, checked items, `otherTitle`) | `selectLanguageFromMenu(code:)`, `chooseOtherLanguage()` |
 | Open Onda / Settings… (⌘,) | `menu.openApp`, `menu.settings` | `openApp()`, `openSettings()` |
 | Check for Updates… / Restart to Update / Download Onda … | `menu.update` (title, enabled, `action`) | `updateAction(action:)` |
-| Quit (⌘Q) | `menu.quit` | `NSApp.terminate`; `shutdown()` in `applicationWillTerminate` |
+| Quit (⌘Q) | `menu.quit` | `NSApp.terminate`; `hotkeyBridge.cancelPending()`, `hotkeys.stop()`, `shutdown()` (also runs on `Drop`) in `applicationWillTerminate` |
 | App menu "Settings…" (⌘,) | — | `openSettings()` |
 
 Tray icon: `TrayChanged`. Recording overlay: `OverlayChanged`, cancel
@@ -78,7 +78,7 @@ Sidebar order and sections come from `MainWindowSection`. Each page:
 
 | Control | Calls |
 | --- | --- |
-| Permission rows `microphone`, `accessibility` (green `grantedLabel` or `fix` button; orange when `detailWarning`) | `fixPermission(fix:)` |
+| Permission rows `microphone`, `accessibility` (`PermissionRowView?`, omitted on platforms without typing access; green `grantedLabel` or `fix` button; orange when `detailWarning`) | `fixPermission(fix:)` |
 | Input picker `input` (`options`, `selectedUid`, orange `warning`, `caption`) | `selectInputDevice(uid:)` (`""` = System Default) |
 | After transcription `output` | `setOutputMode(mode:)` |
 | `pauseMedia` + `pauseMediaCaption` | `setPauseMedia(on:)` |
@@ -267,7 +267,7 @@ close it.
 
 | Port | Methods |
 | --- | --- |
-| `TextOutputPort` | focused target, field text, `insert(text:target:delivery:)`, copy; `insert` calls `delivery.commit()` right before its first keystroke, accessibility write, or clipboard write and returns `.cancelled` with no output when it is false (DICT-19); `copy` must write at once, because the core commits right before calling it |
+| `TextOutputPort` | `focusedTarget()`, `fieldText(target:)`, `insert(text:target:delivery:)` -> `InsertResult` (calls `delivery.commit()` right before its first keystroke, accessibility write, or clipboard write and returns `.cancelled` with no output when it is false, DICT-19), `copy(text:)` -> `Bool` (must write at once because the core commits right before calling it; false when copying failed) |
 | `PermissionsPort` | microphone status/request, Accessibility trust/prompt, `openSettings(pane:)` (PERM-3 deep link, general pane fallback) |
 | `SoundPort`, `PowerPort` | cues, idle-sleep prevention |
 | `HotkeyPort` | register/unregister, Escape, stream re-enable, `globeKeyUsage()` (synchronize `com.apple.HIToolbox` before reading `AppleFnUsageType`, HOT-35), `openKeyboardSettings()` |

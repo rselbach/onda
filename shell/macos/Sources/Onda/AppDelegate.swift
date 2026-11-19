@@ -6,7 +6,9 @@ import OndaCore
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var core: OndaCore?
+    private var hotkeyBridge: HotkeyBridge?
     private var hotkeys: GlobalHotkeys?
+    private var activeObserver: NSObjectProtocol?
     private var statusMenu: StatusMenu?
     private var overlay: RecordingOverlay?
     private var downloadOverlay: DownloadOverlay?
@@ -22,6 +24,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let muteRecord = dataDir.appending(path: OutputMute.recordName)
         OutputMute.restore(record: muteRecord)
         let hotkeyBridge = HotkeyBridge()
+        let hotkeys = GlobalHotkeys()
+        hotkeyBridge.hotkeys = hotkeys
+        self.hotkeyBridge = hotkeyBridge
+        self.hotkeys = hotkeys
         let permissions = Permissions()
         Log.system.info(
             "Permissions at launch: microphone \(String(describing: permissions.microphone()), privacy: .public), accessibility \(permissions.accessibilityTrusted(), privacy: .public)"
@@ -58,11 +64,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 listener: relay
             )
         } catch {
+            self.hotkeys = nil
+            self.hotkeyBridge = nil
             Log.app.fault("Could not start the core: \(error.localizedDescription, privacy: .public)")
             Self.failToLaunch(error)
             return
         }
         self.core = core
+        hotkeys.core = core
         Log.app.info("Onda started with data in \(dataDir.path, privacy: .public)")
 
         NSApp.mainMenu = AppMenu.make(core: core)
@@ -76,18 +85,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         onboarding = OnboardingWindowController(core: core)
         updateNotice = UpdateNoticeWindowController(core: core)
 
-        // the core registers the shortcut once this main-thread turn ends
-        let hotkeys = GlobalHotkeys(core: core)
-        hotkeyBridge.hotkeys = hotkeys
         hotkeys.start()
-        self.hotkeys = hotkeys
 
-        NotificationCenter.default.addObserver(
+        activeObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification,
             object: nil,
             queue: .main
-        ) { _ in
-            core.appBecameActive()
+        ) { [weak core] _ in
+            MainActor.assumeIsolated {
+                core?.appBecameActive()
+            }
         }
         // ONB-13: no onboarding or main window yet, so the UI is ready on
         // the next main-loop turn
@@ -97,6 +104,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_: Notification) {
+        if let activeObserver {
+            NotificationCenter.default.removeObserver(activeObserver)
+            self.activeObserver = nil
+        }
+        hotkeyBridge?.cancelPending()
+        hotkeyBridge?.hotkeys = nil
         hotkeys?.stop()
         // DICT-28a: cancels any session; nothing is delivered
         core?.shutdown()

@@ -21,6 +21,36 @@ struct EventTapTests {
         #expect(same.flags == [.maskAlternate, .maskShift])
         #expect(same.getIntegerValueField(.keyboardEventKeycode) == Int64(kVK_ANSI_A))
     }
+
+    @Test
+    func `HotkeyBridge registerShortcut unblocks cleanly on cancelPending while main thread waits`() {
+        let bridge = HotkeyBridge()
+        let started = DispatchSemaphore(value: 0)
+        let finished = DispatchSemaphore(value: 0)
+        final class Box: @unchecked Sendable {
+            var result: RegistrationResult?
+        }
+        let box = Box()
+        let shortcut = HotkeyShortcut(
+            key: "Space",
+            control: false,
+            alt: true,
+            shift: false,
+            meta: false,
+            loneModifier: false,
+            display: "Space"
+        )
+        DispatchQueue.global().async {
+            started.signal()
+            box.result = bridge.registerShortcut(shortcut: shortcut)
+            finished.signal()
+        }
+        started.wait()
+        Thread.sleep(forTimeInterval: 0.05)
+        bridge.cancelPending()
+        #expect(finished.wait(timeout: .now() + 2) == .success)
+        #expect(box.result == .failed(status: OSStatus(paramErr)))
+    }
 }
 
 struct KeyCodeTableTests {

@@ -18,7 +18,7 @@ mod views;
 
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::thread;
 use std::time::Duration;
 
@@ -166,14 +166,15 @@ pub struct ShellPorts {
 }
 
 /// The running Onda core as seen by a shell. Commands return at once; the
-/// core reports through [`CoreListener`].
+/// core reports through [`CoreListener`]. Dropping the core calls
+/// [`OndaCore::shutdown`].
 #[derive(uniffi::Object)]
 pub struct OndaCore {
     app: Arc<Mutex<Option<App>>>,
     microphone: Arc<Microphone>,
     permissions: Arc<dyn PermissionsPort>,
-    // kept alive for the core's lifetime
-    _devices: Mutex<PollingDeviceEvents>,
+    // kept alive until shutdown
+    devices: Mutex<Option<PollingDeviceEvents>>,
     runtime: Mutex<Option<Runtime>>,
 }
 
@@ -186,7 +187,7 @@ impl OndaCore {
     /// platform, "menu bar icon" on macOS;
     /// `privacy_naming` is what the running OS calls the Accessibility
     /// permission. Events flow to `listener` until
-    /// [`OndaCore::shutdown`].
+    /// [`OndaCore::shutdown`] (also called automatically on `Drop`).
     #[uniffi::constructor]
     pub fn start(
         ports: ShellPorts,
@@ -228,11 +229,10 @@ impl OndaCore {
         let (manager, downloads) = ModelManager::new(paths.models_dir(), manifest)
             .map_err(|error| failed("Could not open the models folder", error))?;
         prepare_models_dir(&manager, ports.files.as_ref());
-        let download_app = app.clone();
+        let download_app = Arc::downgrade(&app);
         let download_listener: DownloadListener = Arc::new(move |update| {
-            with_app(&download_app, move |app| app.download_event(update));
+            with_app_weak(&download_app, move |app| app.download_event(update));
         });
-        forward_download_events(runtime.handle(), downloads, download_listener.clone());
         let engine_settings = settings_source.clone();
         let models = Models::new(
             manager,
@@ -245,22 +245,13 @@ impl OndaCore {
                 _ => parakeet_engine(model, dir),
             }),
             runtime.handle().clone(),
-            download_listener,
+            download_listener.clone(),
         );
 
         let selection = DeviceSelection::from_setting(&settings.input_device_uid());
         let (capture, audio_events) = AudioCapture::new(selection)
             .map_err(|error| failed("Could not start audio capture", error))?;
         let mut devices = PollingDeviceEvents::new(DEVICE_POLL_INTERVAL);
-        let device_app = app.clone();
-        // the General page lists devices live (WIN-9)
-        devices.subscribe(
-            capture
-                .device_change_sink()
-                .with_listener(Arc::new(move |_| {
-                    with_app(&device_app, App::input_devices_changed);
-                })),
-        );
         let microphone = Arc::new(Microphone::new(capture));
 
         let history = HistoryStore::new(paths.history_dir(), HistoryFiles(ports.files.clone()));
@@ -279,7 +270,7 @@ impl OndaCore {
         let updater = AppUpdater::start(
             ports.update_host,
             ports.updater,
-            app.clone(),
+            Arc::downgrade(&app),
             paths.root(),
             &app_version,
             runtime.handle(),
@@ -325,13 +316,24 @@ impl OndaCore {
         });
         let started = App::start_on(runtime.handle(), core_ports, sink);
         forward_audio_events(audio_events, started.audio_signals());
+        let device_app = Arc::downgrade(&app);
         *lock(&app) = Some(started);
+        forward_download_events(runtime.handle(), downloads, download_listener);
+        // the General page lists devices live (WIN-9)
+        devices.subscribe(
+            microphone
+                .capture()
+                .device_change_sink()
+                .with_listener(Arc::new(move |_| {
+                    with_app_weak(&device_app, App::input_devices_changed);
+                })),
+        );
 
         Ok(Arc::new(Self {
             app,
             microphone,
             permissions: ports.permissions,
-            _devices: Mutex::new(devices),
+            devices: Mutex::new(Some(devices)),
             runtime: Mutex::new(Some(runtime)),
         }))
     }
@@ -473,6 +475,7 @@ impl OndaCore {
         let Some(app) = app else {
             return;
         };
+        drop(lock(&self.devices).take());
         let runtime = lock(&self.runtime).take();
         match runtime {
             Some(runtime) => {
@@ -482,6 +485,12 @@ impl OndaCore {
             None => app.shutdown(),
         }
         tracing::info!("core stopped");
+    }
+}
+
+impl Drop for OndaCore {
+    fn drop(&mut self) {
+        self.shutdown();
     }
 }
 
@@ -522,6 +531,13 @@ fn hotkey_event(input: HotkeyInput) -> HotkeyEvent {
         }
         HotkeyInput::StreamDisabled { status } => HotkeyEvent::StreamDisabled { status },
     }
+}
+
+fn with_app_weak(app: &Weak<Mutex<Option<App>>>, command: impl FnOnce(&App)) {
+    let Some(app) = app.upgrade() else {
+        return;
+    };
+    with_app(&app, command);
 }
 
 fn with_app(app: &Mutex<Option<App>>, command: impl FnOnce(&App)) {

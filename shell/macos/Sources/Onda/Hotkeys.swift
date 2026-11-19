@@ -14,14 +14,14 @@ final class GlobalHotkeys {
     /// The status for a tap that cannot be created or was given up on.
     private static let tapFailure = OSStatus(eventNotHandledErr)
 
-    private let core: OndaCore
+    weak var core: OndaCore?
     private var handler: EventHandlerRef?
     private var dictation: EventHotKeyRef?
     private var cancels: [EventHotKeyRef] = []
     private var tap: CFMachPort?
     private var tapSource: CFRunLoopSource?
 
-    init(core: OndaCore) {
+    init(core: OndaCore? = nil) {
         self.core = core
     }
 
@@ -31,7 +31,7 @@ final class GlobalHotkeys {
         let installed = installHandler()
         guard installed == noErr else {
             Log.hotkey.error("Could not install the hotkey handler: \(installed, privacy: .public)")
-            core.hotkeyRegistrationFailed(status: installed)
+            core?.hotkeyRegistrationFailed(status: installed)
             return
         }
     }
@@ -185,15 +185,15 @@ final class GlobalHotkeys {
     private func observe(type: CGEventType, keyCode: Int64, flags: UInt64) {
         switch type {
         case .tapDisabledByTimeout, .tapDisabledByUserInput:
-            core.onHotkeyEvent(event: .streamDisabled(status: Self.tapFailure))
+            core?.onHotkeyEvent(event: .streamDisabled(status: Self.tapFailure))
         case .flagsChanged:
             guard let change = KeyCodes.flagsChange(virtualKey: keyCode, flags: CGEventFlags(rawValue: flags)) else {
                 return
             }
-            core.onHotkeyEvent(event: change)
+            core?.onHotkeyEvent(event: change)
         case .keyDown:
             let key = KeyCodes.code(forVirtualKey: keyCode) ?? KeyCodes.unidentified
-            core.onHotkeyEvent(event: .keyDown(key: key))
+            core?.onHotkeyEvent(event: .keyDown(key: key))
         default:
             break
         }
@@ -247,27 +247,71 @@ final class GlobalHotkeys {
 
     private func deliver(id: UInt32, pressed: Bool) {
         guard let input = routeGlobalHotkey(id: id, pressed: pressed) else { return }
-        core.onHotkeyEvent(event: input)
+        core?.onHotkeyEvent(event: input)
     }
 }
 
 /// The core's hotkey requests, hopped to the main thread in call order.
-/// `register` waits for its result; the core never calls from the main
-/// thread.
+/// `registerShortcut` waits on an `NSCondition` rather than `DispatchQueue.main.sync`
+/// so quit can unblock any waiting registration without deadlocking the main thread.
 final class HotkeyBridge: HotkeyPort, @unchecked Sendable {
-    /// Set once on the main thread before the core can call.
+    /// Set once on the main thread before `OndaCore.start` runs.
     nonisolated(unsafe) weak var hotkeys: GlobalHotkeys?
+    private let condition = NSCondition()
+    private var cancelled = false
 
     func registerShortcut(shortcut: HotkeyShortcut) -> RegistrationResult {
-        let register = { @MainActor [self] () -> RegistrationResult in
-            hotkeys?.register(shortcut) ?? .failed(status: OSStatus(paramErr))
-        }
+        let failure = RegistrationResult.failed(status: OSStatus(paramErr))
         if Thread.isMainThread {
-            return MainActor.assumeIsolated { register() }
+            return MainActor.assumeIsolated { performRegister(shortcut, failure: failure) }
         }
-        return DispatchQueue.main.sync {
-            MainActor.assumeIsolated { register() }
+        final class Slot: @unchecked Sendable {
+            var value: RegistrationResult?
         }
+        condition.lock()
+        let alreadyCancelled = cancelled
+        condition.unlock()
+        if alreadyCancelled {
+            return failure
+        }
+        let slot = Slot()
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            condition.lock()
+            if cancelled {
+                slot.value = failure
+                condition.broadcast()
+                condition.unlock()
+                return
+            }
+            condition.unlock()
+            let outcome = MainActor.assumeIsolated {
+                self.performRegister(shortcut, failure: failure)
+            }
+            condition.lock()
+            slot.value = outcome
+            condition.broadcast()
+            condition.unlock()
+        }
+        condition.lock()
+        while slot.value == nil, !cancelled {
+            condition.wait()
+        }
+        let outcome = slot.value ?? failure
+        condition.unlock()
+        return outcome
+    }
+
+    func cancelPending() {
+        condition.lock()
+        cancelled = true
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    @MainActor
+    private func performRegister(_ shortcut: HotkeyShortcut, failure: RegistrationResult) -> RegistrationResult {
+        hotkeys?.register(shortcut) ?? failure
     }
 
     func unregisterShortcut() {

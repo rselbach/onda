@@ -4,7 +4,7 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use onda_app::App;
 use onda_app::ports::Updater;
@@ -13,7 +13,7 @@ use onda_update::feed::{self, Origins, OsVersion};
 use onda_update::{Config, Host, MacInstaller, Schedule};
 use tokio::runtime::Handle;
 
-use crate::{UpdateHost, UpdaterPort, with_app};
+use crate::{UpdateHost, UpdaterPort, with_app_weak};
 
 /// The updater the core sees; `None` when this build cannot update itself
 /// (UPD-4).
@@ -25,7 +25,7 @@ impl AppUpdater {
     pub(crate) fn start(
         host: Option<UpdateHost>,
         port: Arc<dyn UpdaterPort>,
-        app: Arc<Mutex<Option<App>>>,
+        app: Weak<Mutex<Option<App>>>,
         data_dir: &Path,
         app_version: &str,
         runtime: &Handle,
@@ -132,12 +132,12 @@ impl Updater for AppUpdater {
 
 struct ShellHost {
     port: Arc<dyn UpdaterPort>,
-    app: Arc<Mutex<Option<App>>>,
+    app: Weak<Mutex<Option<App>>>,
 }
 
 impl Host for ShellHost {
     fn changed(&self) {
-        with_app(&self.app, App::updater_changed);
+        with_app_weak(&self.app, App::updater_changed);
     }
 
     fn open_url(&self, url: &str) {

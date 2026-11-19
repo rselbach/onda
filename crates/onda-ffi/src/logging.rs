@@ -41,7 +41,9 @@ const CATEGORIES: &[(&str, &str)] = &[
     ("onda_cleanup", "Cleanup"),
     ("onda_history", "History"),
     ("onda_settings", "Settings"),
+    ("onda_update", "Updates"),
     ("onda_ffi::system_speech", "Models"),
+    ("onda_ffi::updates", "Updates"),
 ];
 
 /// The category for an event logged under `target` (LOG-1).
@@ -115,6 +117,8 @@ mod tests {
             ("onda_cleanup::openrouter", "Cleanup"),
             ("onda_history::store", "History"),
             ("onda_settings", "Settings"),
+            ("onda_update::updater", "Updates"),
+            ("onda_ffi::updates", "Updates"),
             ("onda_ffi", "Core"),
             ("onda_ffi::ports", "Core"),
             ("reqwest::connect", "Core"),
