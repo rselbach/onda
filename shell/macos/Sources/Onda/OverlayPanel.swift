@@ -10,11 +10,18 @@ final class OverlayPanel<Content: View> {
     private let bottomMargin: CGFloat = 100
     private let size: NSSize
     private let fade: PanelFade
+    private let onOrderOut: (@MainActor () -> Void)?
     private let panel: NonActivatingPanel
 
-    init(size: NSSize, fade: PanelFade, content: Content) {
+    init(
+        size: NSSize,
+        fade: PanelFade,
+        content: Content,
+        onOrderOut: (@MainActor () -> Void)? = nil
+    ) {
         self.size = size
         self.fade = fade
+        self.onOrderOut = onOrderOut
         panel = NonActivatingPanel(
             contentRect: NSRect(origin: .zero, size: size),
             styleMask: [.borderless, .nonactivatingPanel],
@@ -51,7 +58,7 @@ final class OverlayPanel<Content: View> {
                 context.duration = fade.durationSeconds()
                 panel.animator().alphaValue = 1
             }
-        case .fadeOut:
+        case let .fadeOut(generation):
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = fade.durationSeconds()
                 panel.animator().alphaValue = 0
@@ -59,12 +66,13 @@ final class OverlayPanel<Content: View> {
                 // AppKit calls this on the main thread
                 MainActor.assumeIsolated {
                     guard let self else { return }
-                    self.run(self.fade.fadeOutFinished())
+                    self.run(self.fade.fadeOutFinished(generation: generation))
                 }
             }
         case .orderOut:
             panel.orderOut(nil)
             panel.alphaValue = 1
+            onOrderOut?()
         }
     }
 

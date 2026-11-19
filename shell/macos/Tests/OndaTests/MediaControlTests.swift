@@ -58,6 +58,22 @@ struct HelperRunTests {
         #expect(!run.succeeded)
         #expect(!run.failure.isEmpty)
     }
+
+    @Test
+    func `helper runs with sanitized environment and bounded output`() {
+        let envRun = HelperRun(executable: URL(fileURLWithPath: "/usr/bin/env"), arguments: [])
+        #expect(envRun.succeeded)
+        let vars = Set(String(decoding: envRun.output, as: UTF8.self).split(separator: "\n").map(String.init))
+        #expect(vars == ["PATH=/usr/bin:/bin", "LANG=C"])
+
+        let cappedRun = HelperRun(
+            executable: Self.shell,
+            arguments: ["-c", "exec head -c 5000000 /dev/zero"],
+            timeout: 3
+        )
+        #expect(cappedRun.succeeded)
+        #expect(cappedRun.output.count == HelperRun.maxOutputBytes)
+    }
 }
 
 struct NowPlayingLineTests {

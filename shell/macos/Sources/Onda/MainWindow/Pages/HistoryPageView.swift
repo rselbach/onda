@@ -15,6 +15,7 @@ struct HistoryPageView: View {
     @State private var shownError: AlertView?
     // a dialog button ran, so dismissal must not also cancel
     @State private var dialogAnswered = false
+    @State private var dialogGeneration: UInt64 = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -45,8 +46,17 @@ struct HistoryPageView: View {
             }
         }
         .onAppear { searchText = page.query }
+        .onChange(of: page.query) { _, query in
+            if searchText != query {
+                searchText = query
+            }
+        }
         .onChange(of: page.dialog, initial: true) { _, dialog in
+            dialogGeneration &+= 1
             shownDialog = dialog
+            if dialog != nil {
+                dialogAnswered = false
+            }
         }
         .onChange(of: page.error, initial: true) { _, error in
             shownError = error
@@ -57,9 +67,11 @@ struct HistoryPageView: View {
                 get: { shownDialog != nil },
                 set: { presented in
                     guard !presented else { return }
+                    let dismissedGeneration = dialogGeneration
                     shownDialog = nil
                     // Escape or a click outside: cancel unless a button ran
                     Task { @MainActor in
+                        guard dismissedGeneration == dialogGeneration else { return }
                         if !dialogAnswered {
                             core.cancelHistoryDialog()
                         }
@@ -139,8 +151,10 @@ struct HistoryPageView: View {
                 // the row's transcript is already trimmed (HIS-25); handing it
                 // to SwiftUI makes it the only pasteboard write
                 let rows = sections.lazy.flatMap(\.rows)
-                guard let row = rows.first(where: { $0.id == selection }) else { return [] }
-                return [NSItemProvider(object: (row.transcript ?? "") as NSString)]
+                guard let row = rows.first(where: { $0.id == selection }),
+                      let transcript = row.transcript
+                else { return [] }
+                return [NSItemProvider(object: transcript as NSString)]
             }
             .onDeleteCommand {
                 if let selection {
@@ -220,13 +234,15 @@ private struct HistoryRowView: View {
 
                 Spacer()
 
-                Button(action: onCopy) {
-                    Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                        .contentTransition(.symbolEffect(.replace))
+                if row.transcript != nil {
+                    Button(action: onCopy) {
+                        Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                            .contentTransition(.symbolEffect(.replace))
+                    }
+                    .buttonStyle(.borderless)
+                    .help(page.copyLabel)
+                    .accessibilityLabel(copied ? page.copiedLabel : page.copyLabel)
                 }
-                .buttonStyle(.borderless)
-                .help(page.copyLabel)
-                .accessibilityLabel(copied ? page.copiedLabel : page.copyLabel)
             }
 
             if let transcript = row.transcript {
@@ -322,15 +338,24 @@ enum HistoryDayTitle {
 /// App icons by bundle identifier, looked up once per app (HIS-22).
 @MainActor
 private enum HistoryAppIcons {
-    private static var icons: [String: NSImage?] = [:]
+    private static let maxEntries = 128
+    private static var icons: [String: NSImage] = [:]
+    private static var order: [String] = []
 
     static func icon(forBundleID bundleID: String) -> NSImage? {
         if let cached = icons[bundleID] {
             return cached
         }
-        let icon = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID)
-            .map { NSWorkspace.shared.icon(forFile: $0.path) }
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else {
+            return nil
+        }
+        let icon = NSWorkspace.shared.icon(forFile: url.path)
+        if icons.count >= maxEntries, let oldest = order.first {
+            order.removeFirst()
+            icons.removeValue(forKey: oldest)
+        }
         icons[bundleID] = icon
+        order.append(bundleID)
         return icon
     }
 }

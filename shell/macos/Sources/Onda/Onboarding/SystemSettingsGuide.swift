@@ -23,7 +23,10 @@ final class SystemSettingsGuide {
         // floating keeps the card in view while System Settings is active
         window.level = .floating
 
-        guard let settingsFrame = await settledSettingsWindowFrame(), current == session else { return }
+        guard let settingsFrame = await settledSettingsWindowFrame(session: current),
+              !Task.isCancelled,
+              current == session
+        else { return }
         let screen = NSScreen.screens.first { $0.frame.intersects(settingsFrame) } ?? NSScreen.main
         if let visible = screen?.visibleFrame {
             let frame = GuideLayout.frame(for: window.frame.size, beside: settingsFrame, in: visible)
@@ -48,17 +51,22 @@ final class SystemSettingsGuide {
     /// System Settings takes a moment to open and switch panes, so this waits
     /// until its window holds still. Window bounds need no screen recording
     /// permission; only window titles do.
-    private func settledSettingsWindowFrame() async -> NSRect? {
+    private func settledSettingsWindowFrame(session current: Int) async -> NSRect? {
         var previous: NSRect?
         for _ in 0 ..< 50 {
-            try? await Task.sleep(for: .milliseconds(100))
+            do {
+                try await Task.sleep(for: .milliseconds(100))
+            } catch {
+                return nil
+            }
+            guard !Task.isCancelled, current == session else { return nil }
             guard let frame = settingsWindowFrame() else { continue }
             if frame == previous {
                 return frame
             }
             previous = frame
         }
-        return previous
+        return (!Task.isCancelled && current == session) ? previous : nil
     }
 
     private func settingsWindowFrame() -> NSRect? {
@@ -73,7 +81,9 @@ final class SystemSettingsGuide {
             guard info[kCGWindowOwnerPID as String] as? pid_t == pid,
                   info[kCGWindowLayer as String] as? Int == 0,
                   let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
-                  let bounds = CGRect(dictionaryRepresentation: boundsDict)
+                  let bounds = CGRect(dictionaryRepresentation: boundsDict),
+                  bounds.width >= 200,
+                  bounds.height >= 200
             else { continue }
             return GuideLayout.cocoaRect(fromQuartz: bounds)
         }
@@ -115,17 +125,25 @@ final class SystemSettingsGuide {
             panel.animator().alphaValue = 0.9
             panel.animator().setFrame(lifted, display: true)
         }
-        try? await Task.sleep(for: .milliseconds(150))
-        guard current == session else { return }
+        do {
+            try await Task.sleep(for: .milliseconds(150))
+        } catch {
+            return
+        }
+        guard !Task.isCancelled, current == session else { return }
         await animate(duration: 0.9, timing: .easeInEaseOut) {
             panel.animator().setFrame(landed, display: true)
         }
-        try? await Task.sleep(for: .milliseconds(450))
-        guard current == session else { return }
+        do {
+            try await Task.sleep(for: .milliseconds(450))
+        } catch {
+            return
+        }
+        guard !Task.isCancelled, current == session else { return }
         await animate(duration: 0.35, timing: .easeIn) {
             panel.animator().alphaValue = 0
         }
-        guard phantom === panel else { return }
+        guard !Task.isCancelled, current == session, phantom === panel else { return }
         panel.orderOut(nil)
         phantom = nil
     }

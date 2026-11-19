@@ -166,6 +166,7 @@ struct NowPlayingLine: Decodable {
 struct HelperRun {
     static let timeout: TimeInterval = 5
     static let killGrace: TimeInterval = 0.5
+    static let maxOutputBytes = 4 * 1024 * 1024
 
     let output: Data
     let failure: String
@@ -180,6 +181,7 @@ struct HelperRun {
         let process = Process()
         process.executableURL = executable
         process.arguments = arguments
+        process.environment = ["PATH": "/usr/bin:/bin", "LANG": "C"]
         let stdout = Pipe()
         let stderr = Pipe()
         process.standardOutput = stdout
@@ -224,15 +226,26 @@ struct HelperRun {
     }
 }
 
-/// Reads a pipe to its end on a background queue.
+/// Reads a pipe to its end on a background queue, keeping at most `HelperRun.maxOutputBytes`.
 private final class PipeDrain: @unchecked Sendable {
+    private static let chunkSize = 65_536
+
     private let done = DispatchSemaphore(value: 0)
     /// Written once before `done` signals, read only after it.
     private var data = Data()
 
     init(_ handle: FileHandle) {
         DispatchQueue.global(qos: .userInitiated).async { [self] in
-            data = handle.readDataToEndOfFile()
+            var buffered = Data()
+            do {
+                while let chunk = try handle.read(upToCount: Self.chunkSize), !chunk.isEmpty {
+                    let remaining = HelperRun.maxOutputBytes - buffered.count
+                    if remaining > 0 {
+                        buffered.append(chunk.prefix(remaining))
+                    }
+                }
+            } catch {}
+            data = buffered
             done.signal()
         }
     }

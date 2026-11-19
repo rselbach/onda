@@ -7,6 +7,7 @@ import Darwin
 /// aimed at any other app unless the sender holds an Apple-only entitlement.
 enum OutputMute {
     private static let system = AudioObjectID(kAudioObjectSystemObject)
+    private static let tokens = MutedTokens()
 
     /// File in the data folder that lists, one per line, the UIDs of devices
     /// Onda muted, so a run that crashed or quit mid-session is undone at
@@ -28,12 +29,12 @@ enum OutputMute {
     /// whether the device `uid` is known unmuted now
     private static func restored(_ uid: String) -> Bool {
         guard let device = device(uid: uid),
-              let muted = value(kAudioDevicePropertyMute, kAudioDevicePropertyScopeOutput, of: device, UInt32(0))
+              let muted = isMuted(on: device)
         else {
             Log.media.info("Audio output \(uid, privacy: .public) left muted by an earlier run is not available")
             return false
         }
-        guard muted == 1 else { return true }
+        guard muted else { return true }
         guard set(muted: false, on: device) else {
             Log.media.warning("Could not unmute audio output \(uid, privacy: .public) left muted by an earlier run")
             return false
@@ -43,17 +44,17 @@ enum OutputMute {
     }
 
     /// Mutes the default output device when another process is playing
-    /// through it and the device is not muted already. Returns the muted
-    /// device for `unmute`. Nothing is muted while another process records
+    /// through it and the device is not muted already. Returns an opaque mute
+    /// token for `unmute`. Nothing is muted while another process records
     /// and plays at once, such as a call, since muting would cut it off.
-    static func muteIfAudible(record: URL) -> AudioObjectID? {
+    static func muteIfAudible(record: URL) -> UInt32? {
         guard let device = value(kAudioHardwarePropertyDefaultOutputDevice, of: system, AudioObjectID(0)) else {
             Log.media.warning("No default audio output to mute")
             return nil
         }
         guard let player = playingProcess(on: device) else { return nil }
         // a device the user muted stays theirs to unmute
-        guard value(kAudioDevicePropertyMute, kAudioDevicePropertyScopeOutput, of: device, UInt32(0)) == 0 else {
+        guard isMuted(on: device) == false else {
             return nil
         }
         // remembered first, so a crash right after the mute is undone too;
@@ -78,24 +79,31 @@ enum OutputMute {
             }
             return nil
         }
+        let token = tokens.insert(uid: uid)
         Log.media.info("Muted audio output \(device, privacy: .public): \(player, privacy: .public) is playing")
-        return device
+        return token
     }
 
-    static func unmute(_ device: AudioObjectID, record: URL) -> Bool {
+    static func unmute(_ token: UInt32, record: URL) -> Bool {
+        guard let uid = tokens.uid(for: token) else {
+            Log.media.warning("Unknown mute token \(token, privacy: .public)")
+            return false
+        }
+        guard let device = device(uid: uid) else {
+            Log.media.warning("Audio output \(uid, privacy: .public) is no longer available to unmute")
+            return false
+        }
         let unmuted = set(muted: false, on: device)
         guard unmuted else {
             // the record stays, so the next launch tries again
             Log.media.warning("Could not unmute audio output \(device, privacy: .public)")
             return false
         }
-        // without a UID the entry stays; the next launch sees it unmuted
-        if let uid = uid(of: device) {
-            do {
-                try remember(recorded(record).filter { $0 != uid }, in: record)
-            } catch {
-                Log.media.warning("Could not update the muted-output record: \(error.localizedDescription, privacy: .public)")
-            }
+        tokens.remove(token)
+        do {
+            try remember(recorded(record).filter { $0 != uid }, in: record)
+        } catch {
+            Log.media.warning("Could not update the muted-output record: \(error.localizedDescription, privacy: .public)")
         }
         return true
     }
@@ -166,11 +174,59 @@ enum OutputMute {
         guard AudioObjectGetPropertyDataSize(object, &address, 0, nil, &size) == noErr else { return [] }
         var objects = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
         guard AudioObjectGetPropertyData(object, &address, 0, nil, &size, &objects) == noErr else { return [] }
-        return objects
+        return Array(objects.prefix(Int(size) / MemoryLayout<AudioObjectID>.size))
+    }
+
+    private static func isMuted(on device: AudioObjectID) -> Bool? {
+        if let main = value(
+            kAudioDevicePropertyMute,
+            kAudioDevicePropertyScopeOutput,
+            element: kAudioObjectPropertyElementMain,
+            of: device,
+            UInt32(0)
+        ) {
+            return main == 1
+        }
+        let channels = [AudioObjectPropertyElement(1), AudioObjectPropertyElement(2)].compactMap { element in
+            value(kAudioDevicePropertyMute, kAudioDevicePropertyScopeOutput, element: element, of: device, UInt32(0))
+        }
+        guard !channels.isEmpty else { return nil }
+        return channels.contains(1)
     }
 
     private static func set(muted: Bool, on device: AudioObjectID) -> Bool {
-        var address = address(kAudioDevicePropertyMute, kAudioDevicePropertyScopeOutput)
+        if hasSettableMute(on: device, element: kAudioObjectPropertyElementMain),
+           set(muted: muted, on: device, element: kAudioObjectPropertyElementMain) {
+            return true
+        }
+        let channels = [AudioObjectPropertyElement(1), AudioObjectPropertyElement(2)].filter {
+            hasSettableMute(on: device, element: $0)
+        }
+        guard !channels.isEmpty else { return false }
+        var changed: [AudioObjectPropertyElement] = []
+        for channel in channels {
+            guard set(muted: muted, on: device, element: channel) else {
+                if muted {
+                    for previous in changed {
+                        _ = set(muted: false, on: device, element: previous)
+                    }
+                }
+                return false
+            }
+            changed.append(channel)
+        }
+        return true
+    }
+
+    private static func hasSettableMute(on device: AudioObjectID, element: AudioObjectPropertyElement) -> Bool {
+        var address = address(kAudioDevicePropertyMute, kAudioDevicePropertyScopeOutput, element: element)
+        guard AudioObjectHasProperty(device, &address) else { return false }
+        var settable = DarwinBoolean(false)
+        return AudioObjectIsPropertySettable(device, &address, &settable) == noErr && settable.boolValue
+    }
+
+    private static func set(muted: Bool, on device: AudioObjectID, element: AudioObjectPropertyElement) -> Bool {
+        var address = address(kAudioDevicePropertyMute, kAudioDevicePropertyScopeOutput, element: element)
         var value: UInt32 = muted ? 1 : 0
         return AudioObjectSetPropertyData(device, &address, 0, nil, UInt32(MemoryLayout<UInt32>.size), &value) == noErr
     }
@@ -179,10 +235,11 @@ enum OutputMute {
     private static func value<T>(
         _ selector: AudioObjectPropertySelector,
         _ scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal,
+        element: AudioObjectPropertyElement = kAudioObjectPropertyElementMain,
         of object: AudioObjectID,
         _ initial: T
     ) -> T? {
-        var address = address(selector, scope)
+        var address = address(selector, scope, element: element)
         var value = initial
         var size = UInt32(MemoryLayout<T>.size)
         let status = withUnsafeMutablePointer(to: &value) {
@@ -193,8 +250,40 @@ enum OutputMute {
 
     private static func address(
         _ selector: AudioObjectPropertySelector,
-        _ scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal
+        _ scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal,
+        element: AudioObjectPropertyElement = kAudioObjectPropertyElementMain
     ) -> AudioObjectPropertyAddress {
-        AudioObjectPropertyAddress(mSelector: selector, mScope: scope, mElement: kAudioObjectPropertyElementMain)
+        AudioObjectPropertyAddress(mSelector: selector, mScope: scope, mElement: element)
+    }
+}
+
+private final class MutedTokens: @unchecked Sendable {
+    private let lock = NSLock()
+    private var nextToken: UInt32 = 1
+    private var uids: [UInt32: String] = [:]
+
+    func insert(uid: String) -> UInt32 {
+        lock.withLock {
+            var token = nextToken
+            while token == 0 || uids[token] != nil {
+                token = token &+ 1
+            }
+            nextToken = token &+ 1
+            if nextToken == 0 {
+                nextToken = 1
+            }
+            uids[token] = uid
+            return token
+        }
+    }
+
+    func uid(for token: UInt32) -> String? {
+        lock.withLock { uids[token] }
+    }
+
+    func remove(_ token: UInt32) {
+        _ = lock.withLock {
+            uids.removeValue(forKey: token)
+        }
     }
 }

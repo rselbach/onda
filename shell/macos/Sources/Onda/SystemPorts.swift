@@ -52,7 +52,16 @@ enum SystemSettings {
     @discardableResult
     static func open(_ link: String) -> Bool {
         guard let url = URL(string: link) else { return false }
-        return NSWorkspace.shared.open(url)
+        return onMainSync { NSWorkspace.shared.open(url) }
+    }
+
+    static func onMainSync<T: Sendable>(_ work: @MainActor @Sendable () -> T) -> T {
+        if Thread.isMainThread {
+            return MainActor.assumeIsolated { work() }
+        }
+        return DispatchQueue.main.sync {
+            MainActor.assumeIsolated { work() }
+        }
     }
 }
 
@@ -65,9 +74,14 @@ final class Sounds: SoundPort, @unchecked Sendable {
 
     func play(cue: SoundCue) {
         queue.async { [self] in
-            guard let player = player(for: cue) else { return }
-            player.currentTime = 0
-            player.play()
+            guard let audioPlayer = player(for: cue) else { return }
+            audioPlayer.currentTime = 0
+            if !audioPlayer.play() {
+                players.removeValue(forKey: cue)
+                guard let fresh = player(for: cue) else { return }
+                fresh.currentTime = 0
+                _ = fresh.play()
+            }
         }
     }
 
@@ -129,10 +143,12 @@ final class Power: PowerPort, @unchecked Sendable {
 /// notification center, so authorization reads as unsupported and the core
 /// falls back to the overlay notice.
 final class Notifier: NSObject, NotifierPort, UNUserNotificationCenterDelegate, Sendable {
+    private static let waitTimeout: DispatchTimeInterval = .seconds(5)
     private let center: UNUserNotificationCenter?
 
     override init() {
-        center = Bundle.main.bundleURL.pathExtension == "app" ? UNUserNotificationCenter.current() : nil
+        let isBundled = Bundle.main.bundleURL.pathExtension == "app" && Bundle.main.bundleIdentifier != nil
+        center = isBundled ? UNUserNotificationCenter.current() : nil
         super.init()
         center?.delegate = self
     }
@@ -145,7 +161,10 @@ final class Notifier: NSObject, NotifierPort, UNUserNotificationCenterDelegate, 
             status.set(settings.authorizationStatus)
             read.signal()
         }
-        read.wait()
+        if read.wait(timeout: .now() + Self.waitTimeout) == .timedOut {
+            Log.system.warning("Timed out reading notification authorization")
+            return .notDetermined
+        }
         return switch status.get() {
         case .authorized: .authorized
         case .provisional: .provisional
@@ -173,7 +192,9 @@ final class Notifier: NSObject, NotifierPort, UNUserNotificationCenterDelegate, 
             failure.set(error?.localizedDescription)
             posted.signal()
         }
-        posted.wait()
+        if posted.wait(timeout: .now() + Self.waitTimeout) == .timedOut {
+            throw ShellError.Failed(message: "Timed out posting notification")
+        }
         if let message = failure.get() {
             throw ShellError.Failed(message: message)
         }
@@ -213,6 +234,9 @@ final class Files: FilesPort, Sendable {
     }
 
     func revealFile(path: String) throws {
+        guard FileManager.default.fileExists(atPath: path) else {
+            throw ShellError.Failed(message: "File not found: \(path)")
+        }
         let url = URL(fileURLWithPath: path)
         DispatchQueue.main.async {
             NSWorkspace.shared.activateFileViewerSelecting([url])
@@ -220,7 +244,8 @@ final class Files: FilesPort, Sendable {
     }
 
     func openFile(path: String) throws {
-        guard NSWorkspace.shared.open(URL(fileURLWithPath: path)) else {
+        let url = URL(fileURLWithPath: path)
+        guard SystemSettings.onMainSync({ NSWorkspace.shared.open(url) }) else {
             throw ShellError.Failed(message: "Could not open \(path)")
         }
     }
@@ -253,7 +278,9 @@ final class LoginItem: LoginItemPort, Sendable {
     }
 
     func openSettings() {
-        SMAppService.openSystemSettingsLoginItems()
+        DispatchQueue.main.async {
+            SMAppService.openSystemSettingsLoginItems()
+        }
     }
 }
 

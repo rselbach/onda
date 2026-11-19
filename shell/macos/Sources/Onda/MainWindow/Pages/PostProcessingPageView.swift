@@ -387,9 +387,7 @@ private struct ProviderLogo: View {
 
     var body: some View {
         let variant = colorScheme == .dark ? "dark" : "light"
-        let url = Bundle.main.url(forResource: "\(id)-\(variant)", withExtension: "svg")
-            ?? Bundle.main.url(forResource: id, withExtension: "svg")
-        if let url, let image = NSImage(contentsOf: url) {
+        if let image = ProviderLogos.image(id: id, variant: variant) {
             Image(nsImage: image)
                 .resizable()
                 .scaledToFit()
@@ -397,6 +395,23 @@ private struct ProviderLogo: View {
         } else if let systemSymbol {
             Image(systemName: systemSymbol)
         }
+    }
+}
+
+@MainActor
+private enum ProviderLogos {
+    private static var cache: [String: NSImage?] = [:]
+
+    static func image(id: String, variant: String) -> NSImage? {
+        let key = "\(id)-\(variant)"
+        if let cached = cache[key] {
+            return cached
+        }
+        let url = Bundle.main.url(forResource: key, withExtension: "svg")
+            ?? Bundle.main.url(forResource: id, withExtension: "svg")
+        let image = url.flatMap(NSImage.init(contentsOf:))
+        cache[key] = image
+        return image
     }
 }
 

@@ -26,6 +26,7 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
     private let model = OnboardingModel()
     private let settingsGuide = SystemSettingsGuide()
     private var window: NSWindow?
+    private var guideTask: Task<Void, Never>?
     private var closingFromCore = false
     /// a step change waiting for its slide direction to render first
     private var deferred: OnboardingView?
@@ -116,13 +117,16 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
     private func fix(_ button: PermissionFixButton) {
         core.fixPermission(fix: button.fix)
         guard let guide = button.guide, let window else { return }
+        guideTask?.cancel()
         model.guiding = button.fix
-        Task {
+        guideTask = Task {
             await settingsGuide.begin(beside: window, dropsApp: guide.acceptsDroppedApp)
         }
     }
 
     private func endGuide() {
+        guideTask?.cancel()
+        guideTask = nil
         model.guiding = nil
         settingsGuide.end()
     }

@@ -19,6 +19,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     }
 
     func render(_ state: MenuState) {
+        guard self.state != state else { return }
         self.state = state
         if isOpen {
             rebuild()

@@ -184,8 +184,11 @@ pub enum PanelFadeCommand {
         /// Start from the current opacity.
         from_current: bool,
     },
-    /// Fade out, then call [`PanelFade::fade_out_finished`].
-    FadeOut,
+    /// Fade out, then call [`PanelFade::fade_out_finished`] with `generation`.
+    FadeOut {
+        /// Token tying a completion callback to the fade-out that started it.
+        generation: u64,
+    },
     /// Take the panel off screen.
     OrderOut,
 }
@@ -195,7 +198,7 @@ impl From<FadeCommand> for PanelFadeCommand {
         match command {
             FadeCommand::None => Self::None,
             FadeCommand::FadeIn { from_current } => Self::FadeIn { from_current },
-            FadeCommand::FadeOut => Self::FadeOut,
+            FadeCommand::FadeOut { generation } => Self::FadeOut { generation },
             FadeCommand::OrderOut => Self::OrderOut,
         }
     }
@@ -237,9 +240,9 @@ impl PanelFade {
         self.apply(overlay::PanelFade::hide)
     }
 
-    /// The fade-out animation finished.
-    pub fn fade_out_finished(&self) -> PanelFadeCommand {
-        self.apply(overlay::PanelFade::fade_out_finished)
+    /// The fade-out animation finished for `generation`.
+    pub fn fade_out_finished(&self, generation: u64) -> PanelFadeCommand {
+        self.apply(|fade| fade.fade_out_finished(generation))
     }
 }
 
@@ -309,9 +312,12 @@ mod tests {
                 from_current: false
             }
         );
-        assert_eq!(fade.hide(), PanelFadeCommand::FadeOut);
+        assert_eq!(fade.hide(), PanelFadeCommand::FadeOut { generation: 1 });
         assert_eq!(fade.hide(), PanelFadeCommand::None);
         assert_eq!(fade.show(), PanelFadeCommand::FadeIn { from_current: true });
-        assert_eq!(fade.fade_out_finished(), PanelFadeCommand::None);
+        assert_eq!(fade.fade_out_finished(1), PanelFadeCommand::None);
+        assert_eq!(fade.hide(), PanelFadeCommand::FadeOut { generation: 2 });
+        assert_eq!(fade.fade_out_finished(1), PanelFadeCommand::None);
+        assert_eq!(fade.fade_out_finished(2), PanelFadeCommand::OrderOut);
     }
 }

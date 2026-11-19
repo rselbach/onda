@@ -25,6 +25,10 @@ final class GlobalHotkeys {
         self.core = core
     }
 
+    isolated deinit {
+        stop()
+    }
+
     /// Installs the Carbon event handler. The core registers the shortcut
     /// itself through `HotkeyBridge`.
     func start() {
@@ -67,6 +71,10 @@ final class GlobalHotkeys {
     func reenableStream() {
         guard let tap else { return }
         CGEvent.tapEnable(tap: tap, enable: true)
+        if !CGEvent.tapIsEnabled(tap: tap) {
+            Log.hotkey.error("Could not re-enable the event tap")
+            core?.hotkeyRegistrationFailed(status: Self.tapFailure)
+        }
     }
 
     func registerCancel(_ modifiers: [HotkeyModifiers]) {
@@ -256,7 +264,7 @@ final class GlobalHotkeys {
 /// so quit can unblock any waiting registration without deadlocking the main thread.
 final class HotkeyBridge: HotkeyPort, @unchecked Sendable {
     /// Set once on the main thread before `OndaCore.start` runs.
-    nonisolated(unsafe) weak var hotkeys: GlobalHotkeys?
+    @MainActor weak var hotkeys: GlobalHotkeys?
     private let condition = NSCondition()
     private var cancelled = false
 

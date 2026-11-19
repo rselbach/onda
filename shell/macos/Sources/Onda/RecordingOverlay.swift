@@ -22,10 +22,15 @@ final class RecordingOverlay {
     private var shown = false
 
     init(onCancel: @escaping @MainActor () -> Void) {
+        let overlayModel = model
         panel = OverlayPanel(
             size: NSSize(width: 400, height: 104),
             fade: PanelFade.recordingOverlay(),
-            content: RecordingOverlayView(model: model, onCancel: onCancel)
+            content: RecordingOverlayView(model: overlayModel, onCancel: onCancel),
+            onOrderOut: { [weak overlayModel] in
+                overlayModel?.state = nil
+                overlayModel?.icon = nil
+            }
         )
     }
 

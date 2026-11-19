@@ -419,8 +419,11 @@ pub enum FadeCommand {
         /// Start from the current opacity.
         from_current: bool,
     },
-    /// Fade out, then report [`PanelFade::fade_out_finished`].
-    FadeOut,
+    /// Fade out, then report [`PanelFade::fade_out_finished`] with `generation`.
+    FadeOut {
+        /// Token tying a completion callback to the fade-out that started it.
+        generation: u64,
+    },
     /// Take the panel off screen.
     OrderOut,
 }
@@ -429,6 +432,7 @@ pub enum FadeCommand {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PanelFade {
     state: FadeState,
+    generation: u64,
 }
 
 impl PanelFade {
@@ -458,20 +462,23 @@ impl PanelFade {
         match self.state {
             FadeState::Shown => {
                 self.state = FadeState::FadingOut;
-                FadeCommand::FadeOut
+                self.generation = self.generation.wrapping_add(1);
+                FadeCommand::FadeOut {
+                    generation: self.generation,
+                }
             }
             FadeState::Hidden | FadeState::FadingOut => FadeCommand::None,
         }
     }
 
-    /// The fade-out animation finished. Ignored if a show superseded it.
-    pub fn fade_out_finished(&mut self) -> FadeCommand {
+    /// The fade-out animation finished. Ignored if a newer show or hide superseded it.
+    pub fn fade_out_finished(&mut self, generation: u64) -> FadeCommand {
         match self.state {
-            FadeState::FadingOut => {
+            FadeState::FadingOut if generation == self.generation => {
                 self.state = FadeState::Hidden;
                 FadeCommand::OrderOut
             }
-            FadeState::Hidden | FadeState::Shown => FadeCommand::None,
+            FadeState::Hidden | FadeState::Shown | FadeState::FadingOut => FadeCommand::None,
         }
     }
 }
@@ -947,7 +954,7 @@ mod tests {
         enum Op {
             Show,
             Hide,
-            Finished,
+            Finished(u64),
         }
         struct Case {
             name: &'static str,
@@ -973,7 +980,7 @@ mod tests {
             Case {
                 name: "hide fades out",
                 ops: vec![Op::Show, Op::Hide],
-                want_last: FadeCommand::FadeOut,
+                want_last: FadeCommand::FadeOut { generation: 1 },
                 want_state: FadeState::FadingOut,
             },
             Case {
@@ -990,15 +997,34 @@ mod tests {
             },
             Case {
                 name: "finished fade orders out",
-                ops: vec![Op::Show, Op::Hide, Op::Finished],
+                ops: vec![Op::Show, Op::Hide, Op::Finished(1)],
                 want_last: FadeCommand::OrderOut,
                 want_state: FadeState::Hidden,
             },
             Case {
                 name: "superseded fade does not order out",
-                ops: vec![Op::Show, Op::Hide, Op::Show, Op::Finished],
+                ops: vec![Op::Show, Op::Hide, Op::Show, Op::Finished(1)],
                 want_last: FadeCommand::None,
                 want_state: FadeState::Shown,
+            },
+            Case {
+                name: "stale generation does not order out newer hide",
+                ops: vec![Op::Show, Op::Hide, Op::Show, Op::Hide, Op::Finished(1)],
+                want_last: FadeCommand::None,
+                want_state: FadeState::FadingOut,
+            },
+            Case {
+                name: "current generation after stale completion orders out",
+                ops: vec![
+                    Op::Show,
+                    Op::Hide,
+                    Op::Show,
+                    Op::Hide,
+                    Op::Finished(1),
+                    Op::Finished(2),
+                ],
+                want_last: FadeCommand::OrderOut,
+                want_state: FadeState::Hidden,
             },
             Case {
                 name: "hide while hidden does nothing",
@@ -1011,10 +1037,10 @@ mod tests {
             let mut fade = PanelFade::new();
             let mut last = FadeCommand::None;
             for op in &tc.ops {
-                last = match op {
+                last = match *op {
                     Op::Show => fade.show(),
                     Op::Hide => fade.hide(),
-                    Op::Finished => fade.fade_out_finished(),
+                    Op::Finished(generation) => fade.fade_out_finished(generation),
                 };
             }
             assert_eq!(last, tc.want_last, "{}", tc.name);

@@ -17,6 +17,10 @@ final class RecorderKeyMonitor {
         self.core = core
     }
 
+    isolated deinit {
+        remove()
+    }
+
     /// Follows the core's `listening` flag.
     func render(_ hotkey: HotkeyState) {
         switch (hotkey.listening, monitor != nil) {

@@ -17,10 +17,14 @@ final class DownloadOverlay {
     private let panel: OverlayPanel<DownloadOverlayView>
 
     init(onHide: @escaping @MainActor () -> Void) {
+        let overlayModel = model
         panel = OverlayPanel(
             size: NSSize(width: 400, height: 72),
             fade: PanelFade.downloadOverlay(),
-            content: DownloadOverlayView(model: model, onHide: onHide)
+            content: DownloadOverlayView(model: overlayModel, onHide: onHide),
+            onOrderOut: { [weak overlayModel] in
+                overlayModel?.state = .hidden
+            }
         )
     }
 

@@ -6,8 +6,9 @@ import SwiftUI
 struct SpeechPageView: View {
     let page: SpeechPage
     let core: OndaCore
-    /// The alert just answered, hidden until the core sends the next page
-    /// so it is not shown twice.
+    @State private var presentedAlert: SpeechAlert?
+    /// The alert just answered, kept so SwiftUI dismissal and queued alerts
+    /// never dismiss or double-present the same ID.
     @State private var answeredAlert: UInt64?
 
     var body: some View {
@@ -37,15 +38,40 @@ struct SpeechPageView: View {
             }
         }
         .formStyle(.grouped)
-        .alert(page.alert?.title ?? "", isPresented: alertPresented, presenting: page.alert) { alert in
+        .onChange(of: page.alert, initial: true) { old, next in
+            guard let next else {
+                presentedAlert = nil
+                return
+            }
+            guard next.id != answeredAlert else { return }
+            if presentedAlert?.id == next.id {
+                presentedAlert = next
+                return
+            }
+            if old == nil, presentedAlert == nil {
+                presentedAlert = next
+                return
+            }
+            presentedAlert = nil
+            let targetID = next.id
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(50))
+                if page.alert?.id == targetID, answeredAlert != targetID {
+                    presentedAlert = page.alert
+                }
+            }
+        }
+        .alert(presentedAlert?.title ?? "", isPresented: alertPresented, presenting: presentedAlert) { alert in
             if let confirm = alert.confirm {
                 Button(confirm, role: .destructive) {
                     answeredAlert = alert.id
+                    presentedAlert = nil
                     core.confirmSpeechAlert(id: alert.id)
                 }
             }
             Button(alert.dismiss, role: .cancel) {
                 answeredAlert = alert.id
+                presentedAlert = nil
                 core.dismissSpeechAlert(id: alert.id)
             }
         } message: { alert in
@@ -57,11 +83,18 @@ struct SpeechPageView: View {
         Binding(get: { page.selectedLanguage }, set: { core.selectLanguage(code: $0) })
     }
 
-    /// Buttons answer the alert; the core's next page clears or replaces it.
     private var alertPresented: Binding<Bool> {
         Binding(
-            get: { page.alert.map { $0.id != answeredAlert } ?? false },
-            set: { _ in }
+            get: { presentedAlert != nil },
+            set: { isPresented in
+                guard !isPresented else { return }
+                let dismissed = presentedAlert
+                presentedAlert = nil
+                if let dismissed, answeredAlert != dismissed.id {
+                    answeredAlert = dismissed.id
+                    core.dismissSpeechAlert(id: dismissed.id)
+                }
+            }
         )
     }
 }
