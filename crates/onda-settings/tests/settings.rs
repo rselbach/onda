@@ -1514,3 +1514,46 @@ fn observer_may_read_settings() {
 
     assert_eq!(*seen.lock().expect("lock"), vec![OutputMode::Clipboard]);
 }
+
+#[test]
+fn canonicalize_rewrites_blank_fireworks_and_deepseek_models() {
+    let file = json!({
+        "fireworksModel": "  ",
+        "deepseekModel": "",
+    });
+    let (dir, settings) = with_json(&file);
+    let changed = settings.canonicalize().expect("canonicalize");
+    assert_eq!(changed, vec![Key::FireworksModel, Key::DeepSeekModel]);
+    let path = settings_path(&dir);
+    assert_eq!(
+        stored(&path),
+        json!({
+            "fireworksModel": CleanupProvider::Fireworks.default_model().slug.as_ref(),
+            "deepseekModel": CleanupProvider::DeepSeek.default_model().slug.as_ref(),
+        })
+    );
+    assert_eq!(
+        settings.canonicalize().expect("second pass"),
+        Vec::<Key>::new()
+    );
+}
+
+#[test]
+fn missing_parent_cleanup_admission_returns_none_and_bare_lock_works() {
+    let dir = TempDir::new().expect("temp dir");
+    let missing = Settings::open(dir.path().join("missing-subdir").join("settings.json"));
+    assert_eq!(
+        missing.with_cleanup_admission(CleanupProvider::OpenRouter, || 1),
+        None
+    );
+
+    let canonical_dir = dir.path().join("cwd");
+    fs::create_dir_all(&canonical_dir).expect("mkdir");
+    let settings = Settings::open(canonical_dir.join("settings.json"));
+    settings
+        .set_output_mode(OutputMode::Clipboard)
+        .expect("write");
+    let lock_path = canonical_dir.join("settings.json.lock");
+    let mode = std::os::unix::fs::MetadataExt::mode(&fs::metadata(&lock_path).expect("meta"));
+    assert_eq!(mode & 0o777, 0o600);
+}

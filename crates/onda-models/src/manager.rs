@@ -1,6 +1,7 @@
 use std::collections::HashMap;
+use std::fs::{File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use onda_asr::{ManifestFile, ModelManifest};
@@ -17,7 +18,7 @@ use crate::error::{Error, describe};
 use crate::event::{DownloadEvent, DownloadEventKind};
 use crate::integrity::{mark_verified, sha256_file, verify_folder};
 use crate::remove::remove_descendant;
-use crate::validate::validate_folder;
+use crate::validate::{manifest_file_path, validate_folder};
 
 /// Retries per file after the first attempt (DL-4 "the downloader's own
 /// retries").
@@ -46,8 +47,18 @@ struct Inner {
     manifests: ManifestLookup,
     client: reqwest::Client,
     events: mpsc::UnboundedSender<DownloadEvent>,
-    active: Mutex<HashMap<ModelId, Active>>,
+    active: Mutex<HashMap<ModelId, ActiveEntry>>,
     retry_delay: Duration,
+}
+
+enum ActiveEntry {
+    Downloading(Active),
+    Deleting(Arc<DeletingState>),
+}
+
+struct DeletingState {
+    done_tx: watch::Sender<bool>,
+    sync: Arc<(Mutex<bool>, Condvar)>,
 }
 
 struct Active {
@@ -64,16 +75,18 @@ impl ModelManager {
         models_dir: impl Into<PathBuf>,
         manifests: impl Fn(ModelId) -> Option<&'static ModelManifest> + Send + Sync + 'static,
     ) -> Result<(ModelManager, mpsc::UnboundedReceiver<DownloadEvent>), Error> {
-        ModelManager::build(models_dir.into(), Box::new(manifests), RETRY_DELAY)
+        ModelManager::build(models_dir.into(), Box::new(manifests), RETRY_DELAY, true)
     }
 
     pub(crate) fn build(
         models_dir: PathBuf,
         manifests: ManifestLookup,
         retry_delay: Duration,
+        https_only: bool,
     ) -> Result<(ModelManager, mpsc::UnboundedReceiver<DownloadEvent>), Error> {
         let client = reqwest::Client::builder()
             .user_agent(concat!("Onda/", env!("CARGO_PKG_VERSION")))
+            .https_only(https_only)
             .connect_timeout(CONNECT_TIMEOUT)
             .read_timeout(READ_TIMEOUT)
             .build()
@@ -189,7 +202,10 @@ impl ModelManager {
 
     /// Whether `model` has a download task running.
     pub fn is_downloading(&self, model: ModelId) -> bool {
-        self.inner.lock_active().contains_key(&model)
+        matches!(
+            self.inner.lock_active().get(&model),
+            Some(ActiveEntry::Downloading(_))
+        )
     }
 
     /// Downloads `model` and returns its folder once every file is on disk
@@ -209,14 +225,28 @@ impl ModelManager {
     }
 
     async fn fetch(&self, model: ModelId, check_existing: bool) -> Result<PathBuf, Error> {
+        enum FetchAction {
+            Join {
+                outcome: watch::Receiver<Outcome>,
+                joinable: bool,
+            },
+            WaitDelete(watch::Receiver<bool>),
+        }
+
         let manifest = (self.inner.manifests)(model).ok_or_else(|| ModelError::NotFound {
             model_id: model.as_str().to_string(),
         })?;
         loop {
-            let (outcome, joinable) = {
+            let action = {
                 let mut active = self.inner.lock_active();
                 match active.get(&model) {
-                    Some(running) => (running.outcome.clone(), !running.token.is_cancelled()),
+                    Some(ActiveEntry::Downloading(running)) => FetchAction::Join {
+                        outcome: running.outcome.clone(),
+                        joinable: !running.token.is_cancelled(),
+                    },
+                    Some(ActiveEntry::Deleting(deleting)) => {
+                        FetchAction::WaitDelete(deleting.done_tx.subscribe())
+                    }
                     None => {
                         let folder = self.model_dir(model);
                         if !check_existing && validate_folder(&folder, manifest).is_complete() {
@@ -226,21 +256,31 @@ impl ModelManager {
                         let (sender, outcome) = watch::channel(None);
                         active.insert(
                             model,
-                            Active {
+                            ActiveEntry::Downloading(Active {
                                 token: token.clone(),
                                 outcome: outcome.clone(),
-                            },
+                            }),
                         );
                         tokio::spawn(Arc::clone(&self.inner).run(model, manifest, token, sender));
-                        (outcome, true)
+                        FetchAction::Join {
+                            outcome,
+                            joinable: true,
+                        }
                     }
                 }
             };
-            let result = wait(outcome).await;
-            // a cancelled download still winding down is not joined: wait for
-            // it to end, then start a fresh one
-            if joinable {
-                return result;
+            match action {
+                FetchAction::WaitDelete(mut done_rx) => {
+                    let _ = done_rx.wait_for(|done| *done).await;
+                }
+                FetchAction::Join { outcome, joinable } => {
+                    let result = wait(outcome).await;
+                    // a cancelled download still winding down is not joined: wait for
+                    // it to end, then start a fresh one
+                    if joinable {
+                        return result;
+                    }
+                }
             }
         }
     }
@@ -249,7 +289,7 @@ impl ModelManager {
     /// attempt resumes (DL-3). Returns whether a download was running.
     pub fn cancel(&self, model: ModelId) -> bool {
         let active = self.inner.lock_active();
-        let Some(running) = active.get(&model) else {
+        let Some(ActiveEntry::Downloading(running)) = active.get(&model) else {
             return false;
         };
         tracing::info!(%model, "cancelling download");
@@ -261,26 +301,92 @@ impl ModelManager {
     /// not a strict descendant of the models directory (ARCH-12). Fails with
     /// [`ModelError::NotFound`] when there is no folder.
     pub fn delete(&self, model: ModelId) -> Result<(), Error> {
-        if self.is_downloading(model) {
-            return Err(Error::Downloading(model));
+        struct DeleteGuard<'a> {
+            inner: &'a Inner,
+            model: ModelId,
+            state: Arc<DeletingState>,
         }
-        let folder = self.model_dir(model);
-        match std::fs::symlink_metadata(&folder) {
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Err(ModelError::NotFound {
-                    model_id: model.as_str().to_string(),
+
+        impl Drop for DeleteGuard<'_> {
+            fn drop(&mut self) {
+                {
+                    let mut active = self.inner.lock_active();
+                    if matches!(active.get(&self.model), Some(ActiveEntry::Deleting(_))) {
+                        active.remove(&self.model);
+                    }
                 }
-                .into());
+                let _ = self.state.done_tx.send(true);
+                let (lock, cv) = &*self.state.sync;
+                let mut done = lock.lock().unwrap_or_else(PoisonError::into_inner);
+                *done = true;
+                cv.notify_all();
             }
-            Err(error) => {
+        }
+
+        let state = loop {
+            let sync = {
+                let mut active = self.inner.lock_active();
+                match active.get(&model) {
+                    Some(ActiveEntry::Downloading(_)) => return Err(Error::Downloading(model)),
+                    Some(ActiveEntry::Deleting(deleting)) => Arc::clone(&deleting.sync),
+                    None => {
+                        let (done_tx, _) = watch::channel(false);
+                        let state = Arc::new(DeletingState {
+                            done_tx,
+                            sync: Arc::new((Mutex::new(false), Condvar::new())),
+                        });
+                        active.insert(model, ActiveEntry::Deleting(Arc::clone(&state)));
+                        break state;
+                    }
+                }
+            };
+            let (lock, cv) = &*sync;
+            let mut done = lock.lock().unwrap_or_else(PoisonError::into_inner);
+            while !*done {
+                done = cv.wait(done).unwrap_or_else(PoisonError::into_inner);
+            }
+        };
+        let _guard = DeleteGuard {
+            inner: &self.inner,
+            model,
+            state,
+        };
+
+        let folder = self.model_dir(model);
+        let check_exists = || match std::fs::symlink_metadata(&folder) {
+            Ok(_) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Err(Error::from(ModelError::NotFound {
+                    model_id: model.as_str().to_string(),
+                }))
+            }
+            Err(error) => Err(Error::Io(format!(
+                "Could not read {}: {}",
+                folder.display(),
+                describe(&error)
+            ))),
+        };
+        check_exists()?;
+        let lock_path = self.inner.lock_path(model);
+        let file = open_lock_file(&lock_path).map_err(|error| {
+            Error::Io(format!(
+                "Could not lock {}: {}",
+                lock_path.display(),
+                describe(&error)
+            ))
+        })?;
+        match file.try_lock() {
+            Ok(()) => {}
+            Err(TryLockError::WouldBlock) => return Err(Error::Downloading(model)),
+            Err(TryLockError::Error(error)) => {
                 return Err(Error::Io(format!(
-                    "Could not read {}: {}",
-                    folder.display(),
+                    "Could not lock {}: {}",
+                    lock_path.display(),
                     describe(&error)
                 )));
             }
         }
+        check_exists()?;
         remove_descendant(self.models_dir(), &folder)?;
         tracing::info!(%model, "deleted model folder");
         Ok(())
@@ -387,7 +493,11 @@ impl Inner {
         self.models_dir.join(model.as_str())
     }
 
-    fn lock_active(&self) -> MutexGuard<'_, HashMap<ModelId, Active>> {
+    fn lock_path(&self, model: ModelId) -> PathBuf {
+        self.models_dir.join(format!(".{}.lock", model.as_str()))
+    }
+
+    fn lock_active(&self) -> MutexGuard<'_, HashMap<ModelId, ActiveEntry>> {
         self.active.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -406,6 +516,7 @@ impl Inner {
         sender: watch::Sender<Outcome>,
     ) {
         let folder = self.model_dir(model);
+        let lock_path = self.lock_path(model);
         tracing::info!(%model, total_bytes = manifest.total_size(), "download started");
         self.emit(model, DownloadEventKind::Started);
         let mut job = Job {
@@ -416,7 +527,20 @@ impl Inner {
             start: Instant::now(),
             throttle: ProgressThrottle::new(),
         };
-        let result = job.fetch_all(manifest, &folder).await;
+        let locked = tokio::task::spawn_blocking(move || lock_model_blocking(&lock_path))
+            .await
+            .map_err(|error| Error::Io(format!("Could not lock model folder: {error}")))
+            .and_then(|res| res);
+        let result = match locked {
+            Ok(_file_lock) => {
+                if token.is_cancelled() {
+                    Err(Error::Cancelled)
+                } else {
+                    job.fetch_all(manifest, &folder).await
+                }
+            }
+            Err(error) => Err(error),
+        };
         let elapsed_ms = job.start.elapsed().as_millis() as u64;
         let (result, event) = match result {
             Ok(()) => {
@@ -508,7 +632,10 @@ impl Job<'_> {
         done: u64,
     ) -> Result<bool, Error> {
         let model = self.model;
-        let dest = folder.join(file.path);
+        let dest = manifest_file_path(folder, file.path).ok_or_else(|| {
+            tracing::error!(%model, path = file.path, "refusing unsafe manifest file path");
+            Error::UnsafePath(PathBuf::from(file.path))
+        })?;
         if file_len(&dest).await == Some(file.size) {
             let Some(want) = file.sha256 else {
                 return Ok(false);
@@ -702,6 +829,9 @@ impl Job<'_> {
         out.flush()
             .await
             .map_err(|e| io_attempt("write", part, &e))?;
+        out.sync_all()
+            .await
+            .map_err(|e| io_attempt("sync", part, &e))?;
         if written < file.size {
             return Err(Attempt::Retry {
                 message: format!("connection closed after {written} of {} bytes", file.size),
@@ -763,4 +893,31 @@ fn part_path(dest: &Path) -> PathBuf {
     let mut name = dest.as_os_str().to_os_string();
     name.push(PART_SUFFIX);
     PathBuf::from(name)
+}
+
+fn open_lock_file(path: &Path) -> std::io::Result<File> {
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(false).read(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)
+}
+
+fn lock_model_blocking(path: &Path) -> Result<File, Error> {
+    let io_err = |error: &std::io::Error| {
+        Error::Io(format!(
+            "Could not lock {}: {}",
+            path.display(),
+            describe(error)
+        ))
+    };
+    let file = open_lock_file(path).map_err(|error| io_err(&error))?;
+    file.lock().map_err(|error| io_err(&error))?;
+    Ok(file)
 }

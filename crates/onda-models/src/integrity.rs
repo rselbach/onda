@@ -7,14 +7,14 @@
 //! check writes a marker into the model folder recording each file's size
 //! and modification time; while those are unchanged, the folder is trusted.
 
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::Path;
 use std::time::{Instant, SystemTime};
 
 use onda_asr::ModelManifest;
 use sha2::{Digest, Sha256};
 
-use crate::validate::validate_folder;
+use crate::validate::{manifest_file_path, validate_folder};
 
 /// File name of the verification marker inside a model folder (ARCH-12: it
 /// never lives outside the models directory).
@@ -75,7 +75,9 @@ pub(crate) fn verify_folder(
                 progress(fraction);
             }
         };
-        let got = sha256_file(&folder.join(file.path), &mut on_read)
+        let path = manifest_file_path(folder, file.path)
+            .ok_or_else(|| format!("unsafe manifest path {}", file.path))?;
+        let got = sha256_file(&path, &mut on_read)
             .map_err(|e| format!("could not read {}: {e}", file.path))?;
         if !got.eq_ignore_ascii_case(want) {
             tracing::error!(path = file.path, want, got, "model file checksum mismatch");
@@ -146,7 +148,9 @@ pub(crate) fn sha256_file(path: &Path, on_read: &mut dyn FnMut(u64)) -> io::Resu
 fn marker_text(folder: &Path, manifest: &ModelManifest) -> io::Result<String> {
     let mut text = format!("{MARKER_HEADER}\n");
     for file in manifest.files {
-        let meta = std::fs::metadata(folder.join(file.path))?;
+        let path = manifest_file_path(folder, file.path)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, file.path))?;
+        let meta = std::fs::metadata(path)?;
         let modified = match meta.modified()?.duration_since(SystemTime::UNIX_EPOCH) {
             Ok(since) => since.as_nanos().to_string(),
             Err(before) => format!("-{}", before.duration().as_nanos()),
@@ -172,18 +176,22 @@ fn marker_is_current(folder: &Path, want: &str) -> bool {
     }
 }
 
-// written to a temporary file and renamed, so a crash never leaves a
-// truncated marker
+// written to a unique temporary file, synced, and renamed so a crash never
+// leaves a truncated marker
 fn write_marker(folder: &Path, text: &str) {
     let marker = folder.join(VERIFIED_MARKER);
-    let temp = folder.join(format!("{VERIFIED_MARKER}.tmp"));
-    let written = std::fs::write(&temp, text).and_then(|()| std::fs::rename(&temp, &marker));
-    if let Err(error) = written {
+    let prefix = format!("{VERIFIED_MARKER}.");
+    let write = || -> io::Result<()> {
+        let mut tmp = tempfile::Builder::new()
+            .prefix(&prefix)
+            .suffix(".tmp")
+            .tempfile_in(folder)?;
+        tmp.write_all(text.as_bytes())?;
+        tmp.as_file().sync_all()?;
+        tmp.persist(&marker).map_err(|error| error.error)?;
+        Ok(())
+    };
+    if let Err(error) = write() {
         tracing::warn!(%error, "could not write the verification marker");
-        if let Err(error) = std::fs::remove_file(&temp)
-            && error.kind() != io::ErrorKind::NotFound
-        {
-            tracing::warn!(%error, "could not delete the temporary verification marker");
-        }
     }
 }

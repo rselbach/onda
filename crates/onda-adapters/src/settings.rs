@@ -46,45 +46,47 @@ impl SettingsAdapter {
 impl SettingsSource for SettingsAdapter {
     fn snapshot(&self) -> SessionSettings {
         let os_language = self.os_language.as_deref();
-        let settings = &self.settings;
-        let language = settings.selected_language(os_language);
-        let stored_model = settings.selected_model(&self.catalog, os_language);
-        let cleanup_provider = settings.cleanup_provider();
-        let selected_model = resolved_model(
-            &self.catalog,
-            &stored_model,
-            REMOVED_MODEL_IDS,
-            default_language(os_language),
-        );
-        SessionSettings {
-            activation_mode: settings.activation_mode(),
-            output_mode: settings.output_mode(),
-            language,
-            recent_languages: recent_languages(language, &settings.recent_languages()),
-            selected_model,
-            cleanup_enabled: settings.post_processing_enabled(),
-            cleanup_provider,
-            cleanup_model: settings.cleanup_model(cleanup_provider.unwrap_or_default()),
-            cleanup_prompt: settings.cleanup_prompt(),
-            replacement_rules: settings.replacement_rules(),
-            history_enabled: settings.history_enabled(),
-            keep_audio: settings.history_keeps_audio(),
-            pause_media: settings.pause_media_during_recording(),
-            sounds: settings.sound_feedback_enabled(),
-            hotkey: settings.hotkey(self.default_hotkey),
-            first_run_pending: settings.first_run_pending(),
-            onboarding: OnboardingFlags {
-                onboarding_completed: settings.onboarding_completed(),
-                did_show_first_run_setup: settings.did_show_first_run_setup(),
-            },
-            input_device_uid: settings.input_device_uid(),
-            history_retention: settings.history_retention(),
-            stored_model,
-            stored_recent_languages: settings.recent_languages(),
-            last_notice_key: settings.last_model_migration_notice_key(),
-            declined_notice_key: settings.declined_model_migration_notice_key(),
-            os_language: self.os_language.clone(),
-        }
+        self.settings.read(|settings| {
+            let language = settings.selected_language(os_language);
+            let stored_model = settings.selected_model(&self.catalog, os_language);
+            let cleanup_provider = settings.cleanup_provider();
+            let selected_model = resolved_model(
+                &self.catalog,
+                &stored_model,
+                REMOVED_MODEL_IDS,
+                default_language(os_language),
+            );
+            let stored_recent_languages = settings.recent_languages();
+            SessionSettings {
+                activation_mode: settings.activation_mode(),
+                output_mode: settings.output_mode(),
+                language,
+                recent_languages: recent_languages(language, &stored_recent_languages),
+                selected_model,
+                cleanup_enabled: settings.post_processing_enabled(),
+                cleanup_provider,
+                cleanup_model: settings.cleanup_model(cleanup_provider.unwrap_or_default()),
+                cleanup_prompt: settings.cleanup_prompt(),
+                replacement_rules: settings.replacement_rules(),
+                history_enabled: settings.history_enabled(),
+                keep_audio: settings.history_keeps_audio(),
+                pause_media: settings.pause_media_during_recording(),
+                sounds: settings.sound_feedback_enabled(),
+                hotkey: settings.hotkey(self.default_hotkey),
+                first_run_pending: settings.first_run_pending(),
+                onboarding: OnboardingFlags {
+                    onboarding_completed: settings.onboarding_completed(),
+                    did_show_first_run_setup: settings.did_show_first_run_setup(),
+                },
+                input_device_uid: settings.input_device_uid(),
+                history_retention: settings.history_retention(),
+                stored_model,
+                stored_recent_languages,
+                last_notice_key: settings.last_model_migration_notice_key(),
+                declined_notice_key: settings.declined_model_migration_notice_key(),
+                os_language: self.os_language.clone(),
+            }
+        })
     }
 
     fn admit_cleanup(&self, request: CleanupRequest) -> oneshot::Receiver<CleanupRequest> {
@@ -371,5 +373,29 @@ mod tests {
                 tc.name
             );
         }
+    }
+
+    #[test]
+    fn snapshot_reads_consistent_fields() {
+        let (_dir, adapter) = cleanup_settings();
+        adapter
+            .settings
+            .select_cleanup_model(
+                CleanupProvider::DeepSeek,
+                CleanupProvider::DeepSeek.default_model(),
+            )
+            .expect("select cleanup model");
+        adapter
+            .settings
+            .set_onboarding_flags(true, true)
+            .expect("set onboarding");
+        let snapshot = adapter.snapshot();
+        assert!(snapshot.cleanup_enabled);
+        assert_eq!(snapshot.cleanup_provider, Some(CleanupProvider::DeepSeek));
+        assert_eq!(
+            snapshot.cleanup_model,
+            CleanupProvider::DeepSeek.default_model().clone()
+        );
+        assert!(!snapshot.first_run_pending);
     }
 }

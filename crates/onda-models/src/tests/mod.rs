@@ -77,6 +77,7 @@ impl Fixture {
             models_dir.clone(),
             Box::new(move |model| (model == MODEL).then_some(manifest)),
             Duration::from_millis(5),
+            false,
         )
         .expect("manager");
         Fixture {
@@ -645,4 +646,90 @@ fn event_status_and_end() {
         assert_eq!(status_text("Parakeet TDT v2", status), tc.want_text);
         assert_eq!(event.end(), tc.want_end, "{}", tc.want_text);
     }
+}
+
+#[tokio::test]
+async fn new_rejects_plain_http_and_unsafe_manifest_paths() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let http_manifest = fixture_manifest("http://127.0.0.1:9/greendale");
+    let (https_manager, _events) =
+        ModelManager::new(temp.path().join("ModelsHttps"), move |model| {
+            (model == MODEL).then_some(http_manifest)
+        })
+        .expect("manager");
+    let err = https_manager
+        .download(MODEL)
+        .await
+        .expect_err("plain HTTP rejected in ModelManager::new");
+    assert!(matches!(err, Error::Download(_)), "unexpected {err:?}");
+
+    let escaped: &'static ModelManifest = Box::leak(Box::new(ModelManifest {
+        base_url: "https://example.invalid/model",
+        files: Box::leak(Box::new([ManifestFile {
+            path: "../escape.bin",
+            size: 4,
+            sha256: None,
+        }])),
+    }));
+    let (path_manager, _events) = ModelManager::build(
+        temp.path().join("ModelsPath"),
+        Box::new(move |model| (model == MODEL).then_some(escaped)),
+        Duration::from_millis(1),
+        true,
+    )
+    .expect("manager");
+    let err = path_manager
+        .download(MODEL)
+        .await
+        .expect_err("parent traversal rejected");
+    assert!(matches!(err, Error::UnsafePath(_)), "unexpected {err:?}");
+
+    let abs: &'static ModelManifest = Box::leak(Box::new(ModelManifest {
+        base_url: "https://example.invalid/model",
+        files: Box::leak(Box::new([ManifestFile {
+            path: "/etc/passwd",
+            size: 4,
+            sha256: None,
+        }])),
+    }));
+    let (abs_manager, _events) = ModelManager::build(
+        temp.path().join("ModelsAbs"),
+        Box::new(move |model| (model == MODEL).then_some(abs)),
+        Duration::from_millis(1),
+        true,
+    )
+    .expect("manager");
+    let err = abs_manager
+        .download(MODEL)
+        .await
+        .expect_err("absolute path rejected");
+    assert!(matches!(err, Error::UnsafePath(_)), "unexpected {err:?}");
+}
+
+#[tokio::test]
+async fn delete_cross_process_lock_blocks_and_reports_downloading() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let models_dir = temp.path().join("Models");
+    let manifest = fixture_manifest("https://example.invalid/model");
+    let (manager, _events) = ModelManager::new(models_dir.clone(), move |model| {
+        (model == MODEL).then_some(manifest)
+    })
+    .expect("manager");
+    let folder = manager.model_dir(MODEL);
+    std::fs::create_dir_all(&folder).expect("create model folder");
+
+    let lock_path = models_dir.join(format!(".{}.lock", MODEL.as_str()));
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .expect("open lock");
+    lock.lock().expect("hold cross-process lock");
+    assert_eq!(manager.delete(MODEL), Err(Error::Downloading(MODEL)));
+    drop(lock);
+
+    manager.delete(MODEL).expect("delete after lock released");
+    assert!(!folder.exists());
 }

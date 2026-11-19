@@ -1,8 +1,33 @@
 use std::io;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 use onda_asr::ModelManifest;
 use onda_domain::models::FolderValidation;
+
+/// Resolves a manifest-relative file path strictly inside `folder`, rejecting
+/// empty paths, `.`, `..`, roots, and platform prefixes.
+pub(crate) fn manifest_file_path(folder: &Path, rel: &str) -> Option<PathBuf> {
+    if rel.is_empty() {
+        return None;
+    }
+    let mut out = folder.to_path_buf();
+    let mut count = 0;
+    for component in Path::new(rel).components() {
+        match component {
+            Component::Normal(part) => {
+                out.push(part);
+                count += 1;
+            }
+            Component::CurDir
+            | Component::ParentDir
+            | Component::RootDir
+            | Component::Prefix(_) => {
+                return None;
+            }
+        }
+    }
+    (count > 0).then_some(out)
+}
 
 /// Checks a model folder against its manifest (DL-5): every file must exist
 /// with exactly the manifest size. Only metadata is read, so this is cheap
@@ -38,13 +63,16 @@ pub fn validate_folder(folder: &Path, manifest: &ModelManifest) -> FolderValidat
         has_weights: true,
     };
     for file in manifest.files {
-        let complete = match std::fs::metadata(folder.join(file.path)) {
-            Ok(meta) => meta.is_file() && meta.len() == file.size,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
-            Err(error) => {
-                tracing::warn!(path = file.path, %error, "could not read model file");
-                false
-            }
+        let complete = match manifest_file_path(folder, file.path) {
+            None => false,
+            Some(path) => match std::fs::metadata(path) {
+                Ok(meta) => meta.is_file() && meta.len() == file.size,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+                Err(error) => {
+                    tracing::warn!(path = file.path, %error, "could not read model file");
+                    false
+                }
+            },
         };
         if complete {
             continue;

@@ -258,7 +258,7 @@ impl HistoryStore {
     fn lock_history(&self, state: &mut State) -> Result<File, HistoryError> {
         let path = self.lock_path();
         let mut acquire = || -> std::io::Result<File> {
-            if let Some(parent) = path.parent() {
+            if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
                 std::fs::create_dir_all(parent)?;
             }
             let mut file = OpenOptions::new()

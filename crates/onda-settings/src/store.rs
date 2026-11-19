@@ -3,6 +3,7 @@
 use std::fmt;
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Write};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
@@ -46,6 +47,233 @@ pub struct Settings {
 struct CachedSettings {
     values: Map<String, Value>,
     readable: bool,
+}
+
+/// Consistent read-only view over the in-memory settings cache while its lock
+/// is held by [`Settings::read`].
+pub struct SettingsRead<'a>(MutexGuard<'a, CachedSettings>);
+
+impl SettingsRead<'_> {
+    /// Whether `key` is stored, valid or not.
+    pub fn is_set(&self, key: Key) -> bool {
+        self.0.values.contains_key(key.as_str())
+    }
+
+    /// The stored `selectedModel` id, or the recommended model for the
+    /// default language when unset.
+    pub fn selected_model(&self, catalog: &Catalog, os_language: Option<&str>) -> String {
+        if let Some(id) = self.string(Key::SelectedModel) {
+            return id;
+        }
+        default_model(catalog, default_language(os_language))
+            .as_str()
+            .to_owned()
+    }
+
+    /// The selected language.
+    pub fn selected_language(&self, os_language: Option<&str>) -> LanguageSetting {
+        let Some(code) = self.string(Key::SelectedLanguage) else {
+            return default_language(os_language);
+        };
+        match resolve_stored_language(&code) {
+            StoredLanguage::Valid(language) => language,
+            StoredLanguage::Invalid { .. } => {
+                tracing::warn!(key = %Key::SelectedLanguage, "unrecognized language code; reading as auto");
+                LanguageSetting::Auto
+            }
+        }
+    }
+
+    /// The comma-separated `recentLanguages` value.
+    pub fn recent_languages(&self) -> String {
+        self.string(Key::RecentLanguages).unwrap_or_default()
+    }
+
+    /// The input device UID; empty means the system default.
+    pub fn input_device_uid(&self) -> String {
+        self.string(Key::InputDeviceUid).unwrap_or_default()
+    }
+
+    /// Where transcripts go.
+    pub fn output_mode(&self) -> OutputMode {
+        self.enum_value()
+    }
+
+    /// The dictation shortcut.
+    pub fn hotkey(&self, default: &Shortcut) -> Shortcut {
+        let Some(raw) = self.raw(Key::Hotkey) else {
+            return default.clone();
+        };
+        Shortcut::from_setting(&raw).unwrap_or_else(|error| {
+            tracing::warn!(key = %Key::Hotkey, %error, "invalid setting; using the default");
+            default.clone()
+        })
+    }
+
+    /// How the hotkey starts and stops recording.
+    pub fn activation_mode(&self) -> ActivationMode {
+        self.enum_value()
+    }
+
+    /// "Pause media while recording".
+    pub fn pause_media_during_recording(&self) -> bool {
+        self.bool(Key::PauseMediaDuringRecording, false)
+    }
+
+    /// Whether Linux pastes with Ctrl+Shift+V.
+    pub fn terminal_paste_shortcut(&self) -> bool {
+        self.bool(Key::TerminalPasteShortcut, false)
+    }
+
+    /// Start/stop cues.
+    pub fn sound_feedback_enabled(&self) -> bool {
+        self.bool(Key::SoundFeedbackEnabled, true)
+    }
+
+    /// Whether history is saved.
+    pub fn history_enabled(&self) -> bool {
+        if !self.0.readable {
+            return false;
+        }
+        match self.0.values.get(Key::HistoryEnabled.as_str()) {
+            None => true,
+            Some(Value::Bool(enabled)) => *enabled,
+            Some(_) => {
+                tracing::warn!(key = %Key::HistoryEnabled, "expected a boolean; history is off");
+                false
+            }
+        }
+    }
+
+    /// Whether history keeps audio recordings.
+    pub fn history_keeps_audio(&self) -> bool {
+        self.bool(Key::HistoryKeepsAudio, false)
+    }
+
+    /// How long history is kept.
+    pub fn history_retention(&self) -> HistoryRetention {
+        if !self.0.readable {
+            return HistoryRetention::Forever;
+        }
+        let Some(raw) = self.0.values.get(Key::HistoryRetention.as_str()) else {
+            return HistoryRetention::default();
+        };
+        raw.as_str()
+            .and_then(HistoryRetention::from_setting)
+            .unwrap_or_else(|| {
+                tracing::warn!(key = %Key::HistoryRetention, "unrecognized value; keeping all history");
+                HistoryRetention::Forever
+            })
+    }
+
+    /// Instant-replacement rules.
+    pub fn replacement_rules(&self) -> Vec<ReplacementRule> {
+        let raw = self.raw(Key::ReplacementEntries);
+        let decoded = decode_rules(raw.as_ref());
+        if let Some(error) = decoded.error {
+            tracing::error!(
+                key = %Key::ReplacementEntries,
+                category = ?error.classify(),
+                "corrupt replacement rules; reading the rows that decode"
+            );
+        }
+        decoded.rules
+    }
+
+    /// "Post-process transcripts".
+    pub fn post_processing_enabled(&self) -> bool {
+        self.bool(Key::PostProcessingEnabled, false)
+    }
+
+    /// Configured cleanup provider, if readable.
+    pub fn cleanup_provider(&self) -> Option<CleanupProvider> {
+        if !self.0.readable {
+            return None;
+        }
+        match self.0.values.get(Key::CleanupProvider.as_str()) {
+            None => Some(CleanupProvider::default()),
+            Some(id) => id.as_str().and_then(CleanupProvider::from_id),
+        }
+    }
+
+    /// The resolved cleanup model for `provider`.
+    pub fn cleanup_model(&self, provider: CleanupProvider) -> CleanupModel {
+        let stored = model_key(provider).and_then(|key| self.string(key));
+        provider.resolve_model(stored.as_deref())
+    }
+
+    /// The cleanup prompt in use.
+    pub fn cleanup_prompt(&self) -> CleanupPrompt {
+        let Some(text) = self.string(Key::CleanupPrompt) else {
+            return CleanupPrompt::default();
+        };
+        CleanupPrompt::from_text(&text).unwrap_or_else(|_blank| {
+            tracing::warn!(key = %Key::CleanupPrompt, "blank prompt; using the default");
+            CleanupPrompt::default()
+        })
+    }
+
+    /// `onboardingCompleted`.
+    pub fn onboarding_completed(&self) -> bool {
+        self.bool(Key::OnboardingCompleted, false)
+    }
+
+    /// `didShowFirstRunSetup`.
+    pub fn did_show_first_run_setup(&self) -> bool {
+        self.bool(Key::DidShowFirstRunSetup, false)
+    }
+
+    /// Whether first-run onboarding is pending.
+    pub fn first_run_pending(&self) -> bool {
+        !self.onboarding_completed() && !self.did_show_first_run_setup()
+    }
+
+    /// The `old->new` key of the last model-migration notice shown.
+    pub fn last_model_migration_notice_key(&self) -> String {
+        self.string(Key::LastModelMigrationNoticeKey)
+            .unwrap_or_default()
+    }
+
+    /// The `old->new` key of the declined model-migration notice.
+    pub fn declined_model_migration_notice_key(&self) -> String {
+        self.string(Key::DeclinedModelMigrationNoticeKey)
+            .unwrap_or_default()
+    }
+
+    fn raw(&self, key: Key) -> Option<Value> {
+        self.0.values.get(key.as_str()).cloned()
+    }
+
+    fn string(&self, key: Key) -> Option<String> {
+        match self.raw(key)? {
+            Value::String(value) => Some(value),
+            other => {
+                wrong_type(key, &other);
+                None
+            }
+        }
+    }
+
+    fn bool(&self, key: Key, default: bool) -> bool {
+        match self.raw(key) {
+            None => default,
+            Some(Value::Bool(value)) => value,
+            Some(other) => {
+                wrong_type(key, &other);
+                default
+            }
+        }
+    }
+
+    fn enum_value<E: SettingEnum>(&self) -> E {
+        let Some(raw) = self.string(E::KEY) else {
+            return E::default();
+        };
+        E::from_setting(&raw).unwrap_or_else(|| {
+            tracing::warn!(key = %E::KEY, "unrecognized value; using the default");
+            E::default()
+        })
+    }
 }
 
 impl CachedSettings {
@@ -135,9 +363,15 @@ impl Settings {
         self
     }
 
+    /// Calls `reader` once with the settings mutex held, so multi-key reads
+    /// observe one consistent snapshot.
+    pub fn read<T>(&self, reader: impl FnOnce(&SettingsRead<'_>) -> T) -> T {
+        reader(&SettingsRead(self.lock()))
+    }
+
     /// Whether `key` is stored, valid or not.
     pub fn is_set(&self, key: Key) -> bool {
-        self.lock().values.contains_key(key.as_str())
+        self.read(|s| s.is_set(key))
     }
 
     /// Removes `key`, so it reads as its default again.
@@ -147,26 +381,30 @@ impl Settings {
 
     /// Rewrites stale enum-like values to their canonical form at launch
     /// (SET-3): `outputMode`, `hotkeyActivationMode`, `historyRetention`,
-    /// and `openRouterModel` (replaced slugs map to their successor, blank
-    /// ones to the default; CLN-21). Unset keys stay unset. Idempotent:
-    /// returns the keys it rewrote, empty once everything is canonical.
+    /// `openRouterModel`, `fireworksModel`, and `deepseekModel` (replaced slugs
+    /// map to their successor, blank ones to the default; CLN-21). Unset keys
+    /// stay unset. Idempotent: returns the keys it rewrote, empty once
+    /// everything is canonical.
     pub fn canonicalize(&self) -> Result<Vec<Key>, SettingsError> {
         self.apply(|| {
-            let model = self.cleanup_model(CleanupProvider::OpenRouter);
-            let canonical = [
-                (Key::OutputMode, self.output_mode().as_setting()),
-                (
-                    Key::HotkeyActivationMode,
-                    self.activation_mode().as_setting(),
-                ),
-                (Key::HistoryRetention, self.history_retention().as_setting()),
-                (Key::OpenRouterModel, model.slug.as_ref()),
-            ];
-            canonical
-                .into_iter()
-                .filter(|(key, value)| self.raw(*key).is_some_and(|raw| raw != *value))
-                .map(|(key, value)| (key, Some(Value::from(value))))
-                .collect()
+            self.read(|s| {
+                let openrouter = s.cleanup_model(CleanupProvider::OpenRouter);
+                let fireworks = s.cleanup_model(CleanupProvider::Fireworks);
+                let deepseek = s.cleanup_model(CleanupProvider::DeepSeek);
+                let canonical = [
+                    (Key::OutputMode, s.output_mode().as_setting()),
+                    (Key::HotkeyActivationMode, s.activation_mode().as_setting()),
+                    (Key::HistoryRetention, s.history_retention().as_setting()),
+                    (Key::OpenRouterModel, openrouter.slug.as_ref()),
+                    (Key::FireworksModel, fireworks.slug.as_ref()),
+                    (Key::DeepSeekModel, deepseek.slug.as_ref()),
+                ];
+                canonical
+                    .into_iter()
+                    .filter(|(key, value)| s.raw(*key).is_some_and(|raw| raw != *value))
+                    .map(|(key, value)| (key, Some(Value::from(value))))
+                    .collect()
+            })
         })
     }
 
@@ -178,12 +416,7 @@ impl Settings {
     /// `catalog` says whether a system engine exists; `os_language` is the
     /// OS locale's ISO language code (e.g. `pt` for `pt-BR`).
     pub fn selected_model(&self, catalog: &Catalog, os_language: Option<&str>) -> String {
-        if let Some(id) = self.string(Key::SelectedModel) {
-            return id;
-        }
-        default_model(catalog, default_language(os_language))
-            .as_str()
-            .to_owned()
+        self.read(|s| s.selected_model(catalog, os_language))
     }
 
     /// Stores `selectedModel`.
@@ -196,16 +429,7 @@ impl Settings {
     /// call [`Settings::reset_invalid_language`] to store that and get the
     /// warning.
     pub fn selected_language(&self, os_language: Option<&str>) -> LanguageSetting {
-        let Some(code) = self.string(Key::SelectedLanguage) else {
-            return default_language(os_language);
-        };
-        match resolve_stored_language(&code) {
-            StoredLanguage::Valid(language) => language,
-            StoredLanguage::Invalid { .. } => {
-                tracing::warn!(key = %Key::SelectedLanguage, "unrecognized language code; reading as auto");
-                LanguageSetting::Auto
-            }
-        }
+        self.read(|s| s.selected_language(os_language))
     }
 
     /// Stores `selectedLanguage`, ending the live OS-locale default.
@@ -219,7 +443,7 @@ impl Settings {
     pub fn reset_invalid_language(&self) -> Result<Option<UserMessage>, SettingsError> {
         let mut invalid = None;
         self.apply(|| {
-            let stored = self.string(Key::SelectedLanguage);
+            let stored = self.read(|s| s.string(Key::SelectedLanguage));
             let Some(StoredLanguage::Invalid { code }) =
                 stored.as_deref().map(resolve_stored_language)
             else {
@@ -239,7 +463,7 @@ impl Settings {
     /// The comma-separated `recentLanguages` value (LANG-8); decode it with
     /// `onda_domain::language_menu::recent_languages`.
     pub fn recent_languages(&self) -> String {
-        self.string(Key::RecentLanguages).unwrap_or_default()
+        self.read(|s| s.recent_languages())
     }
 
     /// Stores `recentLanguages`, most recent first.
@@ -249,7 +473,7 @@ impl Settings {
 
     /// The input device UID; empty means the system default (AUD-2).
     pub fn input_device_uid(&self) -> String {
-        self.string(Key::InputDeviceUid).unwrap_or_default()
+        self.read(|s| s.input_device_uid())
     }
 
     /// Stores `inputDeviceUID`; pass `""` for the system default.
@@ -259,7 +483,7 @@ impl Settings {
 
     /// Where transcripts go. Default `type`.
     pub fn output_mode(&self) -> OutputMode {
-        self.enum_value()
+        self.read(|s| s.output_mode())
     }
 
     /// Stores `outputMode`.
@@ -271,13 +495,7 @@ impl Settings {
     /// stored value that does not parse or fails HOT-4 reads as it too
     /// (HOT-5).
     pub fn hotkey(&self, default: &Shortcut) -> Shortcut {
-        let Some(raw) = self.raw(Key::Hotkey) else {
-            return default.clone();
-        };
-        Shortcut::from_setting(&raw).unwrap_or_else(|error| {
-            tracing::warn!(key = %Key::Hotkey, %error, "invalid setting; using the default");
-            default.clone()
-        })
+        self.read(|s| s.hotkey(default))
     }
 
     /// Stores `hotkey` as `{key, modifiers[]}`.
@@ -288,7 +506,7 @@ impl Settings {
 
     /// How the hotkey starts and stops recording. Default `hold`.
     pub fn activation_mode(&self) -> ActivationMode {
-        self.enum_value()
+        self.read(|s| s.activation_mode())
     }
 
     /// Stores `hotkeyActivationMode`.
@@ -298,7 +516,7 @@ impl Settings {
 
     /// "Pause media while recording". Default false.
     pub fn pause_media_during_recording(&self) -> bool {
-        self.bool(Key::PauseMediaDuringRecording, false)
+        self.read(|s| s.pause_media_during_recording())
     }
 
     /// Stores `pauseMediaDuringRecording`.
@@ -309,7 +527,7 @@ impl Settings {
     /// Whether Linux pastes with Ctrl+Shift+V instead of Ctrl+V, as
     /// terminals expect. Default false.
     pub fn terminal_paste_shortcut(&self) -> bool {
-        self.bool(Key::TerminalPasteShortcut, false)
+        self.read(|s| s.terminal_paste_shortcut())
     }
 
     /// Stores `terminalPasteShortcut`.
@@ -319,7 +537,7 @@ impl Settings {
 
     /// Start/stop cues. Default true.
     pub fn sound_feedback_enabled(&self) -> bool {
-        self.bool(Key::SoundFeedbackEnabled, true)
+        self.read(|s| s.sound_feedback_enabled())
     }
 
     /// Stores `soundFeedbackEnabled`.
@@ -330,18 +548,7 @@ impl Settings {
     /// Whether history is saved. An unset key in valid settings defaults to
     /// true. An invalid value or unreadable settings disables saving history.
     pub fn history_enabled(&self) -> bool {
-        let cache = self.lock();
-        if !cache.readable {
-            return false;
-        }
-        match cache.values.get(Key::HistoryEnabled.as_str()) {
-            None => true,
-            Some(Value::Bool(enabled)) => *enabled,
-            Some(_) => {
-                tracing::warn!(key = %Key::HistoryEnabled, "expected a boolean; history is off");
-                false
-            }
-        }
+        self.read(|s| s.history_enabled())
     }
 
     /// Stores `historyEnabled`.
@@ -351,7 +558,7 @@ impl Settings {
 
     /// Whether history keeps recordings. Default false.
     pub fn history_keeps_audio(&self) -> bool {
-        self.bool(Key::HistoryKeepsAudio, false)
+        self.read(|s| s.history_keeps_audio())
     }
 
     /// Stores `historyKeepsAudio`.
@@ -363,18 +570,7 @@ impl Settings {
     /// does not recognize reads as `forever`: it may come from a newer build,
     /// and a guessed shorter limit would delete history.
     pub fn history_retention(&self) -> HistoryRetention {
-        let cache = self.lock();
-        if !cache.readable {
-            return HistoryRetention::Forever;
-        }
-        let Some(raw) = cache.values.get(Key::HistoryRetention.as_str()) else {
-            return HistoryRetention::default();
-        };
-        raw.as_str().and_then(HistoryRetention::from_setting)
-            .unwrap_or_else(|| {
-                tracing::warn!(key = %Key::HistoryRetention, "unrecognized value; keeping all history");
-                HistoryRetention::Forever
-            })
+        self.read(|s| s.history_retention())
     }
 
     /// Stores `historyRetention`.
@@ -386,17 +582,7 @@ impl Settings {
     /// value that is not a list reads as empty. The stored value stays as
     /// it is until [`Settings::set_replacement_rules`] replaces it (REP-7).
     pub fn replacement_rules(&self) -> Vec<ReplacementRule> {
-        let raw = self.raw(Key::ReplacementEntries);
-        let decoded = decode_rules(raw.as_ref());
-        if let Some(error) = decoded.error {
-            // serde's message can quote user text, so log only its category
-            tracing::error!(
-                key = %Key::ReplacementEntries,
-                category = ?error.classify(),
-                "corrupt replacement rules; reading the rows that decode"
-            );
-        }
-        decoded.rules
+        self.read(|s| s.replacement_rules())
     }
 
     /// Stores `replacementEntries` exactly as given; filter with
@@ -408,7 +594,7 @@ impl Settings {
 
     /// "Post-process transcripts". Default false.
     pub fn post_processing_enabled(&self) -> bool {
-        self.bool(Key::PostProcessingEnabled, false)
+        self.read(|s| s.post_processing_enabled())
     }
 
     /// Stores `postProcessingEnabled`.
@@ -418,14 +604,7 @@ impl Settings {
 
     /// An unset provider uses the default. An unreadable selection authorizes no provider.
     pub fn cleanup_provider(&self) -> Option<CleanupProvider> {
-        let cache = self.lock();
-        if !cache.readable {
-            return None;
-        }
-        match cache.values.get(Key::CleanupProvider.as_str()) {
-            None => Some(CleanupProvider::default()),
-            Some(id) => id.as_str().and_then(CleanupProvider::from_id),
-        }
+        self.read(|s| s.cleanup_provider())
     }
 
     /// Runs `handoff` under a shared file lock if the on-disk settings still
@@ -437,9 +616,14 @@ impl Settings {
         provider: CleanupProvider,
         handoff: impl FnOnce() -> T,
     ) -> Option<T> {
-        let file = open_lock_file(&self.path)
-            .inspect_err(|error| tracing::warn!(%error, "could not open settings lock for cleanup"))
-            .ok()?;
+        let file = match open_lock_file(&self.path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return None,
+            Err(error) => {
+                tracing::warn!(%error, "could not open settings lock for cleanup");
+                return None;
+            }
+        };
         match file.try_lock_shared() {
             Ok(()) => {}
             Err(TryLockError::WouldBlock) => return None,
@@ -462,8 +646,7 @@ impl Settings {
     /// their successor, blank or corrupt values to the default, and any
     /// other slug is kept.
     pub fn cleanup_model(&self, provider: CleanupProvider) -> CleanupModel {
-        let stored = model_key(provider).and_then(|key| self.string(key));
-        provider.resolve_model(stored.as_deref())
+        self.read(|s| s.cleanup_model(provider))
     }
 
     /// Stores `provider`'s model slug; a provider with one fixed model
@@ -499,13 +682,7 @@ impl Settings {
     /// `cleanupPrompt`, or Onda's default when it is unset, blank, or
     /// corrupt.
     pub fn cleanup_prompt(&self) -> CleanupPrompt {
-        let Some(text) = self.string(Key::CleanupPrompt) else {
-            return CleanupPrompt::default();
-        };
-        CleanupPrompt::from_text(&text).unwrap_or_else(|_blank| {
-            tracing::warn!(key = %Key::CleanupPrompt, "blank prompt; using the default");
-            CleanupPrompt::default()
-        })
+        self.read(|s| s.cleanup_prompt())
     }
 
     /// Stores a custom prompt as `cleanupPrompt`. The default removes the
@@ -517,19 +694,19 @@ impl Settings {
 
     /// `onboardingCompleted`. Default false.
     pub fn onboarding_completed(&self) -> bool {
-        self.bool(Key::OnboardingCompleted, false)
+        self.read(|s| s.onboarding_completed())
     }
 
     /// `didShowFirstRunSetup`. Default false.
     pub fn did_show_first_run_setup(&self) -> bool {
-        self.bool(Key::DidShowFirstRunSetup, false)
+        self.read(|s| s.did_show_first_run_setup())
     }
 
     /// First-run onboarding is pending while both onboarding flags are false
     /// (SET-4). This, not `onboardingCompleted` alone, drives automatic
     /// onboarding, "Finish Setup to Dictate", and the launch-time load skip.
     pub fn first_run_pending(&self) -> bool {
-        !self.onboarding_completed() && !self.did_show_first_run_setup()
+        self.read(|s| s.first_run_pending())
     }
 
     /// Finishing onboarding sets both flags in one write (SET-4).
@@ -573,8 +750,7 @@ impl Settings {
 
     /// The `old->new` key of the last model-migration notice shown (DL-14).
     pub fn last_model_migration_notice_key(&self) -> String {
-        self.string(Key::LastModelMigrationNoticeKey)
-            .unwrap_or_default()
+        self.read(|s| s.last_model_migration_notice_key())
     }
 
     /// Stores `lastModelMigrationNoticeKey`.
@@ -585,8 +761,7 @@ impl Settings {
     /// The `old->new` key of the declined model-migration notice, or empty
     /// when not declined (DL-14).
     pub fn declined_model_migration_notice_key(&self) -> String {
-        self.string(Key::DeclinedModelMigrationNoticeKey)
-            .unwrap_or_default()
+        self.read(|s| s.declined_model_migration_notice_key())
     }
 
     /// Stores `declinedModelMigrationNoticeKey`; pass `""` to end the
@@ -597,41 +772,6 @@ impl Settings {
 
     fn lock(&self) -> MutexGuard<'_, CachedSettings> {
         self.values.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    fn raw(&self, key: Key) -> Option<Value> {
-        self.lock().values.get(key.as_str()).cloned()
-    }
-
-    fn string(&self, key: Key) -> Option<String> {
-        match self.raw(key)? {
-            Value::String(value) => Some(value),
-            other => {
-                wrong_type(key, &other);
-                None
-            }
-        }
-    }
-
-    fn bool(&self, key: Key, default: bool) -> bool {
-        match self.raw(key) {
-            None => default,
-            Some(Value::Bool(value)) => value,
-            Some(other) => {
-                wrong_type(key, &other);
-                default
-            }
-        }
-    }
-
-    fn enum_value<E: SettingEnum>(&self) -> E {
-        let Some(raw) = self.string(E::KEY) else {
-            return E::default();
-        };
-        E::from_setting(&raw).unwrap_or_else(|| {
-            tracing::warn!(key = %E::KEY, "unrecognized value; using the default");
-            E::default()
-        })
     }
 
     fn put(&self, key: Key, value: Value) -> Result<(), SettingsError> {
@@ -752,7 +892,7 @@ fn read(path: &Path) -> io::Result<Result<Map<String, Value>, &'static str>> {
 }
 
 fn lock_file(path: &Path) -> Result<File, SettingsError> {
-    if let Some(parent) = path.parent() {
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         fs::create_dir_all(parent)?;
     }
     let file = open_lock_file(path)?;
@@ -767,6 +907,8 @@ fn open_lock_file(path: &Path) -> io::Result<File> {
         .truncate(false)
         .read(true)
         .write(true)
+        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+        .mode(0o600)
         .open(sibling(path, ".lock"))
 }
 
