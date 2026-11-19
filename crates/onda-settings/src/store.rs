@@ -948,75 +948,55 @@ fn sibling(path: &Path, suffix: &str) -> PathBuf {
     path.with_file_name(name)
 }
 
-// stored string forms of the domain enums; the domain has no canonical
-// mapping, so it lives here with the keys
-trait SettingEnum: Copy + Default {
+/// Canonical stored string forms of the domain enums (shared with CLI/tools).
+pub trait SettingEnum: Copy + Default + PartialEq + 'static {
+    /// The `settings.json` key storing this enum.
     const KEY: Key;
 
-    fn as_setting(self) -> &'static str;
+    /// `(setting_string, variant)` pairs in canonical order.
+    const VARIANTS: &'static [(&'static str, Self)];
 
-    fn from_setting(value: &str) -> Option<Self>;
+    /// Returns the stored string form of `self`.
+    fn as_setting(self) -> &'static str {
+        Self::VARIANTS
+            .iter()
+            .find(|(_, variant)| *variant == self)
+            .map_or("", |(name, _)| *name)
+    }
+
+    /// Parses the stored string form, or `None` if unrecognized.
+    fn from_setting(value: &str) -> Option<Self> {
+        Self::VARIANTS
+            .iter()
+            .find(|(name, _)| *name == value)
+            .map(|(_, variant)| *variant)
+    }
 }
 
 impl SettingEnum for OutputMode {
     const KEY: Key = Key::OutputMode;
-
-    fn as_setting(self) -> &'static str {
-        match self {
-            OutputMode::Type => "type",
-            OutputMode::Clipboard => "clipboard",
-        }
-    }
-
-    fn from_setting(value: &str) -> Option<Self> {
-        match value {
-            "type" => Some(OutputMode::Type),
-            "clipboard" => Some(OutputMode::Clipboard),
-            _ => None,
-        }
-    }
+    const VARIANTS: &'static [(&'static str, Self)] = &[
+        ("type", OutputMode::Type),
+        ("clipboard", OutputMode::Clipboard),
+    ];
 }
 
 impl SettingEnum for ActivationMode {
     const KEY: Key = Key::HotkeyActivationMode;
-
-    fn as_setting(self) -> &'static str {
-        match self {
-            ActivationMode::Hold => "hold",
-            ActivationMode::Toggle => "toggle",
-            ActivationMode::Automatic => "automatic",
-        }
-    }
-
-    fn from_setting(value: &str) -> Option<Self> {
-        match value {
-            "hold" => Some(ActivationMode::Hold),
-            "toggle" => Some(ActivationMode::Toggle),
-            "automatic" => Some(ActivationMode::Automatic),
-            _ => None,
-        }
-    }
+    const VARIANTS: &'static [(&'static str, Self)] = &[
+        ("hold", ActivationMode::Hold),
+        ("toggle", ActivationMode::Toggle),
+        ("automatic", ActivationMode::Automatic),
+    ];
 }
 
 impl SettingEnum for HistoryRetention {
     const KEY: Key = Key::HistoryRetention;
-
-    fn as_setting(self) -> &'static str {
-        match self {
-            HistoryRetention::Week => "week",
-            HistoryRetention::Month => "month",
-            HistoryRetention::Forever => "forever",
-        }
-    }
-
-    fn from_setting(value: &str) -> Option<Self> {
-        match value {
-            "week" => Some(HistoryRetention::Week),
-            "month" => Some(HistoryRetention::Month),
-            "forever" => Some(HistoryRetention::Forever),
-            _ => None,
-        }
-    }
+    const VARIANTS: &'static [(&'static str, Self)] = &[
+        ("week", HistoryRetention::Week),
+        ("month", HistoryRetention::Month),
+        ("forever", HistoryRetention::Forever),
+    ];
 }
 
 #[cfg(test)]

@@ -5,7 +5,7 @@
 
 use anyhow::{Context, Result};
 use onda_adapters::DataPaths;
-use onda_settings::{Key, Settings};
+use onda_settings::Settings;
 
 /// `onboarding` subcommands.
 #[derive(clap::Subcommand)]
@@ -22,13 +22,9 @@ pub fn run(command: Command, paths: &DataPaths) -> Result<()> {
         Command::Complete => settings
             .complete_onboarding()
             .context("saving the onboarding flags")?,
-        Command::Reset => {
-            for key in [Key::OnboardingCompleted, Key::DidShowFirstRunSetup] {
-                settings
-                    .remove(key)
-                    .with_context(|| format!("clearing {}", key.as_str()))?;
-            }
-        }
+        Command::Reset => settings
+            .set_onboarding_flags(false, false)
+            .context("clearing the onboarding flags")?,
     }
     eprintln!(
         "first-run onboarding pending in {}: {}",

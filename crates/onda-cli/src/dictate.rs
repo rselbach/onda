@@ -24,8 +24,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use onda_adapters::{
-    CloudCleanup, DataPaths, History, Keychain, Microphone, Models, SettingsAdapter,
-    forward_audio_events,
+    CloudCleanup, DataPaths, DownloadListener, History, Keychain, Microphone, Models,
+    SettingsAdapter, forward_audio_events, forward_download_events,
 };
 use onda_app::ports::{
     CopyOutcome, Cue, Delivery, FieldText, Files, HotkeySource, InsertOutcome, LoginItem, Notifier,
@@ -37,9 +37,9 @@ use onda_app::{App, DictationPressState as PressState, Event, EventSink, HotkeyE
 use onda_asr::SpeechEngine;
 use onda_asr_coreml::ParakeetEngine;
 use onda_asr_coreml::manifest::manifest;
-use onda_audio::{AudioCapture, DeviceSelection};
+use onda_audio::{AudioCapture, AudioDeviceEvents, DeviceSelection, PollingDeviceEvents};
 use onda_cleanup::CleanupClient;
-use onda_domain::cleanup::CleanupProvider;
+use onda_domain::cleanup::{ApiKey, CleanupProvider};
 use onda_domain::hotkey::{GlobeKeyAction, ModifierSet, Shortcut};
 use onda_domain::messages::{LoginItemRegistryStatus, NotificationAuthorization};
 use onda_domain::models::{Catalog, ModelId};
@@ -49,7 +49,7 @@ use onda_domain::privacy_naming::PrivacyNaming;
 use onda_domain::types::{ActivationMode, MicrophonePermission};
 use onda_history::{HistoryHooks, HistoryStore};
 use onda_models::ModelManager;
-use onda_settings::{KeychainSecretStore, MemorySecretStore, SecretStore, Settings};
+use onda_settings::{KeychainSecretStore, SecretError, SecretStore, Settings};
 use tokio::runtime::Runtime;
 use tokio::time::{Instant as TokioInstant, sleep_until};
 
@@ -97,8 +97,11 @@ fn parse_mode(mode: &str) -> Result<ActivationMode, String> {
 pub fn run(args: &Args, paths: &DataPaths, models_dir: &Path) -> Result<()> {
     let started = Instant::now();
     let settings = Arc::new(Settings::open(paths.settings_file()));
+    if let Err(error) = settings.canonicalize() {
+        eprintln!("warning: could not canonicalize settings: {error}");
+    }
     apply_overrides(args, &settings)?;
-    let os_language = os_language();
+    let os_language = crate::os_language();
     let catalog = Catalog::new(None);
     // the terminal always reports Accessibility as trusted, so no copy
     // names the permission
@@ -123,16 +126,19 @@ pub fn run(args: &Args, paths: &DataPaths, models_dir: &Path) -> Result<()> {
         .thread_name("onda-core")
         .enable_all()
         .build()?;
-    let (manager, _download_events) = ModelManager::new(models_dir, manifest)?;
+    let (manager, download_events) = ModelManager::new(models_dir, manifest)?;
+    let download_listener: DownloadListener = Arc::new(|update| {
+        eprintln!("download of {}: {:?}", update.model, update.kind);
+    });
+    forward_download_events(runtime.handle(), download_events, download_listener.clone());
     let models = Models::new(
         manager,
         catalog.clone(),
         Box::new(parakeet_engine),
         runtime.handle().clone(),
-        Arc::new(|update| {
-            eprintln!("download of {}: {:?}", update.model, update.kind);
-        }),
+        download_listener,
     );
+    models.remove_obsolete();
     if !models.downloaded().contains(&snapshot.selected_model) {
         bail!(
             "{} is not installed in {}; run `onda-cli models download {}`",
@@ -144,6 +150,8 @@ pub fn run(args: &Args, paths: &DataPaths, models_dir: &Path) -> Result<()> {
 
     let selection = DeviceSelection::from_setting(&settings.input_device_uid());
     let (capture, audio_events) = AudioCapture::new(selection)?;
+    let mut device_events = PollingDeviceEvents::new(Duration::from_millis(500));
+    device_events.subscribe(capture.device_change_sink());
     capture.prepare();
     let (tray_tx, trays) = mpsc::channel();
     let console = Arc::new(Console {
@@ -233,27 +241,42 @@ fn apply_overrides(args: &Args, settings: &Settings) -> Result<()> {
     Ok(())
 }
 
-// the OS locale's language code from the POSIX locale variables (LANG-2)
-fn os_language() -> Option<String> {
-    ["LC_ALL", "LC_MESSAGES", "LANG"]
-        .into_iter()
-        .filter_map(|name| std::env::var(name).ok())
-        .find(|value| !value.is_empty() && value != "C" && value != "POSIX")
-        .and_then(|value| value.split(['_', '.', '-']).next().map(str::to_lowercase))
+struct EnvOpenRouterKey<S> {
+    override_key: String,
+    inner: S,
+}
+
+impl<S: SecretStore> SecretStore for EnvOpenRouterKey<S> {
+    fn read(&self, provider: CleanupProvider) -> Result<Option<ApiKey>, SecretError> {
+        if provider == CleanupProvider::OpenRouter
+            && let Ok(key) = ApiKey::new(&self.override_key)
+        {
+            return Ok(Some(key));
+        }
+        self.inner.read(provider)
+    }
+
+    fn write(&self, provider: CleanupProvider, key: &ApiKey) -> Result<(), SecretError> {
+        self.inner.write(provider, key)
+    }
+
+    fn delete(&self, provider: CleanupProvider) -> Result<(), SecretError> {
+        self.inner.delete(provider)
+    }
 }
 
 fn secrets() -> Arc<dyn SecretSource> {
-    let Some(key) = std::env::var(KEY_VARIABLE)
+    let keychain = KeychainSecretStore::new();
+    let Some(override_key) = std::env::var(KEY_VARIABLE)
         .ok()
-        .filter(|key| !key.trim().is_empty())
+        .filter(|key| ApiKey::new(key).is_ok())
     else {
-        return Arc::new(Keychain::new(KeychainSecretStore::new()));
+        return Arc::new(Keychain::new(keychain));
     };
-    let store = MemorySecretStore::new();
-    if let Err(error) = store.save(CleanupProvider::OpenRouter, &key) {
-        eprintln!("could not hold {KEY_VARIABLE}: {error}");
-    }
-    Arc::new(Keychain::new(store))
+    Arc::new(Keychain::new(EnvOpenRouterKey {
+        override_key,
+        inner: keychain,
+    }))
 }
 
 fn parakeet_engine(model: ModelId, dir: &Path) -> Option<Box<dyn SpeechEngine>> {

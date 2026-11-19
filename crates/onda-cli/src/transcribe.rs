@@ -59,6 +59,15 @@ pub fn run(args: &Args, models_dir: &Path) -> Result<()> {
     eprintln!("Verifying model...");
     manager.verify_contents(args.model)?;
 
+    let min_samples = engine.min_samples();
+    if samples.len() < min_samples {
+        bail!(
+            "{} is too short ({} samples; minimum {min_samples})",
+            args.wav.display(),
+            samples.len()
+        );
+    }
+
     let started = Instant::now();
     engine.load(&mut |progress| {
         eprintln!("  {:>3.0}% {}", progress.fraction * 100.0, progress.status)
@@ -70,7 +79,11 @@ pub fn run(args: &Args, models_dir: &Path) -> Result<()> {
     let decode = started.elapsed().as_secs_f64();
     println!("audio: {audio_seconds:.2} s");
     println!("decode: {:.1} ms", decode * 1e3);
-    println!("real-time factor: {:.4}", decode / audio_seconds);
+    if audio_seconds > 0.0 {
+        println!("real-time factor: {:.4}", decode / audio_seconds);
+    } else {
+        println!("real-time factor: n/a");
+    }
     println!("transcript: {text}");
 
     if args.bench {
@@ -96,6 +109,13 @@ fn read_wav(path: &Path) -> Result<Vec<f32>> {
     let interleaved: Vec<f32> = match spec.sample_format {
         hound::SampleFormat::Float => reader.samples::<f32>().collect::<Result<_, _>>(),
         hound::SampleFormat::Int => {
+            if !(1..=64).contains(&spec.bits_per_sample) {
+                bail!(
+                    "{} has unsupported {}-bit PCM samples",
+                    path.display(),
+                    spec.bits_per_sample
+                );
+            }
             let scale = (1u64 << (spec.bits_per_sample - 1)) as f32;
             reader
                 .samples::<i32>()
@@ -210,4 +230,30 @@ fn stream(
         if text == offline { "yes" } else { "no" }
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_wav_rejects_unsupported_pcm_bit_depth() {
+        let temp = tempfile::tempdir().unwrap();
+        let wav = temp.path().join("bad-bits.wav");
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: SAMPLE_RATE,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&wav, spec).unwrap();
+        writer.write_sample(0_i16).unwrap();
+        writer.finalize().unwrap();
+
+        let mut raw = std::fs::read(&wav).unwrap();
+        // Bytes 34..36 in a standard canonical PCM header store bits_per_sample.
+        raw[34..36].copy_from_slice(&0_u16.to_le_bytes());
+        std::fs::write(&wav, raw).unwrap();
+        assert!(read_wav(&wav).is_err());
+    }
 }

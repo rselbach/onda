@@ -154,3 +154,36 @@ fn shutdown_returns_while_a_worker_is_still_blocked() {
         "shutdown outlasted the blocked worker"
     );
 }
+
+#[test]
+fn env_openrouter_key_layers_over_inner_store() {
+    use onda_settings::MemorySecretStore;
+
+    let inner = MemorySecretStore::new();
+    inner
+        .save(CleanupProvider::OpenRouter, "sk-inner-openrouter")
+        .unwrap();
+    inner
+        .save(CleanupProvider::DeepSeek, "sk-deepseek-greendale")
+        .unwrap();
+
+    let layered = Keychain::new(EnvOpenRouterKey {
+        override_key: "sk-env-troy".to_owned(),
+        inner,
+    });
+    assert_eq!(
+        layered.api_key(CleanupProvider::OpenRouter).unwrap(),
+        Some("sk-env-troy".to_owned())
+    );
+    assert_eq!(
+        layered.api_key(CleanupProvider::DeepSeek).unwrap(),
+        Some("sk-deepseek-greendale".to_owned())
+    );
+    layered
+        .save_api_key(CleanupProvider::Fireworks, "fw-abed")
+        .unwrap();
+    assert_eq!(
+        layered.api_key(CleanupProvider::Fireworks).unwrap(),
+        Some("fw-abed".to_owned())
+    );
+}

@@ -17,4 +17,4 @@ pub use secrets::{
     DEEPSEEK_ACCOUNT, FIREWORKS_ACCOUNT, KeychainSecretStore, MemorySecretStore,
     OPENROUTER_ACCOUNT, SERVICE, SecretError, SecretOp, SecretStore, key_account,
 };
-pub use store::{Settings, SettingsError, SettingsRead};
+pub use store::{SettingEnum, Settings, SettingsError, SettingsRead};

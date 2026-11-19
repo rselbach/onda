@@ -95,3 +95,12 @@ fn default_data_dir() -> Result<PathBuf> {
     let data = dirs::data_dir().context("no application data directory on this system")?;
     Ok(data.join("Onda"))
 }
+
+// the OS locale's language code from the POSIX locale variables (LANG-2)
+pub(crate) fn os_language() -> Option<String> {
+    ["LC_ALL", "LC_MESSAGES", "LANG"]
+        .into_iter()
+        .filter_map(|name| std::env::var(name).ok())
+        .find(|value| !value.is_empty() && value != "C" && value != "POSIX")
+        .and_then(|value| value.split(['_', '.', '-']).next().map(str::to_lowercase))
+}

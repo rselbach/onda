@@ -90,11 +90,11 @@ async fn download(
 ) -> Result<()> {
     let name = catalog.name(model);
     let print = |event: DownloadEvent| {
-        print!("\r\x1b[2K{}", status_text(name, event.status()));
+        eprint!("\r\x1b[2K{}", status_text(name, event.status()));
         if event.end().is_some() {
-            println!();
+            eprintln!();
         }
-        std::io::stdout().flush().ok();
+        std::io::stderr().flush().ok();
     };
     let ctrl_c_manager = manager.clone();
     tokio::spawn(async move {

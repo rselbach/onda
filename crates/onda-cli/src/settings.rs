@@ -11,8 +11,7 @@ use onda_domain::languages::LanguageSetting;
 use onda_domain::models::{Catalog, ModelId};
 use onda_domain::platform::Platform;
 use onda_domain::privacy_naming::PrivacyNaming;
-use onda_domain::types::{ActivationMode, HistoryRetention, OutputMode};
-use onda_settings::{Key, Settings};
+use onda_settings::{Key, SettingEnum, Settings};
 use serde_json::Value;
 
 /// `settings` subcommands.
@@ -49,23 +48,6 @@ const KEYS: [Key; 13] = [
     Key::PostProcessingEnabled,
 ];
 
-const ACTIVATION_MODES: [(&str, ActivationMode); 3] = [
-    ("hold", ActivationMode::Hold),
-    ("toggle", ActivationMode::Toggle),
-    ("automatic", ActivationMode::Automatic),
-];
-
-const RETENTIONS: [(&str, HistoryRetention); 3] = [
-    ("week", HistoryRetention::Week),
-    ("month", HistoryRetention::Month),
-    ("forever", HistoryRetention::Forever),
-];
-
-const OUTPUT_MODES: [(&str, OutputMode); 2] = [
-    ("type", OutputMode::Type),
-    ("clipboard", OutputMode::Clipboard),
-];
-
 pub fn run(command: Command, paths: &DataPaths) -> Result<()> {
     let settings = Settings::open(paths.settings_file());
     match command {
@@ -94,19 +76,22 @@ fn parse_key(name: &str) -> Result<Key> {
 }
 
 fn get(settings: &Settings, key: Key) -> Result<Value> {
+    let os_language = crate::os_language();
     let value = match key {
-        Key::SelectedModel => Value::from(settings.selected_model(&Catalog::new(None), None)),
-        Key::SelectedLanguage => Value::from(settings.selected_language(None).code()),
+        Key::SelectedModel => {
+            Value::from(settings.selected_model(&Catalog::new(None), os_language.as_deref()))
+        }
+        Key::SelectedLanguage => {
+            Value::from(settings.selected_language(os_language.as_deref()).code())
+        }
         Key::RecentLanguages => Value::from(settings.recent_languages()),
-        Key::HistoryRetention => Value::from(name_of(&RETENTIONS, settings.history_retention())),
+        Key::HistoryRetention => Value::from(settings.history_retention().as_setting()),
         Key::Hotkey => {
             let default = Platform::macos(PrivacyNaming::Accessibility).default_shortcut;
             serde_json::to_value(settings.hotkey(default))?
         }
-        Key::HotkeyActivationMode => {
-            Value::from(name_of(&ACTIVATION_MODES, settings.activation_mode()))
-        }
-        Key::OutputMode => Value::from(name_of(&OUTPUT_MODES, settings.output_mode())),
+        Key::HotkeyActivationMode => Value::from(settings.activation_mode().as_setting()),
+        Key::OutputMode => Value::from(settings.output_mode().as_setting()),
         Key::InputDeviceUid => Value::from(settings.input_device_uid()),
         Key::SoundFeedbackEnabled => Value::from(settings.sound_feedback_enabled()),
         Key::PauseMediaDuringRecording => Value::from(settings.pause_media_during_recording()),
@@ -131,17 +116,15 @@ fn set(settings: &Settings, key: Key, value: &Value) -> Result<()> {
             let languages = parse_recents(codes);
             settings.set_recent_languages(&languages)?;
         }
-        Key::HistoryRetention => settings.set_history_retention(value_of(&RETENTIONS, value)?)?,
+        Key::HistoryRetention => settings.set_history_retention(enum_from_json(value)?)?,
         Key::Hotkey => {
             let shortcut = Shortcut::from_setting(value)
                 .map_err(|error| anyhow!(error.message(&KeyNames::MACOS)))
                 .context("invalid hotkey")?;
             settings.set_hotkey(&shortcut)?;
         }
-        Key::HotkeyActivationMode => {
-            settings.set_activation_mode(value_of(&ACTIVATION_MODES, value)?)?;
-        }
-        Key::OutputMode => settings.set_output_mode(value_of(&OUTPUT_MODES, value)?)?,
+        Key::HotkeyActivationMode => settings.set_activation_mode(enum_from_json(value)?)?,
+        Key::OutputMode => settings.set_output_mode(enum_from_json(value)?)?,
         Key::InputDeviceUid => {
             let uid = value.as_str().context("expected a JSON string")?;
             settings.set_input_device_uid(uid)?;
@@ -166,19 +149,12 @@ fn parse_recents(codes: &str) -> Vec<LanguageSetting> {
         .unwrap_or_default()
 }
 
-fn name_of<T: PartialEq + Copy>(table: &[(&'static str, T)], value: T) -> &'static str {
-    table
-        .iter()
-        .find(|(_, v)| *v == value)
-        .map_or("", |(name, _)| name)
-}
-
-fn value_of<T: Copy>(table: &[(&'static str, T)], value: &Value) -> Result<T> {
+fn enum_from_json<E: SettingEnum>(value: &Value) -> Result<E> {
     let name = value.as_str().context("expected a JSON string")?;
-    match table.iter().find(|(n, _)| *n == name) {
-        Some((_, value)) => Ok(*value),
+    match E::from_setting(name) {
+        Some(parsed) => Ok(parsed),
         None => {
-            let known: Vec<&str> = table.iter().map(|(n, _)| *n).collect();
+            let known: Vec<&str> = E::VARIANTS.iter().map(|(n, _)| *n).collect();
             bail!("expected one of {}", known.join(", "))
         }
     }
@@ -197,6 +173,7 @@ fn boolean(value: &Value) -> Result<bool> {
 mod tests {
     use super::*;
     use onda_domain::language_menu::encode_recent;
+    use onda_domain::types::{ActivationMode, HistoryRetention, OutputMode};
 
     #[test]
     fn recent_language_input_keeps_the_first_five_distinct_valid_codes() {
@@ -207,5 +184,22 @@ mod tests {
         ] {
             assert_eq!(encode_recent(&parse_recents(input)), want);
         }
+    }
+
+    #[test]
+    fn enum_json_uses_canonical_setting_variants() {
+        assert_eq!(
+            enum_from_json::<ActivationMode>(&Value::from("automatic")).unwrap(),
+            ActivationMode::Automatic
+        );
+        assert_eq!(
+            enum_from_json::<HistoryRetention>(&Value::from("forever")).unwrap(),
+            HistoryRetention::Forever
+        );
+        assert_eq!(
+            enum_from_json::<OutputMode>(&Value::from("clipboard")).unwrap(),
+            OutputMode::Clipboard
+        );
+        assert!(enum_from_json::<OutputMode>(&Value::from("paste")).is_err());
     }
 }

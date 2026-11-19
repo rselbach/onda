@@ -26,7 +26,7 @@ pub struct Args {
     #[arg(long)]
     device: Option<String>,
     /// Seconds to record per session, before the tail.
-    #[arg(long, default_value_t = 3.0)]
+    #[arg(long, default_value_t = 3.0, value_parser = parse_seconds)]
     seconds: f64,
     /// Number of sessions.
     #[arg(long, default_value_t = 1)]
@@ -39,6 +39,18 @@ pub struct Args {
     out: String,
 }
 
+fn parse_seconds(raw: &str) -> Result<f64, String> {
+    let seconds: f64 = raw
+        .parse()
+        .map_err(|_| format!("invalid --seconds '{raw}'"))?;
+    if !seconds.is_finite() || seconds <= 0.0 || Duration::try_from_secs_f64(seconds).is_err() {
+        return Err(format!(
+            "--seconds must be a positive finite duration (got '{raw}')"
+        ));
+    }
+    Ok(seconds)
+}
+
 pub fn devices() -> Result<()> {
     for device in input_devices()? {
         let marker = if device.is_default { "*" } else { " " };
@@ -48,6 +60,15 @@ pub fn devices() -> Result<()> {
 }
 
 pub fn run(args: &Args) -> Result<()> {
+    if !args.seconds.is_finite()
+        || args.seconds <= 0.0
+        || Duration::try_from_secs_f64(args.seconds).is_err()
+    {
+        return Err(anyhow!(
+            "--seconds must be a positive finite duration (got {})",
+            args.seconds
+        ));
+    }
     let selection = args
         .device
         .clone()
@@ -133,5 +154,18 @@ fn watch(
             Err(RecvTimeoutError::Timeout) => return false,
             Err(RecvTimeoutError::Disconnected) => return true,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_seconds_rejects_non_positive_and_non_finite() {
+        for bad in ["0", "-1", "-0.5", "NaN", "inf", "1e400", "abc"] {
+            assert!(parse_seconds(bad).is_err(), "{bad}");
+        }
+        assert_eq!(parse_seconds("2.5").unwrap(), 2.5);
     }
 }
