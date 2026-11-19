@@ -23,10 +23,9 @@ use onda_domain::non_dictation_ui::ModelDownload;
 use onda_domain::onboarding::{OnboardingDownloadUpdate, launch_plan};
 use onda_domain::routing::routes;
 use onda_domain::types::ModelState;
-use tokio::task::spawn_blocking;
 
 use super::windows::PendingAlertAction;
-use super::{Actor, Msg, Phase, UiMsg, blocking_send};
+use super::{Actor, Msg, Phase, SerialQueue, UiMsg, blocking_send};
 use crate::effects::Effect;
 use crate::events::Event;
 use crate::seams::{DownloadUpdate, DownloadUpdateKind, SettingChange};
@@ -36,6 +35,13 @@ use crate::views::{MainWindowSection, SpeechAlert, update_notice};
 const PREPARING_STATUS: &str = "Preparing model...";
 
 impl Actor {
+    fn model_queue(&mut self) -> SerialQueue {
+        self.ui
+            .model_queue
+            .get_or_insert_with(|| SerialQueue::start("models"))
+            .clone()
+    }
+
     /// The model loads use: the declined-migration fallback while it
     /// applies, else the selection (DL-14).
     pub(super) fn desired_model(&self) -> ModelId {
@@ -203,7 +209,8 @@ impl Actor {
         }
         self.end_declined();
         let models = self.ports.models.clone();
-        spawn_blocking(move || models.start_download(model));
+        self.model_queue()
+            .enqueue(move || models.start_download(model));
     }
 
     // ASR-2: the load waits for the download; ASR-9 loads once it finishes
@@ -222,7 +229,8 @@ impl Actor {
             onboarding.wizard.cancel_download();
         }
         let models = self.ports.models.clone();
-        spawn_blocking(move || models.cancel_download(model));
+        self.model_queue()
+            .enqueue(move || models.cancel_download(model));
     }
 
     pub(super) fn on_download(&mut self, update: DownloadUpdate) {
@@ -412,7 +420,7 @@ impl Actor {
             progress: None,
         };
         let models = self.ports.models.clone();
-        spawn_blocking(move || models.redownload(model));
+        self.model_queue().enqueue(move || models.redownload(model));
     }
 
     // --- languages (LANG-8..LANG-10) ---

@@ -338,8 +338,12 @@ impl App {
     /// The shell could not start listening for keys: ends the capture at
     /// once with "Could not start shortcut recording." (HOT-11).
     pub fn hotkey_capture_failed(&self) {
-        lock(&self.recorder).start_failed();
-        self.send(Msg::CaptureEnded);
+        let mut recorder = lock(&self.recorder);
+        if recorder.is_recording() {
+            recorder.start_failed();
+            drop(recorder);
+            self.send(Msg::CaptureEnded);
+        }
     }
 
     /// A local key event while Onda's own window is focused (HOT-9).

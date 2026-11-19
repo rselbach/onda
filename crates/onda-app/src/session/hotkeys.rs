@@ -352,6 +352,15 @@ impl Actor {
     // --- recording a shortcut (HOT-8, HOT-12) ---
 
     pub(super) fn capture_began(&mut self) {
+        if !self
+            .hotkeys
+            .recorder
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_recording()
+        {
+            return;
+        }
         self.hotkeys.capturing = true;
         self.end_retry_episode();
         self.unregister_hotkey();
@@ -372,7 +381,9 @@ impl Actor {
     }
 
     pub(super) fn capture_ended(&mut self) {
-        self.hotkeys.capturing = false;
+        if !std::mem::take(&mut self.hotkeys.capturing) {
+            return;
+        }
         self.refresh_settings();
         self.register_hotkey(true);
     }

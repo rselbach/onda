@@ -5,7 +5,7 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use onda_domain::cleanup::{CleanupError, CleanupModel, CleanupProvider};
+use onda_domain::cleanup::{CleanupError, CleanupModel, CleanupProvider, OnDeviceStatus};
 use onda_domain::hotkey::HotkeyPreset;
 use onda_domain::languages::LanguageSetting;
 use onda_domain::messages::{LoginItemError, LoginItemRegistryStatus, LoginItemStatus};
@@ -21,7 +21,7 @@ use super::cleanup::CleanupPageState;
 use super::history::HistoryState;
 use super::onboarding::OnboardingState;
 use super::rules_editor::ReplacementsEditor;
-use super::{Actor, Msg, PermissionSnapshot, Task, blocking_send};
+use super::{Actor, Msg, PermissionSnapshot, SerialQueue, Task, blocking_send, blocking_send_or};
 use crate::effects::Effect;
 use crate::events::Event;
 use crate::ports::{CopyOutcome, PrivacyPane};
@@ -138,6 +138,10 @@ pub(crate) enum UiMsg {
         status: Option<LoginItemRegistryStatus>,
     },
     Updater(UpdaterState),
+    OnDeviceStatus {
+        generation: u64,
+        status: OnDeviceStatus,
+    },
     KeyLoaded {
         generation: u64,
         result: Result<Option<String>, String>,
@@ -197,6 +201,8 @@ pub(super) struct GeneralState {
     pub(super) login: Option<Option<LoginItemRegistryStatus>>,
     pub(super) login_error: Option<LoginItemError>,
     pub(super) updater: UpdaterState,
+    pub(super) input_queue: Option<SerialQueue>,
+    pub(super) updater_queue: Option<SerialQueue>,
 }
 
 /// The update notice (DL-14).
@@ -249,6 +255,7 @@ pub(super) struct Ui {
     pub(super) onboarding: Option<OnboardingState>,
     pub(super) notice: NoticeState,
     pub(super) launch_onboarding: Option<Task>,
+    pub(super) model_queue: Option<SerialQueue>,
     published: PublishedWindows,
 }
 
@@ -300,7 +307,7 @@ impl Actor {
             UiMsg::SelectInput(uid) => {
                 self.apply_setting(SettingChange::InputDevice(uid.clone()));
                 let audio = self.ports.audio.clone();
-                tokio::task::spawn_blocking(move || audio.select_input(&uid));
+                self.input_queue().enqueue(move || audio.select_input(&uid));
             }
             UiMsg::SetOutputMode(mode) => self.apply_setting(SettingChange::OutputMode(mode)),
             UiMsg::SetPauseMedia(on) => self.apply_setting(SettingChange::PauseMedia(on)),
@@ -319,8 +326,12 @@ impl Actor {
             }
             UiMsg::OpenLoginItems => self.effects.send(Effect::OpenLoginItems),
             UiMsg::SetAutomaticUpdates(on) => {
-                self.effects.send(Effect::SetAutomaticUpdates(on));
-                self.refresh_updater();
+                let updater = self.ports.updater.clone();
+                let messages = self.messages.clone();
+                self.updater_queue().enqueue(move || {
+                    updater.set_automatic_checks(on);
+                    let _ = messages.send(Msg::Ui(UiMsg::Updater(updater.state())));
+                });
             }
             UiMsg::SetActivationMode(mode) => {
                 self.apply_setting(SettingChange::ActivationMode(mode));
@@ -430,6 +441,9 @@ impl Actor {
                 });
             }
             UiMsg::Updater(state) => self.ui.general.updater = state,
+            UiMsg::OnDeviceStatus { generation, status } => {
+                self.on_device_status(generation, status);
+            }
             UiMsg::KeyLoaded { generation, result } => self.key_loaded(generation, result),
             UiMsg::KeySaved {
                 generation,
@@ -555,6 +569,22 @@ impl Actor {
         }
     }
 
+    fn input_queue(&mut self) -> SerialQueue {
+        self.ui
+            .general
+            .input_queue
+            .get_or_insert_with(|| SerialQueue::start("input-selection"))
+            .clone()
+    }
+
+    fn updater_queue(&mut self) -> SerialQueue {
+        self.ui
+            .general
+            .updater_queue
+            .get_or_insert_with(|| SerialQueue::start("updater"))
+            .clone()
+    }
+
     // --- shell reads (LOGIN-3, UPD-1, WIN-9) ---
 
     fn refresh_login_item(&self) {
@@ -587,9 +617,11 @@ impl Actor {
             UpdateAction::Restart => {
                 self.restarting = true;
                 let updater = self.ports.updater.clone();
-                tokio::spawn(blocking_send(self.messages.clone(), move || {
-                    Msg::Ui(UiMsg::RestartAnswered(updater.restart_to_update()))
-                }));
+                tokio::spawn(blocking_send_or(
+                    self.messages.clone(),
+                    move || Msg::Ui(UiMsg::RestartAnswered(updater.restart_to_update())),
+                    || Msg::Ui(UiMsg::RestartAnswered(false)),
+                ));
             }
         }
     }

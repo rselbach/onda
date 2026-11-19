@@ -14,10 +14,10 @@ use onda_domain::cleanup::{
     KeyBaseline, KeyWrite, ModelListing, OnDeviceStatus, SYSTEM_PROMPT, TEST_SAMPLE, build_request,
     custom_model_slug, key_write, test_result_line, test_said_line,
 };
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 use tokio::task::spawn_blocking;
 
-use super::{Actor, Msg, Task, UiMsg, send_when};
+use super::{Actor, Msg, SerialQueue, Task, UiMsg, blocking_send, send_when};
 use crate::events::Event;
 use crate::pipeline::refine;
 use crate::seams::{CleanupTransport, SettingChange};
@@ -26,46 +26,6 @@ use crate::views::{
     PostProcessingPage, PromptDraftInputs, ProvidersDialogInputs, models_notice,
     post_processing_page, prompt_saved_text,
 };
-
-// a credential-store call waiting its turn
-type KeyJob = Box<dyn FnOnce() + Send>;
-
-/// Runs credential-store calls one at a time, in the order they were issued
-/// (CLN-25).
-#[derive(Clone)]
-struct KeyQueue(mpsc::UnboundedSender<KeyJob>);
-
-impl KeyQueue {
-    // must be called inside the runtime
-    fn start() -> Self {
-        let (jobs, mut queue) = mpsc::unbounded_channel::<KeyJob>();
-        tokio::spawn(async move {
-            while let Some(job) = queue.recv().await {
-                if let Err(error) = spawn_blocking(job).await {
-                    tracing::error!(%error, "a credential-store call failed");
-                }
-            }
-        });
-        Self(jobs)
-    }
-
-    /// Queues `work` behind every call issued before it.
-    fn run<T: Send + 'static>(
-        &self,
-        work: impl FnOnce() -> T + Send + 'static,
-    ) -> oneshot::Receiver<T> {
-        let (done, result) = oneshot::channel();
-        let job: KeyJob = Box::new(move || {
-            let _ = done.send(work());
-        });
-        // the worker lives as long as the runtime; without it, run unordered
-        if let Err(mpsc::error::SendError(job)) = self.0.send(job) {
-            tracing::warn!("the credential-store queue is gone");
-            spawn_blocking(job);
-        }
-        result
-    }
-}
 
 // a queued call that never reported back
 fn lost<T>(_: oneshot::error::RecvError) -> Result<T, String> {
@@ -80,7 +40,7 @@ struct PromptDraft {
 
 /// Post-Processing page state.
 pub(super) struct CleanupPageState {
-    key_queue: Option<KeyQueue>,
+    key_queue: Option<SerialQueue>,
     // whose key the field holds; every save goes to that provider only
     key_provider: Option<CleanupProvider>,
     baseline: KeyBaseline,
@@ -104,6 +64,7 @@ pub(super) struct CleanupPageState {
     // Apple Intelligence, as last read; refreshed when the page or the
     // sheet shows
     on_device: OnDeviceStatus,
+    on_device_generation: u64,
     // the prompt sheet, while open
     prompt_draft: Option<PromptDraft>,
     // bumped whenever the core puts text in the prompt sheet's editor
@@ -136,6 +97,7 @@ impl Default for CleanupPageState {
             list_generation: 0,
             list_notice: None,
             on_device: OnDeviceStatus::DeviceNotEligible,
+            on_device_generation: 0,
             prompt_draft: None,
             prompt_revision: 0,
             prompt_status: None,
@@ -178,11 +140,11 @@ fn written_value(write: KeyWrite) -> String {
 }
 
 impl Actor {
-    fn key_queue(&mut self) -> KeyQueue {
+    fn key_queue(&mut self) -> SerialQueue {
         self.ui
             .cleanup
             .key_queue
-            .get_or_insert_with(KeyQueue::start)
+            .get_or_insert_with(|| SerialQueue::start("credential-store"))
             .clone()
     }
 
@@ -204,10 +166,24 @@ impl Actor {
         }
     }
 
-    // a cheap OS read; the user can turn Apple Intelligence on or off at any
-    // time
+    // the user can turn Apple Intelligence on or off at any time; read off the
+    // actor so a slow OS probe never stalls dictation or hotkeys
     fn refresh_on_device(&mut self) {
-        self.ui.cleanup.on_device = self.ports.cleanup.on_device_status();
+        self.ui.cleanup.on_device_generation += 1;
+        let generation = self.ui.cleanup.on_device_generation;
+        let cleanup = self.ports.cleanup.clone();
+        tokio::spawn(blocking_send(self.messages.clone(), move || {
+            Msg::Ui(UiMsg::OnDeviceStatus {
+                generation,
+                status: cleanup.on_device_status(),
+            })
+        }));
+    }
+
+    pub(super) fn on_device_status(&mut self, generation: u64, status: OnDeviceStatus) {
+        if generation == self.ui.cleanup.on_device_generation {
+            self.ui.cleanup.on_device = status;
+        }
     }
 
     // the sheet's key field exists only for providers that use a key

@@ -905,3 +905,21 @@ async fn hot_35_fn_warning_follows_the_globe_key_setting() {
     );
     assert_eq!(combo.hotkey_view().fn_warning, None);
 }
+
+#[tokio::test(start_paused = true)]
+async fn hot_8_immediate_end_and_failure_keep_hotkey_registered() {
+    let h = Harness::new().await;
+    h.app.begin_hotkey_capture();
+    h.app.end_hotkey_capture();
+    h.app.hotkey_capture_failed();
+    sleep(10).await;
+
+    let calls = hotkey_calls(&h);
+    assert_eq!(
+        calls.last().map(String::as_str),
+        Some("hotkey:register ⌥ Space")
+    );
+    let view = h.hotkey_view();
+    assert!(!view.recording);
+    assert_eq!(view.message, None);
+}

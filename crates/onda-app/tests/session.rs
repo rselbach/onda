@@ -295,6 +295,38 @@ async fn pressing_again_while_an_aborted_start_finishes_still_records() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn aborting_start_resumes_in_toggle_with_fresh_settings() {
+    let h = Harness::with(|s| {
+        s.activation_mode = ActivationMode::Toggle;
+        s.replacement_rules.clear();
+    })
+    .await;
+    *lock(&h.permissions.microphone) = MicrophonePermission::NotDetermined;
+    let prompt = Hold::new();
+    *lock(&h.permissions.hold_request) = Some(prompt.clone());
+
+    h.tap();
+    eventually("the prompt", || prompt.started()).await;
+    h.tap();
+    h.update(|s| {
+        s.replacement_rules = vec![rule("hello", "greendale")];
+    });
+    h.tap();
+    prompt.release();
+    sleep(1_000).await;
+
+    assert_eq!(
+        h.audio.starts.load(Ordering::SeqCst),
+        1,
+        "resumed same start"
+    );
+    assert_eq!(h.tray().icon, TrayIcon::Recording);
+    h.tap();
+    sleep(1_000).await;
+    assert_eq!(h.typed(), ["greendale world"]);
+}
+
+#[tokio::test(start_paused = true)]
 async fn desktop_stop_during_start_checks_prevents_late_recording() {
     let h = Harness::new().await;
     *lock(&h.permissions.microphone) = MicrophonePermission::NotDetermined;

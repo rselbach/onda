@@ -141,7 +141,7 @@ async fn dropping_a_press_during_startup_allows_the_next_press_to_record() {
         PressState::Starting(ActivationMode::Toggle)
     );
     eventually("abandoned capture closed", || {
-        h.idle() && !h.audio.is_open()
+        h.audio.stops.load(Ordering::SeqCst) == 1 && h.idle() && !h.audio.is_open()
     })
     .await;
 

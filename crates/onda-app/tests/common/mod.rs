@@ -496,6 +496,7 @@ pub struct FakeAudio {
     next_capture: AtomicU64,
     pub start_error: Mutex<Option<UserMessage>>,
     pub starts: AtomicU64,
+    pub stops: AtomicUsize,
     pub released_at: Mutex<Option<usize>>,
     hold_start: Mutex<Option<Arc<Hold>>>,
 }
@@ -550,6 +551,7 @@ impl AudioSource for FakeAudio {
     }
 
     fn stop(&self) -> Vec<f32> {
+        self.stops.fetch_add(1, Ordering::SeqCst);
         self.open.store(false, Ordering::SeqCst);
         std::mem::take(&mut *lock(&self.buffer))
     }

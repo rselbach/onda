@@ -165,6 +165,9 @@ impl Worker {
             Some(true) => {}
         }
         if !self.call(|port| port.pause()).await {
+            if self.ended_already(session) {
+                return;
+            }
             let sent = self.call(|port| port.play_pause_key()).await;
             self.hold = sent.then_some(Hold::Paused);
             return;
@@ -175,6 +178,9 @@ impl Worker {
             return;
         }
         if self.query().await == Some(true) {
+            if self.ended_already(session) {
+                return;
+            }
             tracing::info!("media still playing after pause; sending the play/pause key");
             self.call(|port| port.play_pause_key()).await;
         }
@@ -236,12 +242,16 @@ impl Worker {
 
     async fn query(&self) -> Option<bool> {
         let port = self.port.clone();
-        let guard = self.calls.clone().lock_owned().await;
-        let call = spawn_blocking(move || {
-            let _guard = guard;
-            is_playing(&port.now_playing())
-        });
-        match tokio::time::timeout(QUERY_TIMEOUT, call).await {
+        let calls = self.calls.clone();
+        let query = async move {
+            let guard = calls.lock_owned().await;
+            spawn_blocking(move || {
+                let _guard = guard;
+                is_playing(&port.now_playing())
+            })
+            .await
+        };
+        match tokio::time::timeout(QUERY_TIMEOUT, query).await {
             Ok(Ok(playing)) => playing,
             Ok(Err(error)) => {
                 tracing::warn!(%error, "media query failed");
@@ -730,5 +740,83 @@ mod tests {
             vec![Sent::Pause, Sent::Play, Sent::Pause, Sent::Play],
             "B owns the re-pause"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn query_timeout_includes_waiting_for_a_wedged_call_lock() {
+        let (release, held) = std_mpsc::channel();
+        let fake = Arc::new(Fake {
+            audible: true,
+            ..Fake::default()
+        });
+        *lock(&fake.hold_query) = Some(held);
+        let media = Media::spawn(fake.clone());
+        media.begin(A);
+        eventually("first query started", || *lock(&fake.queries) == 1).await;
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        tokio::time::advance(QUERY_TIMEOUT + Duration::from_millis(1)).await;
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        media.end(A);
+        media.begin(B);
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        tokio::time::advance(QUERY_TIMEOUT + Duration::from_millis(1)).await;
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        media.end(B);
+        media.flush().await;
+        let _ = release.send(true);
+        assert_eq!(
+            *lock(&fake.queries),
+            1,
+            "B timed out waiting on the held lock"
+        );
+        assert_eq!(fake.sent(), vec![]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn ending_before_pause_fallbacks_skips_play_pause_key() {
+        let (release, held) = std_mpsc::channel();
+        let fake = Arc::new(Fake {
+            pause_result: Some(false),
+            ..Fake::playing(&[true])
+        });
+        *lock(&fake.hold_send) = Some(held);
+        let media = Media::spawn(fake.clone());
+        media.begin(A);
+        eventually("pause in flight", || fake.sent() == vec![Sent::Pause]).await;
+        media.end(A);
+        let _ = release.send(false);
+        media.flush().await;
+        assert_eq!(fake.sent(), vec![Sent::Pause]);
+
+        let (release_pause, held_pause) = std_mpsc::channel();
+        let (release_query, held_query) = std_mpsc::channel();
+        let fake = Arc::new(Fake::playing(&[true]));
+        *lock(&fake.hold_send) = Some(held_pause);
+        let media = Media::spawn(fake.clone());
+        media.begin(A);
+        eventually("pause in flight", || fake.sent() == vec![Sent::Pause]).await;
+        *lock(&fake.hold_query) = Some(held_query);
+        let _ = release_pause.send(true);
+        for _ in 0..200 {
+            if *lock(&fake.queries) == 2 {
+                break;
+            }
+            tokio::time::advance(Duration::from_millis(10)).await;
+            tokio::task::yield_now().await;
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(*lock(&fake.queries), 2, "verification query started");
+        media.end(A);
+        let _ = release_query.send(true);
+        media.flush().await;
+        assert_eq!(fake.sent(), vec![Sent::Pause, Sent::Play]);
     }
 }

@@ -766,7 +766,7 @@ impl Actor {
     fn snapshot(&self) -> SessionSnapshot {
         SessionSnapshot {
             phase: self.session_phase(),
-            start_pending: matches!(self.phase, Phase::Starting(_) | Phase::Aborting(_)),
+            start_pending: matches!(self.phase, Phase::Starting(_)),
         }
     }
 
@@ -838,12 +838,24 @@ impl Actor {
         });
     }
 
-    // a start asked for while an abandoned one of the same kind is still
-    // finishing takes that one over. dropped, it would leave the user
+    // a start asked for while an abandoned one is still finishing takes
+    // over when the start kind matches. dropped, it would leave the user
     // holding the key and speaking into nothing once the old start ends.
     fn resume_start(&mut self, kind: StartKind) {
+        let current_settings = self.settings.clone();
         self.phase = match std::mem::replace(&mut self.phase, Phase::Idle) {
-            Phase::Aborting(starting) if starting.kind == kind => Phase::Starting(starting),
+            Phase::Aborting(mut starting) => match (starting.kind, kind) {
+                (StartKind::Record { .. }, StartKind::Record { provisional }) => {
+                    starting.kind = StartKind::Record { provisional };
+                    starting.settings = current_settings;
+                    Phase::Starting(starting)
+                }
+                (StartKind::Retry, StartKind::Retry) => {
+                    starting.settings = current_settings;
+                    Phase::Starting(starting)
+                }
+                _ => Phase::Aborting(starting),
+            },
             other => other,
         };
     }
@@ -936,7 +948,8 @@ impl Actor {
         let Some(opening) = starting.opening else {
             return;
         };
-        let media_begun = opening.media_begun;
+        let media_begun = opening.media_begun
+            || (!aborted && !provisional && self.begin_media(id, &starting.settings));
         let end_media = move |actor: &mut Self| {
             if media_begun {
                 actor.end_media(id);
@@ -951,7 +964,7 @@ impl Actor {
                 self.notify(notice);
             }
             Ok(_) if aborted => {
-                self.ports.audio.stop();
+                self.discard_capture();
                 end_media(self);
             }
             Ok(info) => {
@@ -1427,17 +1440,21 @@ impl Actor {
             head.timings.history = Some((started, started));
         }
         // a save cannot be interrupted, so it is not tied to the session
-        tokio::spawn(blocking_send(self.messages.clone(), move || {
-            let saved = match history.save(entry, &audio) {
-                Ok(saved) => saved,
-                Err(error) => {
-                    // never blocks delivery (HIS-2)
-                    tracing::error!(%error, "could not save history");
-                    false
-                }
-            };
-            Msg::Saved { id, saved }
-        }));
+        tokio::spawn(blocking_send_or(
+            self.messages.clone(),
+            move || {
+                let saved = match history.save(entry, &audio) {
+                    Ok(saved) => saved,
+                    Err(error) => {
+                        // never blocks delivery (HIS-2)
+                        tracing::error!(%error, "could not save history");
+                        false
+                    }
+                };
+                Msg::Saved { id, saved }
+            },
+            move || Msg::Saved { id, saved: false },
+        ));
     }
 
     fn saved(&mut self, id: SessionId, saved: bool) {
@@ -1539,18 +1556,25 @@ impl Actor {
                 self.phase = Phase::Aborting(starting);
             }
             Phase::Recording(recording) => {
-                self.ports.audio.stop();
+                self.discard_capture();
                 self.go_idle(recording.media_begun.then_some(recording.id));
             }
             Phase::Transcribing(transcribing) => {
                 if let Stage::Tail { .. } = transcribing.stage {
-                    self.ports.audio.stop();
+                    self.discard_capture();
                 }
                 // dropping the phase aborts its tasks; inference already on
                 // the model keeps running and its result is dropped (ARCH-10)
                 self.go_idle(transcribing.head.media_session());
             }
         }
+    }
+
+    fn discard_capture(&self) {
+        let audio = self.ports.audio.clone();
+        spawn_blocking(move || {
+            let _ = audio.stop();
+        });
     }
 
     fn end_session(&mut self) {
@@ -1633,7 +1657,7 @@ impl Actor {
         self.cancel();
         self.redelivery = None;
         if let Phase::Aborting(starting) = std::mem::replace(&mut self.phase, Phase::Idle) {
-            self.ports.audio.stop();
+            self.discard_capture();
             if starting.opening.is_some_and(|opening| opening.media_begun) {
                 self.end_media(starting.id);
             }
@@ -1739,10 +1763,14 @@ impl Actor {
         // the launch decision needs the installed models (ASR-1, DL-12);
         // removed models' folders go first (DL-15)
         let models = self.ports.models.clone();
-        tokio::spawn(blocking_send(self.messages.clone(), move || {
-            models.remove_obsolete();
-            Msg::LaunchChecked(models.downloaded())
-        }));
+        tokio::spawn(blocking_send_or(
+            self.messages.clone(),
+            move || {
+                models.remove_obsolete();
+                Msg::LaunchChecked(models.downloaded())
+            },
+            || Msg::LaunchChecked(Vec::new()),
+        ));
     }
 
     fn start_load(&mut self, unload_first: bool) {
@@ -2151,6 +2179,46 @@ impl Actor {
     }
 }
 
+type SerialJob = Box<dyn FnOnce() + Send>;
+
+/// Runs blocking port calls sequentially on `spawn_blocking` in issue order.
+#[derive(Clone)]
+pub(super) struct SerialQueue(mpsc::UnboundedSender<SerialJob>);
+
+impl SerialQueue {
+    pub(super) fn start(label: &'static str) -> Self {
+        let (jobs, mut queue) = mpsc::unbounded_channel::<SerialJob>();
+        tokio::spawn(async move {
+            while let Some(job) = queue.recv().await {
+                if let Err(error) = spawn_blocking(job).await {
+                    tracing::error!(%error, queue = label, "a queued blocking call failed");
+                }
+            }
+        });
+        Self(jobs)
+    }
+
+    /// Runs `work` after every job already queued.
+    pub(super) fn enqueue(&self, work: impl FnOnce() + Send + 'static) {
+        if let Err(mpsc::error::SendError(job)) = self.0.send(Box::new(work)) {
+            tracing::warn!("a blocking queue is gone");
+            spawn_blocking(job);
+        }
+    }
+
+    /// Queues `work` behind every call issued before it and returns its result.
+    pub(super) fn run<T: Send + 'static>(
+        &self,
+        work: impl FnOnce() -> T + Send + 'static,
+    ) -> oneshot::Receiver<T> {
+        let (done, result) = oneshot::channel();
+        self.enqueue(move || {
+            let _ = done.send(work());
+        });
+        result
+    }
+}
+
 async fn send_when(messages: mpsc::UnboundedSender<Msg>, work: impl Future<Output = Msg>) {
     let msg = work.await;
     let _ = messages.send(msg);
@@ -2168,6 +2236,47 @@ async fn blocking_send(
     }
 }
 
+async fn blocking_send_or(
+    messages: mpsc::UnboundedSender<Msg>,
+    work: impl FnOnce() -> Msg + Send + 'static,
+    fallback: impl FnOnce() -> Msg + Send + 'static,
+) {
+    let msg = match spawn_blocking(work).await {
+        Ok(msg) => msg,
+        Err(error) => {
+            tracing::error!(%error, "background call failed");
+            fallback()
+        }
+    };
+    let _ = messages.send(msg);
+}
+
 fn app_id(target: Option<&Target>) -> Option<String> {
     target.and_then(|target| target.app_id.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn blocking_send_or_sends_fallback_when_work_panics() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        blocking_send_or(
+            tx,
+            || panic!("study room power outage"),
+            || Msg::Saved {
+                id: SessionId(7),
+                saved: false,
+            },
+        )
+        .await;
+        assert!(matches!(
+            rx.recv().await,
+            Some(Msg::Saved {
+                id: SessionId(7),
+                saved: false,
+            })
+        ));
+    }
 }

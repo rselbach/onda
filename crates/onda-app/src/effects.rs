@@ -51,8 +51,6 @@ pub(crate) enum Effect {
     CheckForUpdates,
     /// Open the download of an update Onda cannot install (UPD-7).
     OpenUpdateDownload,
-    /// Turn automatic update checks on or off.
-    SetAutomaticUpdates(bool),
     /// A background message: a notification when authorized, else (or when
     /// the post fails) the overlay notice (MSG-1).
     Notify(UserMessage),
@@ -146,7 +144,6 @@ fn run(ports: &EffectPorts, effect: Effect, fallback: &(dyn Fn(UserMessage) + Se
         Effect::OpenLoginItems => ports.login_item.open_settings(),
         Effect::CheckForUpdates => ports.updater.check_now(),
         Effect::OpenUpdateDownload => ports.updater.open_download(),
-        Effect::SetAutomaticUpdates(enabled) => ports.updater.set_automatic_checks(enabled),
         Effect::Notify(message) => {
             let authorization = ports.notifier.authorization();
             match route(MessageClass::Background, authorization) {
