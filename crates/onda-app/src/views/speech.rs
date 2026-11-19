@@ -201,8 +201,9 @@ pub fn speech_page(inputs: SpeechInputs<'_>) -> SpeechPage {
                     title: "Download & Use".to_owned(),
                 },
             };
-            let deletable =
-                inputs.downloaded.contains(&info.id) && has_delete_control(inputs.catalog, info.id);
+            let deletable = !matches!(control, ModelRowControl::Downloading { .. })
+                && inputs.downloaded.contains(&info.id)
+                && has_delete_control(inputs.catalog, info.id);
             ModelRow {
                 id: info.id.as_str().to_owned(),
                 name: info.name.to_owned(),

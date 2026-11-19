@@ -277,7 +277,13 @@ impl Actor {
                     self.model_state = ModelState::Error {
                         message: shown.clone(),
                     };
-                    let message = load_failure_notification(model, &self.downloaded, &shown);
+                    let on_disk: Vec<ModelId> = self
+                        .downloaded
+                        .iter()
+                        .copied()
+                        .filter(|model| !self.catalog.is_built_in(*model))
+                        .collect();
+                    let message = load_failure_notification(model, &on_disk, &shown);
                     self.notify(message);
                 } else {
                     let speech_visible = self.ui.is_visible(MainWindowSection::Speech);
@@ -364,6 +370,10 @@ impl Actor {
             return;
         }
         self.downloaded.retain(|m| *m != model);
+        let deleted_override = self.override_model == Some(model);
+        if deleted_override {
+            self.override_model = None;
+        }
         self.refresh_settings();
         if let Some(next) = reselect
             && self.settings.selected_model == model
@@ -371,6 +381,13 @@ impl Actor {
             // the selected model is gone: select and reload another (DL-10)
             self.pending.clear();
             self.switch_model(next, true);
+        } else if deleted_override
+            && (!self.load_declined_fallback() || self.override_model.is_none())
+        {
+            let service = self.service.clone();
+            tokio::spawn(async move {
+                service.unload().await;
+            });
         }
     }
 
@@ -382,6 +399,7 @@ impl Actor {
             return;
         }
         self.end_declined();
+        self.downloaded.retain(|m| *m != model);
         self.loads.wait_for_download(model);
         self.model_state = ModelState::Loading {
             status: PREPARING_STATUS.to_owned(),

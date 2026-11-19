@@ -1264,6 +1264,53 @@ async fn dl_11_redownload_replaces_the_files_then_loads() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn dl_11_redownloading_and_deleting_a_fallback_override_model() {
+    let h = Harness::unstarted(|s| {
+        migrated(s);
+        s.last_notice_key = "whisper-greendale->parakeet-tdt-v2".to_owned();
+        s.declined_notice_key = "whisper-greendale->parakeet-tdt-v2".to_owned();
+    });
+    *lock(&h.models.downloaded) = vec![ULTRA];
+    h.script.fail_load.store(true, Ordering::SeqCst);
+    h.app.ui_ready();
+    sleep(10).await;
+    assert!(
+        h.menu().redownload_model.is_some(),
+        "override model files are on disk, so redownload is offered"
+    );
+
+    h.script.fail_load.store(false, Ordering::SeqCst);
+    h.app.page_appeared(MainWindowSection::Speech);
+    h.app.redownload_model();
+    h.app
+        .download_event(download(ULTRA, DownloadUpdateKind::Progress(0.5)));
+    sleep(10).await;
+    let ultra_row = speech(&h)
+        .models
+        .into_iter()
+        .find(|row| row.id == ULTRA.as_str())
+        .unwrap();
+    assert_eq!(ultra_row.delete_tooltip, None);
+
+    h.app
+        .download_event(download(ULTRA, DownloadUpdateKind::Finished));
+    sleep(10).await;
+    assert_eq!(h.tray().icon, TrayIcon::Ready);
+    assert_eq!(
+        h.script.calls(),
+        vec![EngineCall::Load(ULTRA), EngineCall::Load(ULTRA)]
+    );
+
+    h.app.request_delete_model(ULTRA);
+    sleep(1).await;
+    let alert = speech(&h).alert.expect("delete confirmation");
+    h.app.confirm_speech_alert(alert.id);
+    sleep(10).await;
+    assert_eq!(h.tray().icon, TrayIcon::Warning);
+    assert!(h.menu().redownload_model.is_none());
+}
+
+#[tokio::test(start_paused = true)]
 async fn lang_8_to_10_menu_language_switch() {
     let h = Harness::with(|s| s.language = en()).await;
     *lock(&h.models.downloaded) = vec![V2, ULTRA];

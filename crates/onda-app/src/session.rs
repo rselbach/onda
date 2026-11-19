@@ -1818,12 +1818,15 @@ impl Actor {
 
     // ASR-9: clear the temporary override, then load the selection
     fn reload_after_download(&mut self, model: ModelId) {
-        if reload_after_download(
-            model,
-            self.settings.selected_model.as_str(),
-            self.load_in_flight(),
-        ) {
-            self.override_model = None;
+        let target = if model == self.settings.selected_model {
+            self.settings.selected_model
+        } else {
+            self.desired_model()
+        };
+        if reload_after_download(model, target.as_str(), self.load_in_flight()) {
+            if model == self.settings.selected_model {
+                self.override_model = None;
+            }
             self.loads.announce();
             self.start_load(false);
         }
@@ -1841,7 +1844,7 @@ impl Actor {
             | Phase::Aborting(_)
             | Phase::Recording(_)
             | Phase::Transcribing(_) => {
-                if model == self.settings.selected_model {
+                if model == self.settings.selected_model || model == self.desired_model() {
                     self.reload_when_idle = Some(model);
                 }
             }
@@ -2088,8 +2091,8 @@ impl Actor {
             can_start_session: matches!(self.phase, Phase::Idle),
             model_state: &self.model_state,
             load_in_flight: self.load_in_flight(),
-            selected_model_on_disk: self.downloaded.contains(&settings.selected_model)
-                && !self.catalog.is_built_in(settings.selected_model),
+            selected_model_on_disk: self.downloaded.contains(&self.desired_model())
+                && !self.catalog.is_built_in(self.desired_model()),
             current_language_name: language_menu::subtitle(settings.language).to_owned(),
             languages,
             update: update_control(

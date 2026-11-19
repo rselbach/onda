@@ -2925,3 +2925,31 @@ async fn dict_28a_quit_while_the_microphone_opens_resumes_media() {
     opening.release();
     assert_eq!(log.with("media:"), vec!["media:pause", "media:play"]);
 }
+
+#[tokio::test(start_paused = true)]
+async fn switching_models_during_load_download_allows_dictation_and_ignores_abandoned_download() {
+    for abandoned in [
+        onda_app::seams::DownloadUpdateKind::Cancelled,
+        onda_app::seams::DownloadUpdateKind::Failed {
+            error: "Greendale CDN closed".to_owned(),
+        },
+    ] {
+        let h = Harness::unstarted(|_| {});
+        *lock(&h.models.downloaded) = vec![ModelId::ParakeetUltra];
+        h.app.ui_ready();
+        sleep(10).await;
+        assert_eq!(h.log.with("download:"), vec!["download:parakeet-tdt-v2"]);
+
+        h.app.select_model(ModelId::ParakeetUltra);
+        sleep(10).await;
+        assert_eq!(h.tray().icon, TrayIcon::Ready);
+
+        h.app
+            .download_event(common::download(ModelId::ParakeetTdtV2, abandoned));
+        sleep(10).await;
+        assert_eq!(h.tray().icon, TrayIcon::Ready);
+
+        h.dictate().await;
+        assert_eq!(h.typed(), vec!["hello world"]);
+    }
+}

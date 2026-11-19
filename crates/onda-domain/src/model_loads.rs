@@ -1,20 +1,38 @@
 //! Which model loads are running, and which download one waits on (ASR-1,
 //! ASR-2, ASR-9, DL-11).
 
+use std::num::NonZeroUsize;
+
 use crate::models::ModelId;
 
 /// The loads the session has started and not finished, plus the download a
-/// load or redownload is waiting for. Only the methods here change it, so the
-/// rules below hold everywhere.
+/// load or redownload is waiting for. Only the methods here change it, so a
+/// load and a download wait cannot stay active together.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ModelLoads {
-    // loads started and not yet finished; two can overlap across a switch
-    running: usize,
-    // a load was announced before the service reported it, so the tray shows
-    // loading at once (ASR-1)
-    announced: bool,
+    state: State,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum State {
+    Idle {
+        // a load was announced before the service reported it, so the tray
+        // shows loading at once (ASR-1)
+        announced: bool,
+    },
     // the download a load or redownload waits for (ASR-2, DL-11)
-    download: Option<ModelId>,
+    WaitingForDownload(ModelId),
+    // loads started and not yet finished; two can overlap across a switch
+    Loading {
+        running: NonZeroUsize,
+        announced: bool,
+    },
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self::Idle { announced: false }
+    }
 }
 
 impl ModelLoads {
@@ -25,51 +43,80 @@ impl ModelLoads {
 
     /// A load runs, or waits for a download.
     pub fn in_flight(&self) -> bool {
-        self.running > 0 || self.download.is_some()
+        matches!(
+            self.state,
+            State::WaitingForDownload(_) | State::Loading { .. }
+        )
     }
 
     /// The tray shows loading before the service has reported a state.
     pub fn announced(&self) -> bool {
-        self.announced
+        match self.state {
+            State::Idle { announced } | State::Loading { announced, .. } => announced,
+            State::WaitingForDownload(_) => false,
+        }
     }
 
     /// A load is about to start and should show as loading now (ASR-1).
     pub fn announce(&mut self) {
-        self.announced = true;
+        self.state = match self.state {
+            State::Idle { .. } | State::WaitingForDownload(_) => State::Idle { announced: true },
+            State::Loading { running, .. } => State::Loading {
+                running,
+                announced: true,
+            },
+        };
     }
 
-    /// A load started. Follow it with [`Self::finished`] or wait on a download.
+    /// A load started, replacing any download wait. Follow it with
+    /// [`Self::finished`] or wait on a download.
     pub fn started(&mut self) {
-        self.running += 1;
+        self.state = match self.state {
+            State::Idle { announced } => State::Loading {
+                running: NonZeroUsize::MIN,
+                announced,
+            },
+            State::WaitingForDownload(_) => State::Loading {
+                running: NonZeroUsize::MIN,
+                announced: false,
+            },
+            State::Loading { running, announced } => State::Loading {
+                running: running.checked_add(1).unwrap_or(running),
+                announced,
+            },
+        };
     }
 
     /// A load finished. The announcement ends with the last one.
     pub fn finished(&mut self) {
-        self.running = self.running.saturating_sub(1);
-        if self.running == 0 {
-            self.announced = false;
+        if let State::Loading { running, announced } = self.state {
+            self.state = match NonZeroUsize::new(running.get() - 1) {
+                Some(running) => State::Loading { running, announced },
+                None => State::Idle { announced: false },
+            };
         }
     }
 
     /// The service reported a state, so it now speaks for the load.
     pub fn reported(&mut self) {
-        self.announced = false;
+        if let State::Idle { announced } | State::Loading { announced, .. } = &mut self.state {
+            *announced = false;
+        }
     }
 
     /// The load waits for `model` to download (ASR-2), or a redownload
     /// replaces it (DL-11).
     pub fn wait_for_download(&mut self, model: ModelId) {
-        self.announced = false;
-        self.download = Some(model);
+        self.state = State::WaitingForDownload(model);
     }
 
     /// `model`'s download ended, by finishing, failing, or cancelling. True
     /// when a load was waiting on it.
     pub fn download_ended(&mut self, model: ModelId) -> bool {
-        if self.download != Some(model) {
+        if self.state != State::WaitingForDownload(model) {
             return false;
         }
-        self.download = None;
+        self.state = State::Idle { announced: false };
         true
     }
 }
@@ -125,5 +172,28 @@ mod tests {
         let mut loads = ModelLoads::new();
         loads.finished();
         assert_eq!(loads, ModelLoads::new());
+    }
+
+    #[test]
+    fn starting_a_load_clears_a_download_wait() {
+        let mut loads = ModelLoads::new();
+        loads.wait_for_download(model());
+        loads.started();
+        assert!(!loads.download_ended(model()));
+        loads.finished();
+        assert!(!loads.in_flight());
+        assert!(!loads.announced());
+    }
+
+    #[test]
+    fn announcing_clears_a_download_wait() {
+        let mut loads = ModelLoads::new();
+        loads.wait_for_download(model());
+        loads.announce();
+        assert!(loads.announced());
+        assert!(!loads.download_ended(model()));
+        loads.started();
+        assert!(loads.announced());
+        assert!(loads.in_flight());
     }
 }
