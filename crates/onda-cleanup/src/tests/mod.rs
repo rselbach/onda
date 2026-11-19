@@ -70,7 +70,7 @@ async fn deepseek_sends_non_thinking_requests_and_reads_cleaned_text() {
             Some(APP),
         );
         assert_eq!(
-            request.provider.chat_endpoint(),
+            request.provider().chat_endpoint(),
             Some("https://api.deepseek.com/chat/completions")
         );
         assert_eq!(
@@ -159,7 +159,8 @@ async fn request_on_the_wire_cln_4_cln_5_cln_6() {
     for (name, want) in want_headers {
         assert_eq!(captured.header(name), [want.as_str()], "{name}");
     }
-    let want_bytes = serde_json::to_vec(&request.body).expect("serialize body");
+    let want_bytes =
+        serde_json::to_vec(&request.http().expect("http request").body).expect("serialize body");
     assert_eq!(captured.body, want_bytes, "body bytes");
     let model = default_model();
     let want_body = json!({

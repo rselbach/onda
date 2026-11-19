@@ -80,7 +80,12 @@ impl Actor {
     /// or as its Permissions step alone when a lone-modifier hotkey lost
     /// Typing Access (HOT-19).
     pub(super) fn open_onboarding(&mut self, origin: OnboardingOrigin) {
-        if self.ui.onboarding.is_some() {
+        let replace_typing_loss =
+            origin == OnboardingOrigin::RunSetupAgain
+                && self.ui.onboarding.as_ref().is_some_and(|state| {
+                    state.wizard.origin() == OnboardingOrigin::TypingAccessLost
+                });
+        if self.ui.onboarding.is_some() && !replace_typing_loss {
             self.events.emit(Event::OpenOnboarding);
             return;
         }
@@ -272,6 +277,7 @@ impl Actor {
         };
         self.apply_setting(SettingChange::Language(language));
         if let Some(model) = ModelId::parse(&pick.model_id) {
+            self.pending.clear();
             self.apply_setting(SettingChange::SelectedModel(model));
         }
     }

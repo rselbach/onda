@@ -443,8 +443,8 @@ pub struct LoginCaptionView {
 pub struct GeneralPage {
     /// Microphone permission row.
     pub microphone: PermissionRowView,
-    /// Accessibility permission row.
-    pub accessibility: PermissionRowView,
+    /// Typing permission row, when the OS has one.
+    pub accessibility: Option<PermissionRowView>,
     /// Input device picker.
     pub input: InputPickerView,
     /// Output mode.

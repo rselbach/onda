@@ -91,7 +91,7 @@ impl SettingsSource for SettingsAdapter {
         let (handoff, admitted) = oneshot::channel();
         let settings = self.settings.clone();
         tokio::task::spawn_blocking(move || {
-            let _ = settings.with_cleanup_admission(request.provider, || {
+            let _ = settings.with_cleanup_admission(request.provider(), || {
                 let _ = handoff.send(request);
             });
         });

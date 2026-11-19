@@ -12,12 +12,11 @@
 //! to another origin, and response bodies are read up to a size cap.
 
 use onda_domain::cleanup::{
-    ApiKey, CleanupError, CleanupModel, CleanupProvider, CleanupRequest, MAX_MODEL_PAGES,
-    ModelsRequest, REQUEST_TIMEOUT, finish_models, models_request, parse_models_page,
-    parse_response,
+    ApiKey, CleanupError, CleanupModel, CleanupProvider, CleanupRequest, HttpCleanupRequest,
+    MAX_MODEL_PAGES, ModelsRequest, REQUEST_TIMEOUT, finish_models, models_request,
+    parse_models_page, parse_response,
 };
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue};
-use serde::Deserialize;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
@@ -87,14 +86,19 @@ impl CleanupClient {
     /// capped at [`REQUEST_TIMEOUT`]. Dropping the future aborts the request
     /// and closes its connection.
     pub async fn send(&self, request: &CleanupRequest) -> Result<String, CleanupError> {
+        let Some(http) = request.http() else {
+            return Err(CleanupError::Transport(
+                "This provider is not reached over HTTP.".to_owned(),
+            ));
+        };
         let started = Instant::now();
-        let body = match serde_json::to_vec(&request.body) {
+        let body = match serde_json::to_vec(&http.body) {
             Ok(body) => body,
             Err(error) => return Err(CleanupError::Transport(error.to_string())),
         };
-        let model = model_slug(&body);
-        let provider = request.provider.id();
-        let exchanged = tokio::time::timeout(REQUEST_TIMEOUT, self.exchange(request, body))
+        let model = http.model_slug.as_str();
+        let provider = http.provider.id();
+        let exchanged = tokio::time::timeout(REQUEST_TIMEOUT, self.exchange(http, body))
             .await
             .unwrap_or_else(|_elapsed| Err(CleanupError::Transport(TIMED_OUT.to_owned())));
         let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -200,7 +204,7 @@ impl CleanupClient {
 
     async fn exchange(
         &self,
-        request: &CleanupRequest,
+        request: &HttpCleanupRequest,
         body: Vec<u8>,
     ) -> Result<(u16, Vec<u8>), CleanupError> {
         let Some(url) = self
@@ -276,14 +280,4 @@ fn root_cause(error: reqwest::Error) -> String {
         cause = source;
     }
     cause.to_string()
-}
-
-#[derive(Deserialize)]
-struct ModelField {
-    model: String,
-}
-
-// RequestBody is opaque, so read the slug back from the serialized body
-fn model_slug(body: &[u8]) -> String {
-    serde_json::from_slice::<ModelField>(body).map_or_else(|_| String::new(), |field| field.model)
 }

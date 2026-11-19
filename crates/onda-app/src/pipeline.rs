@@ -351,7 +351,7 @@ pub(crate) async fn refine(
     prompt: &CleanupPrompt,
     raw: &str,
 ) -> CleanupOutcome {
-    let provider = request.provider;
+    let provider = request.provider();
     let attempt = async |request| {
         let request = settings.admit_cleanup(request).await.ok()?;
         Some(transport.send(request).await)

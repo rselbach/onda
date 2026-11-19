@@ -364,6 +364,31 @@ async fn onb_9_ready_reached_mid_download_loads_once_the_download_finishes() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn onboarding_select_language_clears_pending_download_selection() {
+    let h = Harness::unstarted(first_run);
+    *lock(&h.models.downloaded) = vec![V2, ULTRA];
+    h.app.ui_ready();
+    sleep(800).await;
+    h.app.onboarding_continue();
+    sleep(1).await;
+    h.app.download_and_use(UNIFIED);
+    h.app
+        .download_event(download(UNIFIED, DownloadUpdateKind::Started));
+    sleep(1).await;
+    h.app.onboarding_select_language(language("es"));
+    sleep(1).await;
+    lock(&h.models.downloaded).push(UNIFIED);
+    h.app
+        .download_event(download(UNIFIED, DownloadUpdateKind::Finished));
+    sleep(1).await;
+    assert_eq!(
+        lock(&h.settings.settings).selected_model,
+        ULTRA,
+        "finished pending download does not overwrite the language recommendation"
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn onb_1_the_wizard_has_a_permissions_step_only_where_permissions_exist() {
     use OnboardingStep::{Hotkey, Language, Permissions, Ready, SpeechModel, Welcome};
     struct Case {

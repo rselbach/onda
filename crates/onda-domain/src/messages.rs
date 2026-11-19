@@ -359,7 +359,27 @@ impl UserMessage {
                 notice: CleanupNotice::CouldNotRefine { .. },
                 ..
             } => Some(RateLimitedNotice::CleanupFailed),
-            _ => None,
+            Self::Cleanup {
+                notice: CleanupNotice::UsedRawTranscript,
+                ..
+            }
+            | Self::MicrophonePermissionRequired
+            | Self::AccessibilityPermissionRequired
+            | Self::NoSpeechDetected
+            | Self::MicrophoneUnavailable { .. }
+            | Self::AudioProcessingError { .. }
+            | Self::TranscriptCopiedToClipboard
+            | Self::TargetLeft
+            | Self::PasteFailed
+            | Self::PasteInterrupted
+            | Self::ClipboardRestoreFailed
+            | Self::CopyFailed
+            | Self::TranscriptionFailed { .. }
+            | Self::RecordingLimitReached
+            | Self::CouldntLoadSpeechModel { .. }
+            | Self::ModelDownloadFailed { .. }
+            | Self::HotkeyRegistrationFailed(_)
+            | Self::InvalidLanguageSetting { .. } => None,
         }
     }
 }

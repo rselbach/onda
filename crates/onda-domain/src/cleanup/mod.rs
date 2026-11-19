@@ -29,8 +29,9 @@ pub use listing::{
     MAX_MODEL_PAGES, ModelsPage, ModelsRequest, finish_models, models_request, parse_models_page,
 };
 pub use openrouter::{
-    ApiKey, CleanupError, CleanupRequest, ENDPOINT, MODELS_ENDPOINT, OnDevicePrompt,
-    REQUEST_TIMEOUT, RequestBody, build_request, on_device_content, parse_response, user_message,
+    ApiKey, CleanupError, CleanupRequest, ENDPOINT, HttpCleanupRequest, MODELS_ENDPOINT,
+    OnDevicePrompt, REQUEST_TIMEOUT, RequestBody, build_request, on_device_content, parse_response,
+    user_message,
 };
 pub use outcome::{
     CleanupNotice, CleanupOutcome, CleanupStart, CleanupStep, TEST_FAILED_TITLE, TEST_SAMPLE,

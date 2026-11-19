@@ -496,6 +496,20 @@ async fn hot_19_the_permissions_step_alone_closes_on_done() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn run_setup_again_replaces_typing_access_lost_wizard() {
+    let h = failing_lone(1, false).await;
+    assert_eq!(wizard(&h).step, OnboardingStep::Permissions);
+    assert_eq!(wizard(&h).primary_title, "Done");
+
+    h.app.run_setup_again();
+    sleep(10).await;
+    let view = wizard(&h);
+    assert_eq!(view.step, OnboardingStep::Welcome);
+    assert_eq!(view.primary_title, "Get Started");
+    assert_eq!(wizard_opened(&h), 2);
+}
+
+#[tokio::test(start_paused = true)]
 async fn onb_6_open_settings_opens_the_pane_without_a_system_prompt() {
     let h = failing_lone(1, false).await;
     h.app

@@ -1,119 +1,226 @@
 //! The About page (WIN-21).
 
 use onda_domain::models::Catalog;
+use onda_domain::platform::Platform;
 
 /// The one-line description under the version (WIN-21).
 pub const ABOUT_TAGLINE: &str = "Local speech-to-text. Audio is processed on-device; optional \
                                  transcript refinement can use a cloud provider.";
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LibraryTarget {
+    All,
+    MacOs,
+    Linux,
+}
+
+impl LibraryTarget {
+    fn included_on(self, platform: Platform) -> bool {
+        match self {
+            Self::All => true,
+            Self::MacOs => platform.os_name != "Linux",
+            Self::Linux => platform.os_name == "Linux",
+        }
+    }
+}
+
+struct LibraryEntry {
+    name: &'static str,
+    license: &'static str,
+    url: &'static str,
+    target: LibraryTarget,
+}
+
+const fn lib(
+    name: &'static str,
+    license: &'static str,
+    url: &'static str,
+    target: LibraryTarget,
+) -> LibraryEntry {
+    LibraryEntry {
+        name,
+        license,
+        url,
+        target,
+    }
+}
+
 /// Third-party components Onda ships, with their licenses as their projects
-/// declare them (WIN-21): the shell's Swift packages, the code the CoreML
-/// decoder is ported from, and the significant crates linked into the core.
-pub const LIBRARIES: &[(&str, &str, &str)] = &[
-    (
+/// declare them (WIN-21), tagged by target platform.
+const LIBRARIES: &[LibraryEntry] = &[
+    lib(
         "aws-lc-rs",
         "ISC and (Apache-2.0 or ISC)",
         "https://github.com/aws/aws-lc-rs",
+        LibraryTarget::All,
     ),
-    (
+    lib(
         "aws-lc-sys",
         "ISC, Apache-2.0, MIT, and BSD-3-Clause",
         "https://github.com/aws/aws-lc-rs",
+        LibraryTarget::All,
     ),
-    ("cpal", "Apache-2.0", "https://github.com/RustAudio/cpal"),
-    (
+    lib(
+        "cpal",
+        "Apache-2.0",
+        "https://github.com/RustAudio/cpal",
+        LibraryTarget::All,
+    ),
+    lib(
         "ed25519-dalek",
         "BSD-3-Clause",
         "https://github.com/dalek-cryptography/curve25519-dalek",
+        LibraryTarget::All,
     ),
-    (
+    lib(
         "FluidAudio",
         "Apache-2.0",
         "https://github.com/FluidInference/FluidAudio",
+        LibraryTarget::MacOs,
     ),
-    (
+    lib(
+        "gtk4-rs",
+        "MIT",
+        "https://github.com/gtk-rs/gtk4-rs",
+        LibraryTarget::Linux,
+    ),
+    lib(
+        "Hex desktop integration",
+        "MIT",
+        "https://github.com/anomalyco/hex",
+        LibraryTarget::Linux,
+    ),
+    lib(
         "jiff",
         "MIT or Unlicense",
         "https://github.com/BurntSushi/jiff",
+        LibraryTarget::All,
     ),
-    (
+    lib(
         "keyring",
         "MIT or Apache-2.0",
         "https://github.com/open-source-cooperative/keyring-rs",
+        LibraryTarget::MacOs,
     ),
-    (
+    lib(
+        "libadwaita-rs",
+        "MIT",
+        "https://gitlab.gnome.org/World/Rust/libadwaita-rs",
+        LibraryTarget::Linux,
+    ),
+    lib(
         "mediaremote-adapter",
         "BSD-3-Clause",
         "https://github.com/ejbills/mediaremote-adapter",
+        LibraryTarget::MacOs,
     ),
-    ("objc2", "MIT", "https://github.com/madsmtm/objc2"),
-    (
+    lib(
+        "objc2",
+        "MIT",
+        "https://github.com/madsmtm/objc2",
+        LibraryTarget::MacOs,
+    ),
+    lib(
         "reqwest",
         "MIT or Apache-2.0",
         "https://github.com/seanmonstar/reqwest",
+        LibraryTarget::All,
     ),
-    (
+    lib(
         "rtrb",
         "MIT or Apache-2.0",
         "https://github.com/mgeier/rtrb",
+        LibraryTarget::All,
     ),
-    (
+    lib(
         "rubato",
         "MIT or Apache-2.0",
         "https://github.com/HEnquist/rubato",
+        LibraryTarget::All,
     ),
-    (
+    lib(
         "rustls",
         "Apache-2.0, ISC, or MIT",
         "https://github.com/rustls/rustls",
+        LibraryTarget::All,
     ),
-    (
+    lib(
         "security-framework",
         "MIT or Apache-2.0",
         "https://github.com/kornelski/rust-security-framework",
+        LibraryTarget::MacOs,
     ),
-    (
+    lib(
         "serde",
         "MIT or Apache-2.0",
         "https://github.com/serde-rs/serde",
+        LibraryTarget::All,
     ),
-    (
+    lib(
         "serde_json",
         "MIT or Apache-2.0",
         "https://github.com/serde-rs/json",
+        LibraryTarget::All,
     ),
-    (
+    lib(
         "sha2",
         "MIT or Apache-2.0",
         "https://github.com/RustCrypto/hashes",
+        LibraryTarget::All,
     ),
-    (
+    lib(
         "tempfile",
         "MIT or Apache-2.0",
         "https://github.com/Stebalien/tempfile",
+        LibraryTarget::All,
     ),
-    ("tokio", "MIT", "https://github.com/tokio-rs/tokio"),
-    ("tracing", "MIT", "https://github.com/tokio-rs/tracing"),
-    (
+    lib(
+        "tokio",
+        "MIT",
+        "https://github.com/tokio-rs/tokio",
+        LibraryTarget::All,
+    ),
+    lib(
+        "tracing",
+        "MIT",
+        "https://github.com/tokio-rs/tracing",
+        LibraryTarget::All,
+    ),
+    lib(
         "tracing-oslog",
         "Zlib",
         "https://github.com/Absolucy/tracing-oslog",
+        LibraryTarget::MacOs,
     ),
-    ("UniFFI", "MPL-2.0", "https://github.com/mozilla/uniffi-rs"),
-    (
+    lib(
+        "transcribe.cpp",
+        "MIT",
+        "https://github.com/handy-computer/transcribe.cpp",
+        LibraryTarget::Linux,
+    ),
+    lib(
+        "UniFFI",
+        "MPL-2.0",
+        "https://github.com/mozilla/uniffi-rs",
+        LibraryTarget::MacOs,
+    ),
+    lib(
         "unicode-normalization",
         "(MIT or Apache-2.0) and Unicode-3.0",
         "https://github.com/unicode-rs/unicode-normalization",
+        LibraryTarget::All,
     ),
-    (
+    lib(
         "unicode-segmentation",
         "MIT or Apache-2.0",
         "https://github.com/unicode-rs/unicode-segmentation",
+        LibraryTarget::All,
     ),
-    (
+    lib(
         "uuid",
         "MIT or Apache-2.0",
         "https://github.com/uuid-rs/uuid",
+        LibraryTarget::All,
     ),
 ];
 
@@ -160,8 +267,8 @@ pub struct AboutPage {
     pub libraries: Vec<AboutLibrary>,
 }
 
-/// Builds the About page for `version`.
-pub fn about_page(catalog: &Catalog, version: &str) -> AboutPage {
+/// Builds the About page for `version` and `platform`.
+pub fn about_page(catalog: &Catalog, version: &str, platform: Platform) -> AboutPage {
     AboutPage {
         app_name: "Onda".to_owned(),
         version: format!("Version {version}"),
@@ -180,10 +287,11 @@ pub fn about_page(catalog: &Catalog, version: &str) -> AboutPage {
         libraries_title: "Libraries".to_owned(),
         libraries: LIBRARIES
             .iter()
-            .map(|(name, license, url)| AboutLibrary {
-                name: (*name).to_owned(),
-                license: (*license).to_owned(),
-                url: (*url).to_owned(),
+            .filter(|entry| entry.target.included_on(platform))
+            .map(|entry| AboutLibrary {
+                name: entry.name.to_owned(),
+                license: entry.license.to_owned(),
+                url: entry.url.to_owned(),
             })
             .collect(),
     }
@@ -191,11 +299,17 @@ pub fn about_page(catalog: &Catalog, version: &str) -> AboutPage {
 
 #[cfg(test)]
 mod tests {
+    use onda_domain::privacy_naming::PrivacyNaming;
+
     use super::*;
 
     #[test]
     fn about_page_copy_models_and_libraries_win_21() {
-        let page = about_page(&Catalog::new(None), "1.2.3");
+        let page = about_page(
+            &Catalog::new(None),
+            "1.2.3",
+            Platform::macos(PrivacyNaming::Accessibility),
+        );
         assert_eq!(page.app_name, "Onda");
         assert_eq!(page.version, "Version 1.2.3");
         assert_eq!(
@@ -256,5 +370,45 @@ mod tests {
                 .all(|library| library.url.starts_with("https://")),
             "every library links to its project"
         );
+    }
+
+    #[test]
+    fn linux_about_page_uses_linux_libraries_and_gguf_credits() {
+        let page = about_page(&Catalog::gguf(), "1.2.3", Platform::linux());
+        let names: Vec<&str> = page.libraries.iter().map(|l| l.name.as_str()).collect();
+        for linux_lib in [
+            "gtk4-rs",
+            "Hex desktop integration",
+            "libadwaita-rs",
+            "transcribe.cpp",
+        ] {
+            assert!(names.contains(&linux_lib), "missing {linux_lib}: {names:?}");
+        }
+        for mac_lib in [
+            "FluidAudio",
+            "keyring",
+            "mediaremote-adapter",
+            "objc2",
+            "security-framework",
+            "tracing-oslog",
+            "UniFFI",
+        ] {
+            assert!(
+                !names.contains(&mac_lib),
+                "unexpected macOS lib {mac_lib}: {names:?}"
+            );
+        }
+        for model in &page.models {
+            assert!(
+                !model.attribution.contains("CoreML"),
+                "GGUF attribution leaked CoreML: {}",
+                model.attribution
+            );
+            assert!(
+                model.attribution.contains("GGUF"),
+                "expected GGUF attribution: {}",
+                model.attribution
+            );
+        }
     }
 }

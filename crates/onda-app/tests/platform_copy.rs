@@ -20,13 +20,15 @@ use onda_domain::types::OutputMode;
 use onda_domain::updates::{UpdateFailure, UpdateStatus};
 use uuid::Uuid;
 
-const BANNED: [&str; 6] = [
+const BANNED: [&str; 8] = [
     "Mac",
     "macOS",
     "Finder",
     "Keychain",
     "System Settings",
     "OSStatus",
+    "CoreML",
+    "lone-key hotkeys",
 ];
 
 /// The banned word `text` contains, in any letter case. "Mac" counts only
@@ -252,6 +254,81 @@ async fn no_linux_view_names_a_mac_term() {
         .filter(|view| !seen.contains(view))
         .collect();
     assert!(missing.is_empty(), "views never built: {missing:?}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn linux_views_omit_macos_permissions_and_credits() {
+    let h = Harness::build_on(None, Platform::linux(), |_| {});
+    h.permissions
+        .accessibility
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    h.app.ui_ready();
+    sleep(1).await;
+    for event in h.events() {
+        match event {
+            Event::TrayChanged(tray) => {
+                assert!(
+                    !tray
+                        .accessibility_label
+                        .to_lowercase()
+                        .contains("accessibility"),
+                    "unexpected accessibility label: {:?}",
+                    tray.accessibility_label
+                );
+            }
+            Event::MenuChanged(menu) => {
+                let text = format!("{menu:?}");
+                assert!(
+                    !text.contains("Access Needed") && !text.contains("Fix Permissions"),
+                    "unexpected permission menu on Linux: {text}"
+                );
+            }
+            _ => {}
+        }
+    }
+
+    h.app.page_appeared(MainWindowSection::General);
+    h.app.page_appeared(MainWindowSection::About);
+    sleep(10).await;
+
+    let general = h
+        .last(|e| match e {
+            Event::GeneralChanged(page) => Some(*page),
+            _ => None,
+        })
+        .expect("General page");
+    assert_eq!(general.accessibility, None);
+
+    let about = h
+        .last(|e| match e {
+            Event::AboutChanged(page) => Some(*page),
+            _ => None,
+        })
+        .expect("About page");
+    let lib_names: Vec<&str> = about.libraries.iter().map(|l| l.name.as_str()).collect();
+    assert!(lib_names.contains(&"gtk4-rs"), "{lib_names:?}");
+    assert!(lib_names.contains(&"transcribe.cpp"), "{lib_names:?}");
+    for mac_lib in [
+        "FluidAudio",
+        "keyring",
+        "mediaremote-adapter",
+        "objc2",
+        "security-framework",
+        "tracing-oslog",
+        "UniFFI",
+    ] {
+        assert!(
+            !lib_names.contains(&mac_lib),
+            "macOS lib on Linux: {mac_lib}"
+        );
+    }
+    for model in &about.models {
+        assert!(
+            model.attribution.contains("GGUF") && !model.attribution.contains("CoreML"),
+            "{}",
+            model.attribution
+        );
+    }
 }
 
 #[tokio::test(start_paused = true)]

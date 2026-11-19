@@ -11,7 +11,9 @@ struct GeneralPageView: View {
         Form {
             Section {
                 MainWindowPermissionRow(row: page.microphone, fix: fix)
-                MainWindowPermissionRow(row: page.accessibility, fix: fix)
+                if let accessibility = page.accessibility {
+                    MainWindowPermissionRow(row: accessibility, fix: fix)
+                }
             } header: {
                 Text("Permissions")
             }

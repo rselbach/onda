@@ -38,53 +38,13 @@ impl Window {
         let group = adw::PreferencesGroup::builder()
             .title(&page.libraries_title)
             .build();
-        let linux = [
-            ("gtk4-rs", "MIT", "https://github.com/gtk-rs/gtk4-rs"),
-            (
-                "libadwaita-rs",
-                "MIT",
-                "https://gitlab.gnome.org/World/Rust/libadwaita-rs",
-            ),
-            (
-                "transcribe.cpp",
-                "MIT",
-                "https://github.com/handy-computer/transcribe.cpp",
-            ),
-            (
-                "Hex desktop integration",
-                "MIT",
-                "https://github.com/anomalyco/hex",
-            ),
-        ];
-        for (name, license, url) in linux.into_iter().chain(
-            page.libraries
-                .iter()
-                .filter(|library| {
-                    !matches!(
-                        library.name.as_str(),
-                        "FluidAudio"
-                            | "keyring"
-                            | "mediaremote-adapter"
-                            | "objc2"
-                            | "security-framework"
-                            | "tracing-oslog"
-                            | "UniFFI"
-                    )
-                })
-                .map(|library| {
-                    (
-                        library.name.as_str(),
-                        library.license.as_str(),
-                        library.url.as_str(),
-                    )
-                }),
-        ) {
+        for library in &page.libraries {
             let row = adw::ActionRow::builder()
-                .title(name)
-                .subtitle(license)
+                .title(&library.name)
+                .subtitle(&library.license)
                 .use_markup(false)
                 .build();
-            let link = gtk::LinkButton::with_label(url, "Website");
+            let link = gtk::LinkButton::with_label(&library.url, "Website");
             link.set_valign(gtk::Align::Center);
             row.add_suffix(&link);
             group.add(&row);

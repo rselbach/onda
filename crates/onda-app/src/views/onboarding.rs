@@ -4,12 +4,11 @@
 use onda_domain::hotkey::{
     GlobeKeyAction, HotkeyPreset, OPEN_KEYBOARD_SETTINGS_TITLE, Shortcut, fn_key_warning,
 };
-use onda_domain::languages::Language;
 use onda_domain::onboarding::{
     CustomHotkeyLabel, HOTKEY_TITLE, HotkeyPresetChoice, LANGUAGE_SEARCH_PLACEHOLDER,
-    LANGUAGE_TITLE, LanguageOption, MODEL_TITLE, ModelAction, ModelCard, ModelChoice, Onboarding,
-    OnboardingEnv, OnboardingStep, PERMISSION_READY_LABEL, PERMISSIONS_TITLE, PermissionCard,
-    WELCOME_SUBTITLE, WELCOME_TITLE, hotkey_step, language_step, model_step, ready_step,
+    LANGUAGE_TITLE, MODEL_TITLE, ModelAction, ModelCard, ModelChoice, Onboarding, OnboardingEnv,
+    OnboardingStep, PERMISSION_READY_LABEL, PERMISSIONS_TITLE, PermissionCard, WELCOME_SUBTITLE,
+    WELCOME_TITLE, hotkey_step, language_step, model_step, ready_step,
 };
 use onda_domain::platform::Platform;
 use onda_domain::types::{ActivationMode, HistoryRetention, OutputMode};
@@ -324,17 +323,9 @@ fn content(inputs: &OnboardingInputs<'_>) -> OnboardingContent {
             subtitle: WELCOME_SUBTITLE.to_owned(),
         },
         OnboardingStep::Language => {
-            let option = |language: Language| LanguageOption {
-                name: language.name().to_owned(),
-                code: language.code().to_owned(),
-            };
-            let popular: Vec<LanguageOption> = Language::popular().map(option).collect();
-            let all: Vec<LanguageOption> = Language::all().map(option).collect();
             let step = language_step(
                 inputs.language_query,
                 inputs.show_all_languages,
-                &popular,
-                &all,
                 inputs.wizard.language(),
             );
             OnboardingContent::Language {

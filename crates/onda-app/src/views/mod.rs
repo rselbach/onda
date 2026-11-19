@@ -16,7 +16,7 @@ mod post_processing;
 mod replacements;
 mod speech;
 
-pub use about::{ABOUT_TAGLINE, AboutLibrary, AboutModel, AboutPage, LIBRARIES, about_page};
+pub use about::{ABOUT_TAGLINE, AboutLibrary, AboutModel, AboutPage, about_page};
 pub use general::{
     GeneralInputs, GeneralPage, InputOption, InputPickerView, LoginCaptionView, OutputModeOption,
     OutputModePicker, UpdaterState, general_page, natural_cmp,

@@ -23,6 +23,9 @@ impl KeyCode {
     pub const SPACE: Self = Self(Cow::Borrowed("Space"));
     /// Escape, reserved for cancelling (HOT-4, HOT-34).
     pub const ESCAPE: Self = Self(Cow::Borrowed("Escape"));
+    /// Unidentified key event (rejected as a shortcut; parsed only for
+    /// [`HotkeyEvent::OtherKey`](crate::hotkey::HotkeyEvent::OtherKey)).
+    pub const UNIDENTIFIED: Self = Self(Cow::Borrowed("Unidentified"));
 
     /// Parses a W3C `KeyboardEvent.code` name, or returns `None` when `code`
     /// is empty or contains anything but ASCII letters and digits.
@@ -275,6 +278,10 @@ pub enum ValidationError {
     EscapeReserved,
     /// A combo without Command, Control, or Option.
     MissingRequiredModifier,
+    /// The key is Unidentified.
+    UnidentifiedKey,
+    /// A modifier key was paired with extra modifiers.
+    ModifierKeyWithModifiers,
 }
 
 impl ValidationError {
@@ -284,6 +291,10 @@ impl ValidationError {
         match self {
             Self::EscapeReserved => "Escape is reserved for cancelling shortcut recording.",
             Self::MissingRequiredModifier => names.missing_modifier_message,
+            Self::UnidentifiedKey => "That key cannot be used as a shortcut.",
+            Self::ModifierKeyWithModifiers => {
+                "A modifier key cannot be combined with other modifiers."
+            }
         }
     }
 }
@@ -295,6 +306,10 @@ impl fmt::Display for ValidationError {
         f.write_str(match self {
             Self::EscapeReserved => "Escape is reserved for cancelling",
             Self::MissingRequiredModifier => "a combo needs the control, alt, or meta modifier",
+            Self::UnidentifiedKey => "Unidentified key cannot be used as a shortcut",
+            Self::ModifierKeyWithModifiers => {
+                "a modifier key cannot be combined with other modifiers"
+            }
         })
     }
 }
@@ -441,8 +456,15 @@ fn validate(key: &KeyCode, modifiers: ModifierSet) -> Result<(), ValidationError
     if *key == KeyCode::ESCAPE {
         return Err(ValidationError::EscapeReserved);
     }
-    if modifiers.is_empty() && ModifierKey::from_code(key.as_str()).is_some() {
-        return Ok(());
+    if *key == KeyCode::UNIDENTIFIED {
+        return Err(ValidationError::UnidentifiedKey);
+    }
+    if ModifierKey::from_code(key.as_str()).is_some() {
+        return if modifiers.is_empty() {
+            Ok(())
+        } else {
+            Err(ValidationError::ModifierKeyWithModifiers)
+        };
     }
     let required = [Modifier::Meta, Modifier::Control, Modifier::Alt];
     if required.into_iter().any(|m| modifiers.contains(m)) {
@@ -636,16 +658,35 @@ mod tests {
                 want: Ok(()),
             },
             Case {
-                name: "modifier key with shift only is a combo missing a required modifier",
+                name: "modifier key with shift is rejected",
                 key: "AltRight",
                 modifiers: &[Shift],
-                want: Err(ValidationError::MissingRequiredModifier),
+                want: Err(ValidationError::ModifierKeyWithModifiers),
+            },
+            Case {
+                name: "modifier key with command is rejected",
+                key: "AltRight",
+                modifiers: &[Meta],
+                want: Err(ValidationError::ModifierKeyWithModifiers),
+            },
+            Case {
+                name: "unidentified key is rejected even with modifier",
+                key: "Unidentified",
+                modifiers: &[Meta],
+                want: Err(ValidationError::UnidentifiedKey),
+            },
+            Case {
+                name: "bare unidentified key is rejected",
+                key: "Unidentified",
+                modifiers: &[],
+                want: Err(ValidationError::UnidentifiedKey),
             },
         ];
         for tc in cases {
             let got = Shortcut::new(key(tc.key), mods(tc.modifiers)).map(|_| ());
             assert_eq!(got, tc.want, "{}", tc.name);
         }
+        assert_eq!(KeyCode::parse("Unidentified"), Some(KeyCode::UNIDENTIFIED));
     }
 
     #[test]
@@ -660,6 +701,16 @@ mod tests {
                 "missing modifier",
                 ValidationError::MissingRequiredModifier,
                 "Shortcut must include Command, Control, or Option — or use a lone modifier like Right Option or Fn.",
+            ),
+            (
+                "unidentified",
+                ValidationError::UnidentifiedKey,
+                "That key cannot be used as a shortcut.",
+            ),
+            (
+                "modifier key with modifiers",
+                ValidationError::ModifierKeyWithModifiers,
+                "A modifier key cannot be combined with other modifiers.",
             ),
         ];
         for (name, err, want) in cases {
@@ -696,8 +747,11 @@ mod tests {
                 want: Some(ModifierKey::AltRight),
             },
             Case {
-                name: "right option with command is a combo",
-                shortcut: combo("AltRight", &[Meta]),
+                name: "right option with command is not a lone modifier",
+                shortcut: Shortcut {
+                    key: KeyCode::from(ModifierKey::AltRight),
+                    modifiers: mods(&[Meta]),
+                },
                 want: None,
             },
             Case {

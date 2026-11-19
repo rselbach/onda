@@ -9,6 +9,7 @@
 use std::time::Duration;
 
 use crate::hotkey::KeyNames;
+use crate::languages::Language;
 use crate::platform::Platform;
 use crate::privacy_naming::PrivacyNaming;
 use crate::setup::{PermissionFix, try_it_placeholder};
@@ -265,6 +266,11 @@ impl Onboarding {
             skipped_accessibility: false,
             download_error: None,
         }
+    }
+
+    /// How onboarding was opened.
+    pub fn origin(&self) -> OnboardingOrigin {
+        self.origin
     }
 
     /// Current step.
@@ -623,15 +629,6 @@ pub const LANGUAGE_TITLE: &str = "What language do you speak?";
 /// Language search placeholder (ONB-4).
 pub const LANGUAGE_SEARCH_PLACEHOLDER: &str = "Search languages";
 
-/// A language offered on the Language step.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LanguageOption {
-    /// Display name.
-    pub name: String,
-    /// Language code.
-    pub code: String,
-}
-
 /// One language card (ONB-4).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LanguageCard {
@@ -656,44 +653,17 @@ pub struct LanguageStepView {
     pub cards: Vec<LanguageCard>,
 }
 
-/// The onboarding flag for a language.
-pub fn language_flag(code: &str) -> &'static str {
-    match code {
-        "en" => "🇺🇸",
-        "es" => "🇪🇸",
-        "fr" => "🇫🇷",
-        "de" => "🇩🇪",
-        "pt" => "🇧🇷",
-        "it" => "🇮🇹",
-        "ja" => "🇯🇵",
-        "ko" => "🇰🇷",
-        "zh" => "🇨🇳",
-        "hi" => "🇮🇳",
-        "ar" => "🇸🇦",
-        _ => "🌐",
-    }
-}
-
-/// Search matches the display name or the code, ignoring case (ONB-4).
-pub fn language_matches(query: &str, option: &LanguageOption) -> bool {
-    let query = query.to_lowercase();
-    option.name.to_lowercase().contains(&query) || option.code.to_lowercase().contains(&query)
-}
-
 /// Builds the Language step grid (ONB-4). A non-empty `query` searches all
 /// languages; otherwise `show_all` picks all or popular.
-pub fn language_step(
-    query: &str,
-    show_all: bool,
-    popular: &[LanguageOption],
-    all: &[LanguageOption],
-    selected: Option<&str>,
-) -> LanguageStepView {
+pub fn language_step(query: &str, show_all: bool, selected: Option<&str>) -> LanguageStepView {
+    let query = query.trim();
     let searching = !query.is_empty();
-    let shown: Vec<&LanguageOption> = match (searching, show_all) {
-        (true, _) => all.iter().filter(|o| language_matches(query, o)).collect(),
-        (false, true) => all.iter().collect(),
-        (false, false) => popular.iter().collect(),
+    let shown: Vec<Language> = match (searching, show_all) {
+        (true, _) => Language::all()
+            .filter(|language| language.matches_search(query))
+            .collect(),
+        (false, true) => Language::all().collect(),
+        (false, false) => Language::popular().collect(),
     };
     LanguageStepView {
         toggle_title: match (searching, show_all) {
@@ -703,12 +673,12 @@ pub fn language_step(
         },
         cards: shown
             .into_iter()
-            .map(|o| LanguageCard {
-                code: o.code.clone(),
-                name: o.name.clone(),
-                code_label: o.code.to_uppercase(),
-                flag: language_flag(&o.code),
-                selected: selected == Some(o.code.as_str()),
+            .map(|language| LanguageCard {
+                code: language.code().to_owned(),
+                name: language.name().to_owned(),
+                code_label: language.code().to_uppercase(),
+                flag: language.flag(),
+                selected: selected == Some(language.code()),
             })
             .collect(),
     }
@@ -2140,21 +2110,6 @@ mod tests {
         }
     }
 
-    fn languages() -> (Vec<LanguageOption>, Vec<LanguageOption>) {
-        let lang = |name: &str, code: &str| LanguageOption {
-            name: name.to_owned(),
-            code: code.to_owned(),
-        };
-        let popular = vec![lang("English", "en"), lang("Spanish", "es")];
-        let all = vec![
-            lang("Croatian", "hr"),
-            lang("English", "en"),
-            lang("Maltese", "mt"),
-            lang("Spanish", "es"),
-        ];
-        (popular, all)
-    }
-
     #[test]
     fn onb_4_language_grid() {
         struct Case {
@@ -2164,20 +2119,29 @@ mod tests {
             want_toggle: Option<&'static str>,
             want_codes: Vec<&'static str>,
         }
+        let popular_codes: Vec<&str> = Language::popular().map(Language::code).collect();
+        let all_codes: Vec<&str> = Language::all().map(Language::code).collect();
         let cases = [
             Case {
                 name: "popular by default",
                 query: "",
                 show_all: false,
                 want_toggle: Some("Show All"),
-                want_codes: vec!["en", "es"],
+                want_codes: popular_codes.clone(),
+            },
+            Case {
+                name: "whitespace query shows popular without entering search mode",
+                query: "   ",
+                show_all: false,
+                want_toggle: Some("Show All"),
+                want_codes: popular_codes,
             },
             Case {
                 name: "show all",
                 query: "",
                 show_all: true,
                 want_toggle: Some("Popular Only"),
-                want_codes: vec!["hr", "en", "mt", "es"],
+                want_codes: all_codes,
             },
             Case {
                 name: "search by name ignores case and the toggle",
@@ -2194,6 +2158,34 @@ mod tests {
                 want_codes: vec!["hr"],
             },
             Case {
+                name: "search trims padded code",
+                query: " en ",
+                show_all: false,
+                want_toggle: None,
+                want_codes: vec!["en", "fr", "sl"],
+            },
+            Case {
+                name: "search by alternate Mandarin",
+                query: "Mandarin",
+                show_all: false,
+                want_toggle: None,
+                want_codes: vec!["zh"],
+            },
+            Case {
+                name: "search by alternate Flemish",
+                query: "Flemish",
+                show_all: false,
+                want_toggle: None,
+                want_codes: vec!["nl"],
+            },
+            Case {
+                name: "search by alternate Castilian",
+                query: "Castilian",
+                show_all: false,
+                want_toggle: None,
+                want_codes: vec!["es"],
+            },
+            Case {
                 name: "search with no match",
                 query: "klingon",
                 show_all: true,
@@ -2201,9 +2193,8 @@ mod tests {
                 want_codes: vec![],
             },
         ];
-        let (popular, all) = languages();
         for tc in cases {
-            let got = language_step(tc.query, tc.show_all, &popular, &all, Some("es"));
+            let got = language_step(tc.query, tc.show_all, Some("es"));
             assert_eq!(got.toggle_title, tc.want_toggle, "{}", tc.name);
             let codes: Vec<&str> = got.cards.iter().map(|c| c.code.as_str()).collect();
             assert_eq!(codes, tc.want_codes, "{}", tc.name);
@@ -2212,78 +2203,38 @@ mod tests {
 
     #[test]
     fn onb_4_language_card() {
-        let (popular, all) = languages();
-        let got = language_step("", true, &popular, &all, Some("es"));
-        let want = [
-            LanguageCard {
-                code: "hr".to_owned(),
-                name: "Croatian".to_owned(),
-                code_label: "HR".to_owned(),
-                flag: "🌐",
-                selected: false,
-            },
-            LanguageCard {
+        let got = language_step("", false, Some("es"));
+        assert_eq!(
+            got.cards.first(),
+            Some(&LanguageCard {
                 code: "en".to_owned(),
                 name: "English".to_owned(),
                 code_label: "EN".to_owned(),
                 flag: "🇺🇸",
                 selected: false,
-            },
-            LanguageCard {
-                code: "mt".to_owned(),
-                name: "Maltese".to_owned(),
-                code_label: "MT".to_owned(),
-                flag: "🌐",
-                selected: false,
-            },
-            LanguageCard {
+            })
+        );
+        assert_eq!(
+            got.cards.get(1),
+            Some(&LanguageCard {
                 code: "es".to_owned(),
                 name: "Spanish".to_owned(),
                 code_label: "ES".to_owned(),
                 flag: "🇪🇸",
                 selected: true,
-            },
-        ];
-        assert_eq!(got.cards, want);
-    }
-
-    #[test]
-    fn onb_4_language_flags() {
-        struct Case {
-            name: &'static str,
-            code: &'static str,
-            want: &'static str,
-        }
-        let cases = [
-            Case {
-                name: "english",
-                code: "en",
-                want: "🇺🇸",
-            },
-            Case {
-                name: "portuguese is Brazil",
-                code: "pt",
-                want: "🇧🇷",
-            },
-            Case {
-                name: "arabic",
-                code: "ar",
-                want: "🇸🇦",
-            },
-            Case {
-                name: "non-popular",
-                code: "mt",
-                want: "🌐",
-            },
-            Case {
-                name: "automatic",
-                code: "auto",
-                want: "🌐",
-            },
-        ];
-        for tc in cases {
-            assert_eq!(language_flag(tc.code), tc.want, "{}", tc.name);
-        }
+            })
+        );
+        let maltese = language_step("maltese", false, Some("es"));
+        assert_eq!(
+            maltese.cards,
+            [LanguageCard {
+                code: "mt".to_owned(),
+                name: "Maltese".to_owned(),
+                code_label: "MT".to_owned(),
+                flag: "🌐",
+                selected: false,
+            }]
+        );
     }
 
     fn preset(

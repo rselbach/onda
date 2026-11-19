@@ -795,7 +795,7 @@ impl Actor {
                 }
             }
             MainWindowSection::About => {
-                let view = about_page(&self.catalog, &self.ports.app_version);
+                let view = about_page(&self.catalog, &self.ports.app_version, self.ports.platform);
                 if self.ui.published.about.as_ref() != Some(&view) {
                     self.events
                         .emit(Event::AboutChanged(Box::new(view.clone())));

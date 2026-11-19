@@ -36,7 +36,7 @@ use onda_domain::model_loads::ModelLoads;
 use onda_domain::model_selection::{
     PendingSelection, SelectOutcome, load_failure_notification, reload_after_download, select_model,
 };
-use onda_domain::models::{Catalog, ModelId};
+use onda_domain::models::{Catalog, ModelFamily, ModelId};
 use onda_domain::non_dictation_ui::{self, DownloadOverlay, DownloadOverlayView, DownloadTracker};
 use onda_domain::onboarding::OnboardingOrigin;
 use onda_domain::overlay::{ClockDisplay, Notice, Overlay, OverlayView, TranscribingEntry};
@@ -1300,10 +1300,10 @@ impl Actor {
             service: self.service.clone(),
             audio: audio.clone(),
             preview,
-            reuse_allowed: matches!(
-                self.service.loaded_model(),
-                Some(ModelId::ParakeetTdtV2 | ModelId::ParakeetUltra | ModelId::ParakeetJapanese)
-            ),
+            reuse_allowed: self
+                .service
+                .loaded_model()
+                .is_some_and(|model| model.family() == ModelFamily::ParakeetTdt),
             language: head.settings.language.engine_language(),
             origin: self.origin,
         };
@@ -2001,10 +2001,11 @@ impl Actor {
     }
 
     fn accessibility_needed(&self) -> bool {
-        accessibility_needed(
-            self.settings.output_mode,
-            self.settings.hotkey.is_lone_modifier(),
-        )
+        self.ports.platform.typing_permission.is_some()
+            && accessibility_needed(
+                self.settings.output_mode,
+                self.settings.hotkey.is_lone_modifier(),
+            )
     }
 
     fn missing_permission(&self) -> Option<MissingPermission> {

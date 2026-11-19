@@ -965,7 +965,10 @@ impl CleanupTransport for FakeCleanup {
     }
 
     fn send(&self, request: CleanupRequest) -> BoxFuture<'static, Result<String, CleanupError>> {
-        let body = serde_json::to_value(&request.body).unwrap_or_default();
+        let body = match &request {
+            CleanupRequest::Http(http) => serde_json::to_value(&http.body).unwrap_or_default(),
+            CleanupRequest::OnDevice(prompt) => serde_json::to_value(prompt).unwrap_or_default(),
+        };
         lock(&self.requests).push(body);
         self.started.fetch_add(1, Ordering::SeqCst);
         let result = lock(&self.results)
@@ -1083,7 +1086,7 @@ impl SettingsSource for FakeSettings {
         let (handoff, admitted) = oneshot::channel();
         if let Ok(settings) = self.settings.try_lock()
             && settings.cleanup_enabled
-            && settings.cleanup_provider == Some(request.provider)
+            && settings.cleanup_provider == Some(request.provider())
         {
             let _ = handoff.send(request);
         }
@@ -1365,7 +1368,11 @@ impl Harness {
             restart_answer: Mutex::default(),
             files_error: Mutex::default(),
         });
-        let catalog = Catalog::new(system_speech.as_ref().map(|speech| speech.info()));
+        let catalog = if platform == Platform::linux() {
+            Catalog::gguf()
+        } else {
+            Catalog::new(system_speech.as_ref().map(|speech| speech.info()))
+        };
         if let Some(speech) = system_speech {
             *lock(&models.system_speech) = Some((speech, settings.clone()));
         }

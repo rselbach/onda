@@ -118,15 +118,30 @@ impl fmt::Display for CleanupError {
 
 impl std::error::Error for CleanupError {}
 
-/// One cleanup request, ready for an HTTP client: `POST` to the
+/// One cleanup request: either an HTTP `POST` to a cloud provider's chat
+/// endpoint with [`REQUEST_TIMEOUT`], or an Apple Intelligence on-device
+/// prompt.
+///
+/// `Debug` redacts any `Authorization` header (CLN-8).
+#[derive(Debug, Clone, PartialEq)]
+pub enum CleanupRequest {
+    /// Cloud HTTP cleanup request.
+    Http(HttpCleanupRequest),
+    /// On-device Apple Intelligence prompt.
+    OnDevice(OnDevicePrompt),
+}
+
+/// One HTTP cleanup request, ready for an HTTP client: `POST` to the
 /// provider's chat endpoint with [`REQUEST_TIMEOUT`], these headers, and
 /// `body` serialized as JSON.
 ///
 /// `Debug` redacts the `Authorization` header (CLN-8).
 #[derive(Clone, PartialEq)]
-pub struct CleanupRequest {
+pub struct HttpCleanupRequest {
     /// Who serves the request; its chat endpoint is the target.
     pub provider: CleanupProvider,
+    /// Model slug sent inside `body`.
+    pub model_slug: String,
     /// Header name/value pairs (CLN-4).
     pub headers: Vec<(&'static str, String)>,
     /// Body; serialize it with `serde_json` (CLN-5).
@@ -144,7 +159,6 @@ enum Body {
     OpenRouter(OpenRouterBody),
     Fireworks(fireworks::Body),
     DeepSeek(deepseek::Body),
-    OnDevice(OnDevicePrompt),
 }
 
 /// What the on-device model gets: the system prompt as the session's
@@ -158,12 +172,28 @@ pub struct OnDevicePrompt {
 }
 
 impl CleanupRequest {
+    /// Which provider serves this request.
+    pub fn provider(&self) -> CleanupProvider {
+        match self {
+            Self::Http(request) => request.provider,
+            Self::OnDevice(_) => CleanupProvider::AppleIntelligence,
+        }
+    }
+
+    /// The HTTP request details, when this request is sent over HTTP.
+    pub fn http(&self) -> Option<&HttpCleanupRequest> {
+        match self {
+            Self::Http(request) => Some(request),
+            Self::OnDevice(_) => None,
+        }
+    }
+
     /// The on-device model's prompt, when this request is for it rather
     /// than for an HTTP endpoint.
     pub fn on_device_prompt(&self) -> Option<&OnDevicePrompt> {
-        match &self.body.0 {
-            Body::OnDevice(prompt) => Some(prompt),
-            Body::OpenRouter(_) | Body::Fireworks(_) | Body::DeepSeek(_) => None,
+        match self {
+            Self::OnDevice(prompt) => Some(prompt),
+            Self::Http(_) => None,
         }
     }
 }
@@ -204,18 +234,22 @@ struct ProviderPreferences {
     zdr: bool,
 }
 
-impl fmt::Debug for CleanupRequest {
+impl fmt::Debug for HttpCleanupRequest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let headers: Vec<(&str, &str)> = self
             .headers
             .iter()
-            .map(|(name, value)| match *name {
-                "Authorization" => (*name, "<redacted>"),
-                _ => (*name, value.as_str()),
+            .map(|(name, value)| {
+                if name.eq_ignore_ascii_case("authorization") {
+                    (*name, "<redacted>")
+                } else {
+                    (*name, value.as_str())
+                }
             })
             .collect();
-        f.debug_struct("CleanupRequest")
+        f.debug_struct("HttpCleanupRequest")
             .field("provider", &self.provider)
+            .field("model_slug", &self.model_slug)
             .field("headers", &headers)
             .field("body", &self.body)
             .finish()
@@ -261,7 +295,7 @@ pub fn build_request(
                 "https://rselbach.github.io/onda/".to_owned(),
             ));
             let body = Body::OpenRouter(OpenRouterBody {
-                model: model_slug,
+                model: model_slug.clone(),
                 messages: messages(),
                 stream: false,
                 temperature: 0,
@@ -277,7 +311,7 @@ pub fn build_request(
         }
         CleanupProvider::Fireworks => {
             let body = Body::Fireworks(fireworks::Body {
-                model: model_slug,
+                model: model_slug.clone(),
                 messages: messages(),
                 stream: false,
                 temperature: 0,
@@ -287,7 +321,7 @@ pub fn build_request(
         }
         CleanupProvider::DeepSeek => {
             let body = Body::DeepSeek(deepseek::Body {
-                model: model_slug,
+                model: model_slug.clone(),
                 messages: messages(),
                 stream: false,
                 temperature: 0,
@@ -296,18 +330,18 @@ pub fn build_request(
             (http_headers(key), body)
         }
         CleanupProvider::AppleIntelligence => {
-            let body = Body::OnDevice(OnDevicePrompt {
+            return CleanupRequest::OnDevice(OnDevicePrompt {
                 instructions: instructions.to_owned(),
                 prompt: prompt.clone(),
             });
-            (Vec::new(), body)
         }
     };
-    CleanupRequest {
+    CleanupRequest::Http(HttpCleanupRequest {
         provider,
+        model_slug,
         headers,
         body: RequestBody(body),
-    }
+    })
 }
 
 fn http_headers(key: Option<&ApiKey>) -> Vec<(&'static str, String)> {
@@ -502,6 +536,17 @@ mod tests {
             !printed.contains(KEY),
             "debug output leaked the key: {printed}"
         );
+        let lower_auth = HttpCleanupRequest {
+            provider: CleanupProvider::OpenRouter,
+            model_slug: "test/model".to_owned(),
+            headers: vec![("authorization", format!("Bearer {KEY}"))],
+            body: request.http().expect("http request").body.clone(),
+        };
+        let printed_lower = format!("{lower_auth:?}");
+        assert!(
+            !printed_lower.contains(KEY),
+            "case-insensitive authorization header leaked: {printed_lower}"
+        );
     }
 
     #[test]
@@ -515,7 +560,9 @@ mod tests {
             "señor chang",
             None,
         );
-        assert_eq!(request.provider, CleanupProvider::OpenRouter, "provider");
+        assert_eq!(request.provider(), CleanupProvider::OpenRouter, "provider");
+        let http = request.http().expect("http request");
+        assert_eq!(http.model_slug, "~anthropic/claude-haiku-latest");
         let want_headers = vec![
             ("Content-Type", "application/json".to_owned()),
             ("Authorization", format!("Bearer {KEY}")),
@@ -525,7 +572,7 @@ mod tests {
                 "https://rselbach.github.io/onda/".to_owned(),
             ),
         ];
-        assert_eq!(request.headers, want_headers, "headers");
+        assert_eq!(http.headers, want_headers, "headers");
         let want_body = json!({
             "model": "~anthropic/claude-haiku-latest",
             "messages": [
@@ -537,7 +584,7 @@ mod tests {
             "reasoning": {"effort": "none"},
             "provider": {"sort": "latency", "zdr": true},
         });
-        let body = serde_json::to_value(&request.body).expect("serialize body");
+        let body = serde_json::to_value(&http.body).expect("serialize body");
         assert_eq!(body, want_body, "body");
         assert_eq!(REQUEST_TIMEOUT, Duration::from_secs(20), "CLN-7 timeout");
     }
@@ -553,15 +600,16 @@ mod tests {
             Some("Mail"),
         );
         assert_eq!(
-            request.provider.chat_endpoint(),
+            request.provider().chat_endpoint(),
             Some(crate::cleanup::fireworks::ENDPOINT)
         );
+        let http = request.http().expect("http request");
         let want_headers = vec![
             ("Content-Type", "application/json".to_owned()),
             ("Authorization", format!("Bearer {KEY}")),
         ];
-        assert_eq!(request.headers, want_headers, "headers");
-        let body = serde_json::to_value(&request.body).expect("serialize body");
+        assert_eq!(http.headers, want_headers, "headers");
+        let body = serde_json::to_value(&http.body).expect("serialize body");
         let want_body = json!({
             "model": "accounts/fireworks/models/deepseek-v4p1-flash",
             "messages": [
@@ -584,7 +632,8 @@ mod tests {
             "hi",
             None,
         );
-        let body = serde_json::to_value(&request.body).expect("serialize body");
+        let body = serde_json::to_value(&request.http().expect("http request").body)
+            .expect("serialize body");
         assert_eq!(body.get("reasoning_effort"), None, "{body}");
     }
 
@@ -599,7 +648,8 @@ mod tests {
             "um hi troy",
             Some("Notes"),
         );
-        assert!(request.headers.is_empty(), "nothing to authenticate");
+        assert_eq!(request.provider(), CleanupProvider::AppleIntelligence);
+        assert_eq!(request.http(), None, "nothing goes over HTTP");
         assert_eq!(
             request.on_device_prompt(),
             Some(&OnDevicePrompt {
@@ -630,10 +680,12 @@ mod tests {
                     Some("Notes"),
                 )
             };
-            let sent = |request: &CleanupRequest| match request.on_device_prompt() {
-                Some(on_device) => (on_device.instructions.clone(), on_device.prompt.clone()),
-                None => {
-                    let body = serde_json::to_value(&request.body).expect("serialize body");
+            let sent = |request: &CleanupRequest| match request {
+                CleanupRequest::OnDevice(on_device) => {
+                    (on_device.instructions.clone(), on_device.prompt.clone())
+                }
+                CleanupRequest::Http(http) => {
+                    let body = serde_json::to_value(&http.body).expect("serialize body");
                     let content = |index: usize| {
                         body["messages"][index]["content"]
                             .as_str()
@@ -661,7 +713,8 @@ mod tests {
                 "{provider:?}: the default prompt"
             );
             assert_eq!(
-                with_custom.headers, with_default.headers,
+                with_custom.http().map(|h| &h.headers),
+                with_default.http().map(|h| &h.headers),
                 "{provider:?}: the prompt leaves the headers alone"
             );
         }
@@ -679,7 +732,8 @@ mod tests {
             "pop pop",
             None,
         );
-        let body = serde_json::to_value(&request.body).expect("serialize body");
+        let body = serde_json::to_value(&request.http().expect("http request").body)
+            .expect("serialize body");
         assert_eq!(body.get("reasoning"), None, "{body}");
         assert_eq!(body["model"], "openai/gpt-6.1-terra-pro");
     }

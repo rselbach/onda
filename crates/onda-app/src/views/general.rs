@@ -134,8 +134,8 @@ pub struct LoginCaptionView {
 pub struct GeneralPage {
     /// Microphone permission row.
     pub microphone: PermissionRowView,
-    /// Accessibility permission row.
-    pub accessibility: PermissionRowView,
+    /// Typing permission row, when the OS has one.
+    pub accessibility: Option<PermissionRowView>,
     /// Input device picker.
     pub input: InputPickerView,
     /// Output mode.
@@ -166,12 +166,14 @@ pub struct GeneralPage {
 pub fn general_page(inputs: GeneralInputs<'_>) -> GeneralPage {
     GeneralPage {
         microphone: microphone_row(inputs.microphone).into(),
-        accessibility: accessibility_row(
-            inputs.accessibility_granted,
-            inputs.accessibility_needed,
-            inputs.platform,
-        )
-        .into(),
+        accessibility: inputs.platform.typing_permission.map(|_| {
+            accessibility_row(
+                inputs.accessibility_granted,
+                inputs.accessibility_needed,
+                inputs.platform,
+            )
+            .into()
+        }),
         input: input_picker(inputs.devices, inputs.selected_uid, inputs.platform.os_name),
         output: OutputModePicker {
             label: "After transcription".to_owned(),

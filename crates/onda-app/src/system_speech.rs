@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use onda_asr::{AsrError, LoadProgress, SpeechEngine};
+use onda_domain::joiner::is_written_without_spaces;
 use onda_domain::languages::{
     Language, LanguageSetting, system_speech_decode_locale, system_speech_locale,
     system_speech_unsupported_locale,
@@ -151,7 +152,9 @@ fn join_results(results: &[String]) -> String {
             continue;
         }
         let spaced = match (joined.chars().last(), result.chars().next()) {
-            (Some(before), Some(after)) => !unspaced(before) && !unspaced(after),
+            (Some(before), Some(after)) => {
+                !is_written_without_spaces(before) && !is_written_without_spaces(after)
+            }
             _ => false,
         };
         if spaced {
@@ -160,21 +163,6 @@ fn join_results(results: &[String]) -> String {
         joined.push_str(result);
     }
     joined
-}
-
-// characters of scripts and punctuation that take no space around them:
-// CJK punctuation, kana, Han, and full-width forms. Hangul and Thai (which
-// separates phrases with spaces) stay spaced.
-fn unspaced(c: char) -> bool {
-    matches!(
-        c,
-        '\u{3000}'..='\u{30FF}'
-            | '\u{3400}'..='\u{4DBF}'
-            | '\u{4E00}'..='\u{9FFF}'
-            | '\u{F900}'..='\u{FAFF}'
-            | '\u{FF00}'..='\u{FF65}'
-            | '\u{20000}'..='\u{2FA1F}'
-    )
 }
 
 #[cfg(test)]

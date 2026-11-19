@@ -46,6 +46,17 @@ impl ModelId {
         }
     }
 
+    /// The family this model belongs to.
+    pub const fn family(self) -> ModelFamily {
+        match self {
+            ModelId::ParakeetTdtV2 | ModelId::ParakeetUltra | ModelId::ParakeetJapanese => {
+                ModelFamily::ParakeetTdt
+            }
+            ModelId::ParakeetUnified => ModelFamily::ParakeetUnified,
+            ModelId::SystemSpeech => ModelFamily::SystemEngine,
+        }
+    }
+
     /// Parses a string id. Case-sensitive; unknown ids return `None`.
     pub fn parse(id: &str) -> Option<ModelId> {
         ModelId::ALL.into_iter().find(|m| m.as_str() == id)
@@ -291,7 +302,7 @@ impl Catalog {
                         "~733MB",
                         "Parakeet 0.6B Japanese by NVIDIA; GGUF conversion by ASRISEx",
                     ),
-                    _ => ("~731MB", HANDY),
+                    ModelId::ParakeetUnified | ModelId::SystemSpeech => ("~731MB", HANDY),
                 };
                 if id == ModelId::ParakeetUnified {
                     info.description = "NVIDIA Parakeet Unified — English transcription";
