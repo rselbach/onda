@@ -21,6 +21,7 @@ use onda_domain::preview::{
     UNIFIED_LOOKAHEAD_FRAMES, UnifiedStream,
 };
 
+use crate::chunk::MIN_SAMPLES;
 use crate::coreml::{Array, BoundInputs, ComputeUnits, Model};
 use crate::engine::{Prediction, StepIo, failed, load_failed, load_model, zero_state};
 use crate::mel::{MelExtractor, N_MELS};
@@ -294,12 +295,25 @@ impl SpeechEngine for UnifiedEngine {
         true
     }
 
+    fn min_samples(&self) -> usize {
+        MIN_SAMPLES
+    }
+
     fn transcribe(
         &mut self,
         samples: &[f32],
         language: Option<Language>,
     ) -> Result<String, AsrError> {
         log_ignored(language);
+        let Some(loaded) = self.loaded.as_mut() else {
+            return Err(AsrError::NotReady);
+        };
+        if samples.len() < MIN_SAMPLES {
+            loaded.session.stream.reset();
+            return Err(AsrError::TranscriptionFailed {
+                detail: format!("{} samples is shorter than 0.3 s", samples.len()),
+            });
+        }
         let started = Instant::now();
         let text = self.stream(samples, true);
         if let Some(loaded) = self.loaded.as_mut() {
@@ -675,5 +689,15 @@ mod tests {
         assert_eq!(session.text, "");
         assert_eq!(session.windower, Windower::default());
         assert_eq!(session.decoder, DecoderState::new());
+    }
+
+    #[test]
+    fn min_samples_and_unloaded_transcribe() {
+        let mut engine = UnifiedEngine::new(PathBuf::from("/nonexistent"));
+        assert_eq!(engine.min_samples(), MIN_SAMPLES);
+        assert!(matches!(
+            engine.transcribe(&vec![0.1; MIN_SAMPLES], None),
+            Err(AsrError::NotReady)
+        ));
     }
 }

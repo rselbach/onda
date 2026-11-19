@@ -90,7 +90,8 @@ pub(crate) struct Token {
 pub(crate) struct DecodeSpan {
     /// Valid encoder frames.
     pub encoder_frames: usize,
-    /// Frames holding real audio; decoding stops at the smaller of the two.
+    /// Real audio frames starting at `start_frame`; decoding stops at
+    /// `encoder_frames.min(start_frame + audio_frames)`.
     pub audio_frames: usize,
     /// First frame to decode (skips prepended context).
     pub start_frame: usize,
@@ -132,7 +133,9 @@ pub(crate) fn decode(
     if span.encoder_frames <= 1 {
         return Ok(hypothesis);
     }
-    let effective = span.encoder_frames.min(span.audio_frames);
+    let effective = span
+        .encoder_frames
+        .min(span.start_frame.saturating_add(span.audio_frames));
     let mut time = span.start_frame;
     if time >= effective {
         return Ok(hypothesis);
@@ -226,7 +229,7 @@ pub(crate) fn decode(
                 emissions_here = 1;
             }
             if emissions_here >= config.max_symbols_per_step {
-                time = (time + 1).min(last_frame);
+                time += 1;
                 safe_time = time.min(last_frame);
                 emissions_here = 0;
                 last_emission = None;
@@ -388,6 +391,19 @@ pub(crate) mod tests {
                 want: vec![(7, 3)],
             },
             Case {
+                name: "context start does not truncate the final audio frame",
+                span: DecodeSpan {
+                    encoder_frames: 4,
+                    audio_frames: 3,
+                    start_frame: 1,
+                    frame_offset: 99,
+                    is_last: false,
+                    emit_after_frame: None,
+                },
+                script: vec![(BLANK, 2), (8, 0)],
+                want: vec![(8, 102)],
+            },
+            Case {
                 name: "zero-duration repeats are forced ahead after one",
                 span: span(10, false),
                 script: vec![(1, 0), (2, 0), (3, 1)],
@@ -427,6 +443,25 @@ pub(crate) mod tests {
             .expect("decode")
             .tokens;
         assert_eq!(ids_and_frames(&tokens), vec![(9, 0), (9, 0), (9, 2)]);
+
+        let mut last_frame_transducer = Scripted::new(&script);
+        let one_per_step = TdtConfig {
+            max_symbols_per_step: 1,
+            ..TdtConfig::v2()
+        };
+        let tokens = decode(
+            &mut last_frame_transducer,
+            span(2, false),
+            &one_per_step,
+            None,
+        )
+        .expect("decode")
+        .tokens;
+        assert_eq!(
+            ids_and_frames(&tokens),
+            vec![(9, 0), (9, 1)],
+            "hitting max_symbols_per_step on last_frame exits instead of spinning"
+        );
     }
 
     #[test]

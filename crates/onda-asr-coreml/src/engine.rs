@@ -456,7 +456,9 @@ impl Runtime {
                 .write_f32(0, &audio)
                 .map_err(failed)?;
             declared = trimmed;
-            audio_frames = trimmed.div_ceil(FRAME_SAMPLES);
+            audio_frames = trimmed
+                .saturating_sub(request.start_frame * FRAME_SAMPLES)
+                .div_ceil(FRAME_SAMPLES);
         } else {
             self.preprocessor_inputs
                 .write_f32(0, padded)

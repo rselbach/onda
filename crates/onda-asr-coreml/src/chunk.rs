@@ -1552,7 +1552,7 @@ mod tests {
         let truth = truth.to_vec();
         move |request: &WindowRequest| {
             let context = request.start_frame as i64;
-            let decodable = request.audio_frames.min(188) as i64 - context;
+            let decodable = (request.start_frame + request.audio_frames).min(188) as i64 - context;
             let (first, end) = (request.frame_offset, request.frame_offset + decodable);
             let is_probe = context == 0 && request.start != 0;
             Ok(truth
