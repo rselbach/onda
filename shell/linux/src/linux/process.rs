@@ -1,6 +1,7 @@
 //! Bounded desktop helpers. Transcript and credential data travel on stdin.
 
 use std::io::{Read, Write};
+use std::os::unix::process::CommandExt;
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
@@ -81,6 +82,7 @@ fn execute(
     let deadline = Instant::now() + timeout;
     let mut child = Command::new(program)
         .args(args)
+        .process_group(0)
         .stdin(Stdio::piped())
         .stdout(if capture {
             Stdio::piped()
@@ -104,22 +106,41 @@ fn execute(
     std::thread::spawn(move || {
         let _ = written.send(stdin.write_all(&input));
     });
-    let reader = read_pipe(stdout);
-    let errors = read_pipe(stderr);
+    let reader = capture.then(|| read_pipe(stdout));
+    let errors = capture.then(|| read_pipe(stderr));
     let status = loop {
         if let Some(status) = child.try_wait()? {
             break status;
         }
         if Instant::now() >= deadline {
-            child.kill()?;
+            if let Ok(raw) = i32::try_from(child.id())
+                && let Some(pid) = rustix::process::Pid::from_raw(raw)
+            {
+                let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+            }
+            let _ = child.kill();
             child.wait()?;
             anyhow::bail!("{program} timed out");
         }
         std::thread::sleep(Duration::from_millis(10));
     };
-    writer.recv_timeout(deadline.saturating_duration_since(Instant::now()))??;
-    let stdout = reader.recv_timeout(deadline.saturating_duration_since(Instant::now()))??;
-    let stderr = errors.recv_timeout(deadline.saturating_duration_since(Instant::now()))??;
+    match writer.recv_timeout(deadline.saturating_duration_since(Instant::now()))? {
+        Ok(()) => {}
+        Err(error) if !status.success() && error.kind() == std::io::ErrorKind::BrokenPipe => {}
+        Err(error) => return Err(error.into()),
+    }
+    let stdout = match reader {
+        Some(reader) => {
+            reader.recv_timeout(deadline.saturating_duration_since(Instant::now()))??
+        }
+        None => Vec::new(),
+    };
+    let stderr = match errors {
+        Some(errors) => {
+            errors.recv_timeout(deadline.saturating_duration_since(Instant::now()))??
+        }
+        None => Vec::new(),
+    };
     Ok(Output {
         status,
         stdout,

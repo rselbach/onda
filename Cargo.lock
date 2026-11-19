@@ -2718,6 +2718,7 @@ dependencies = [
  "onda-settings",
  "onda-update",
  "pangocairo",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",

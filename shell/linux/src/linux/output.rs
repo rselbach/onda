@@ -71,7 +71,7 @@ impl Output {
             grant(self.portal.clone(), self.token.clone()),
             delivery,
         )
-        .map(|opened| opened.map(Keyboard::Portal))
+        .map(|opened| opened.map(|(grant, fresh)| Keyboard::Portal { grant, fresh }))
     }
 
     fn press(&self, keyboard: Keyboard, shift: bool, paste: &Paste<'_>) -> anyhow::Result<bool> {
@@ -94,9 +94,11 @@ impl Output {
                 process::run("wtype", &args, &[])?;
                 return Ok(true);
             }
-            Keyboard::Portal(grant) => {
-                // The selection must reach the target; a consent dialog may also have just closed.
-                std::thread::sleep(Duration::from_millis(250));
+            Keyboard::Portal { grant, fresh } => {
+                if fresh {
+                    // Wait briefly for the consent dialog to hand focus back to the target.
+                    std::thread::sleep(Duration::from_millis(250));
+                }
                 if !ready() {
                     return Ok(false);
                 }
@@ -183,7 +185,10 @@ fn unless_cancelled<T: Send + 'static>(
 enum Keyboard {
     X11,
     Wtype,
-    Portal(OwnedMutexGuard<Option<Grant>>),
+    Portal {
+        grant: OwnedMutexGuard<Option<Grant>>,
+        fresh: bool,
+    },
 }
 
 // The keyboard grant, opening one when none is held. The guard keeps the
@@ -191,9 +196,10 @@ enum Keyboard {
 async fn grant(
     portal: Arc<tokio::sync::Mutex<Option<Grant>>>,
     token: PathBuf,
-) -> anyhow::Result<OwnedMutexGuard<Option<Grant>>> {
+) -> anyhow::Result<(OwnedMutexGuard<Option<Grant>>, bool)> {
     let mut grant = portal.clone().lock_owned().await;
-    if grant.is_none() {
+    let fresh = grant.is_none();
+    if fresh {
         *grant = Some(tokio::time::timeout(Duration::from_secs(120), open_grant(&token)).await??);
         tokio::spawn(async move {
             loop {
@@ -216,7 +222,7 @@ async fn grant(
             }
         });
     }
-    Ok(grant)
+    Ok((grant, fresh))
 }
 
 async fn open_grant(path: &Path) -> anyhow::Result<Grant> {
@@ -294,9 +300,26 @@ impl TextOutput for Output {
         field::read(target.map(|target| target.process_id))
     }
     fn insert(&self, text: &str, target: Option<&Target>, delivery: &Delivery) -> InsertOutcome {
-        let _serial = self.serial.lock().unwrap_or_else(|e| e.into_inner());
         let Some(keyboard) = self.keyboard(delivery) else {
             return InsertOutcome::Cancelled;
+        };
+        let _serial = self.serial.lock().unwrap_or_else(|e| e.into_inner());
+        let keyboard = match keyboard {
+            Ok(keyboard) => keyboard,
+            Err(error) => {
+                if !delivery.commit() {
+                    return InsertOutcome::Cancelled;
+                }
+                if let Err(copy_error) = super::clipboard::copy_text(text) {
+                    tracing::warn!(error = %copy_error, "clipboard write failed");
+                    return InsertOutcome::CopyFailed;
+                }
+                if target.is_some_and(target::left) {
+                    return InsertOutcome::TargetLeft;
+                }
+                tracing::warn!(%error, "automatic paste failed; transcript remains on clipboard");
+                return InsertOutcome::PasteFailed;
+            }
         };
         let mut paste = Paste::prepare(text);
         if !delivery.commit() {
@@ -311,9 +334,7 @@ impl TextOutput for Output {
         if target.is_some_and(target::left) {
             return InsertOutcome::TargetLeft;
         }
-        match keyboard.and_then(|keyboard| {
-            self.press(keyboard, self.settings.terminal_paste_shortcut(), &paste)
-        }) {
+        match self.press(keyboard, self.settings.terminal_paste_shortcut(), &paste) {
             Ok(true) => {
                 if paste.can_restore() {
                     std::thread::sleep(Duration::from_millis(500));
@@ -451,7 +472,14 @@ mod tests {
         let grant = runtime.block_on(output.portal.clone().lock_owned());
         assert!(
             !output
-                .press(Keyboard::Portal(grant), false, &paste)
+                .press(
+                    Keyboard::Portal {
+                        grant,
+                        fresh: false,
+                    },
+                    false,
+                    &paste,
+                )
                 .unwrap()
         );
     }

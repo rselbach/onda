@@ -12,6 +12,22 @@ use x11rb::wrapper::{ConnectionExt as _, GrabServer};
 
 const WAYLAND_TEXT_TYPE: &str = "text/plain;charset=utf-8";
 const X11_PASTE_SYMBOLS: [xproto::Keysym; 2] = [0x76, 0x56];
+const X11_SKIP_TARGETS: &[&str] = &[
+    "TARGETS",
+    "TIMESTAMP",
+    "MULTIPLE",
+    "SAVE_TARGETS",
+    "DELETE",
+    "INSERT_SELECTION",
+    "INSERT_PROPERTY",
+];
+const X11_TEXT_TARGETS: &[&str] = &[
+    "UTF8_STRING",
+    "STRING",
+    "TEXT",
+    "text/plain",
+    "text/plain;charset=utf-8",
+];
 
 pub struct Paste<'a> {
     text: &'a str,
@@ -311,6 +327,30 @@ pub(super) fn copy_text(text: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn filter_x11_targets(types: &str) -> anyhow::Result<Vec<&str>> {
+    let mut targets = Vec::new();
+    for target in types
+        .lines()
+        .map(str::trim)
+        .filter(|target| !target.is_empty() && !X11_SKIP_TARGETS.contains(target))
+    {
+        anyhow::ensure!(
+            X11_TEXT_TARGETS.contains(&target),
+            "X11 clipboard contains non-text formats; preserving the transcript instead"
+        );
+        targets.push(target);
+    }
+    Ok(targets)
+}
+
+fn validate_wayland_mime(mime: &str) -> anyhow::Result<&str> {
+    anyhow::ensure!(
+        !mime.is_empty() && !mime.starts_with('-'),
+        "invalid clipboard MIME type"
+    );
+    Ok(mime)
+}
+
 fn offer_wayland(formats: Vec<(String, Vec<u8>)>) -> anyhow::Result<()> {
     let mut options = Options::new();
     options.foreground(true);
@@ -333,17 +373,15 @@ fn offer_wayland(formats: Vec<(String, Vec<u8>)>) -> anyhow::Result<()> {
 
 impl<'a> Paste<'a> {
     pub fn prepare(text: &'a str) -> Self {
+        let previous = Self::read_formats()
+            .inspect_err(|error| tracing::debug!(%error, "clipboard cannot be preserved"))
+            .ok();
         let selection = Selection::watch()
             .inspect_err(|error| tracing::debug!(%error, "clipboard cannot be monitored"))
             .ok();
-        let previous = selection.as_ref().and_then(|_| {
-            Self::read_formats()
-                .inspect_err(|error| tracing::debug!(%error, "clipboard cannot be preserved"))
-                .ok()
-        });
         Self {
             text,
-            previous,
+            previous: selection.as_ref().and(previous),
             selection,
         }
     }
@@ -370,27 +408,25 @@ impl<'a> Paste<'a> {
         let types = String::from_utf8(types)?;
         let mut formats: Vec<(String, Vec<u8>)> = Vec::new();
         let mut size = 0;
-        for mime in types
-            .lines()
-            .filter(|mime| !matches!(*mime, "TARGETS" | "TIMESTAMP" | "MULTIPLE" | "SAVE_TARGETS"))
-        {
-            let bytes = if process::wayland() {
-                read(&["--no-newline", "--type", mime])?
-            } else {
-                read(&["-selection", "clipboard", "-out", "-target", mime])?
-            };
-            size += bytes.len();
-            anyhow::ensure!(size <= 32 * 1024 * 1024, "clipboard exceeds 32 MiB");
-            formats.push((mime.into(), bytes));
-        }
-        if !process::wayland() {
-            anyhow::ensure!(
-                formats.iter().all(|(mime, _)| matches!(
-                    mime.as_str(),
-                    "UTF8_STRING" | "STRING" | "TEXT" | "text/plain" | "text/plain;charset=utf-8"
-                )),
-                "X11 clipboard contains non-text formats; preserving the transcript instead"
-            );
+        if process::wayland() {
+            for mime in types.lines().filter(|mime| {
+                !mime.is_empty()
+                    && !matches!(*mime, "TARGETS" | "TIMESTAMP" | "MULTIPLE" | "SAVE_TARGETS")
+            }) {
+                let mime = validate_wayland_mime(mime)?;
+                let type_arg = format!("--type={mime}");
+                let bytes = read(&["--no-newline", &type_arg])?;
+                size += bytes.len();
+                anyhow::ensure!(size <= 32 * 1024 * 1024, "clipboard exceeds 32 MiB");
+                formats.push((mime.into(), bytes));
+            }
+        } else {
+            for target in filter_x11_targets(&types)? {
+                let bytes = read(&["-selection", "clipboard", "-out", "-target", target])?;
+                size += bytes.len();
+                anyhow::ensure!(size <= 32 * 1024 * 1024, "clipboard exceeds 32 MiB");
+                formats.push((target.into(), bytes));
+            }
         }
         Ok(formats)
     }
@@ -765,5 +801,29 @@ mod tests {
             process::run("wl-paste", &["--no-newline"], &[]).unwrap(),
             b"Greendale"
         );
+    }
+
+    #[test]
+    fn x11_target_filter_skips_icccm_metadata_and_rejects_non_text() {
+        assert_eq!(
+            filter_x11_targets(
+                "TARGETS\nTIMESTAMP\nDELETE\nINSERT_SELECTION\nUTF8_STRING\nSTRING\n"
+            )
+            .unwrap(),
+            ["UTF8_STRING", "STRING"]
+        );
+        assert!(filter_x11_targets("TARGETS\nUTF8_STRING\nimage/png\n").is_err());
+        assert!(filter_x11_targets("text/html\nUTF8_STRING\n").is_err());
+    }
+
+    #[test]
+    fn wayland_mime_validation_rejects_flag_like_or_empty_types() {
+        assert_eq!(
+            validate_wayland_mime("text/plain;charset=utf-8").unwrap(),
+            "text/plain;charset=utf-8"
+        );
+        assert!(validate_wayland_mime("").is_err());
+        assert!(validate_wayland_mime("--clear").is_err());
+        assert!(validate_wayland_mime("-n").is_err());
     }
 }
