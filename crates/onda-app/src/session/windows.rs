@@ -144,6 +144,7 @@ pub(crate) enum UiMsg {
     },
     KeySaved {
         generation: u64,
+        seq: u64,
         provider: CleanupProvider,
         value: String,
         result: Result<(), String>,
@@ -432,10 +433,11 @@ impl Actor {
             UiMsg::KeyLoaded { generation, result } => self.key_loaded(generation, result),
             UiMsg::KeySaved {
                 generation,
+                seq,
                 provider,
                 value,
                 result,
-            } => self.key_saved(generation, provider, value, result),
+            } => self.key_saved(generation, seq, provider, value, result),
             UiMsg::TestFinished { generation, result } => self.test_finished(generation, result),
             UiMsg::ModelsListed {
                 generation,

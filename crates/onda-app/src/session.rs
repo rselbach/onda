@@ -1342,10 +1342,11 @@ impl Actor {
         let settings = head.settings.clone();
         // read before the cleanup await and used for delivery (DICT-16)
         let app_name = head.target.as_ref().and_then(|t| t.name.clone());
-        let Some(provider) = settings.cleanup_provider.filter(|_| {
+        let Some(provider) = settings.cleanup_provider.filter(|provider| {
             settings.cleanup_enabled
                 && !raw.trim().is_empty()
-                && self.settings.cleanup_provider.is_some()
+                && self.settings.cleanup_enabled
+                && self.settings.cleanup_provider == Some(*provider)
         }) else {
             self.cleaned_with(id, raw, CleanupOutcome::NotRun);
             return;

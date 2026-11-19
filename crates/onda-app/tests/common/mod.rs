@@ -9,7 +9,7 @@
 
 #![allow(dead_code)]
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::f32::consts::TAU;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -995,41 +995,74 @@ impl CleanupTransport for FakeCleanup {
     }
 }
 
-/// OpenRouter's stored key, a hold the next save waits on before writing,
-/// and the provider of every read and save, in order.
-pub struct FakeSecrets(
-    pub Mutex<Result<Option<String>, String>>,
-    pub Mutex<Option<Arc<Hold>>>,
-    pub Mutex<Vec<(&'static str, CleanupProvider)>>,
-);
+/// Per-provider cleanup API keys, a hold the next save waits on before
+/// writing, and the provider of every read and save, in order.
+pub struct FakeSecrets {
+    pub keys: Mutex<HashMap<CleanupProvider, Result<Option<String>, String>>>,
+    pub hold: Mutex<Option<Arc<Hold>>>,
+    pub calls: Mutex<Vec<(&'static str, CleanupProvider)>>,
+    pub fail_save: Mutex<Option<String>>,
+}
 
 impl FakeSecrets {
+    pub fn seeded(initial: &str) -> Self {
+        let mut keys = HashMap::new();
+        for provider in CleanupProvider::ALL {
+            if provider.uses_key() {
+                keys.insert(provider, Ok(Some(initial.to_owned())));
+            }
+        }
+        Self {
+            keys: Mutex::new(keys),
+            hold: Mutex::default(),
+            calls: Mutex::default(),
+            fail_save: Mutex::default(),
+        }
+    }
+
+    pub fn set(&self, provider: CleanupProvider, value: Result<Option<String>, String>) {
+        lock(&self.keys).insert(provider, value);
+    }
+
+    pub fn is_err(&self, provider: CleanupProvider) -> bool {
+        lock(&self.keys).get(&provider).is_some_and(Result::is_err)
+    }
+
     pub fn stored(&self) -> Option<String> {
-        lock(&self.0).clone().ok().flatten()
+        self.stored_for(CleanupProvider::OpenRouter)
+    }
+
+    pub fn stored_for(&self, provider: CleanupProvider) -> Option<String> {
+        lock(&self.keys)
+            .get(&provider)
+            .and_then(|entry| entry.as_ref().ok()?.clone())
     }
 
     /// Makes the next save wait until the returned hold is released.
     pub fn hold_save(&self) -> Arc<Hold> {
         let hold = Hold::new();
-        *lock(&self.1) = Some(hold.clone());
+        *lock(&self.hold) = Some(hold.clone());
         hold
     }
 }
 
 impl SecretSource for FakeSecrets {
     fn api_key(&self, provider: CleanupProvider) -> Result<Option<String>, String> {
-        lock(&self.2).push(("read", provider));
-        lock(&self.0).clone()
+        lock(&self.calls).push(("read", provider));
+        lock(&self.keys).get(&provider).cloned().unwrap_or(Ok(None))
     }
 
     fn save_api_key(&self, provider: CleanupProvider, value: &str) -> Result<(), String> {
-        lock(&self.2).push(("save", provider));
-        let hold = lock(&self.1).take();
+        lock(&self.calls).push(("save", provider));
+        let hold = lock(&self.hold).take();
         if let Some(hold) = hold {
             hold.wait();
         }
+        if let Some(error) = lock(&self.fail_save).take() {
+            return Err(error);
+        }
         let value = value.trim();
-        *lock(&self.0) = Ok((!value.is_empty()).then(|| value.to_owned()));
+        lock(&self.keys).insert(provider, Ok((!value.is_empty()).then(|| value.to_owned())));
         Ok(())
     }
 }
@@ -1299,11 +1332,7 @@ impl Harness {
             system_speech: Mutex::default(),
         });
         let cleanup = Arc::new(FakeCleanup::default());
-        let secrets = Arc::new(FakeSecrets(
-            Mutex::new(Ok(Some("sk-or-greendale".to_owned()))),
-            Mutex::default(),
-            Mutex::default(),
-        ));
+        let secrets = Arc::new(FakeSecrets::seeded("sk-or-greendale"));
         let settings = Arc::new(FakeSettings {
             settings: Mutex::new(settings),
             log: log.clone(),

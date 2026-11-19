@@ -89,6 +89,7 @@ pub(super) struct CleanupPageState {
     loading: bool,
     error: Option<String>,
     load_generation: u64,
+    save_seq: u64,
     test: Option<Task>,
     test_generation: u64,
     test_result: Option<CleanupTestResult>,
@@ -124,6 +125,7 @@ impl Default for CleanupPageState {
             loading: false,
             error: None,
             load_generation: 0,
+            save_seq: 0,
             test: None,
             test_generation: 0,
             test_result: None,
@@ -213,6 +215,15 @@ impl Actor {
         self.ui.cleanup.dialog = Some(provider);
         if provider.uses_key() {
             self.load_api_key(provider);
+        } else {
+            let page = &mut self.ui.cleanup;
+            page.key_provider = None;
+            page.text.clear();
+            page.baseline = KeyBaseline::Loading;
+            page.loading = false;
+            page.error = None;
+            page.load_generation += 1;
+            page.revision += 1;
         }
         self.list_models_once(provider);
     }
@@ -413,17 +424,23 @@ impl Actor {
 
     // Return, end of editing, page disappear, window close (CLN-25)
     pub(super) fn save_api_key(&mut self) {
-        let page = &self.ui.cleanup;
-        let Some(provider) = page.key_provider else {
-            return;
+        let (provider, generation, seq, value, saving) = {
+            let page = &mut self.ui.cleanup;
+            let Some(provider) = page.key_provider else {
+                return;
+            };
+            let Some(write) = key_write(&page.baseline, &page.text) else {
+                return;
+            };
+            let value = written_value(write);
+            page.baseline = KeyBaseline::Known(value.clone());
+            page.save_seq += 1;
+            let generation = page.load_generation;
+            let seq = page.save_seq;
+            let saving = value.clone();
+            (provider, generation, seq, value, saving)
         };
-        let Some(write) = key_write(&page.baseline, &page.text) else {
-            return;
-        };
-        let generation = page.load_generation;
-        let value = written_value(write);
         let secrets = self.ports.secrets.clone();
-        let saving = value.clone();
         let saved = self
             .key_queue()
             .run(move || secrets.save_api_key(provider, &saving));
@@ -431,6 +448,7 @@ impl Actor {
             let result = saved.await.unwrap_or_else(lost);
             Msg::Ui(UiMsg::KeySaved {
                 generation,
+                seq,
                 provider,
                 value,
                 result,
@@ -441,15 +459,19 @@ impl Actor {
     pub(super) fn key_saved(
         &mut self,
         generation: u64,
+        seq: u64,
         provider: CleanupProvider,
         value: String,
         result: Result<(), String>,
     ) {
         let page = &mut self.ui.cleanup;
-        let current = page.load_generation == generation && page.key_provider == Some(provider);
+        let current = page.load_generation == generation
+            && page.key_provider == Some(provider)
+            && page.save_seq == seq;
         if let Err(error) = result {
             tracing::error!(%error, provider = provider.id(), "could not save a cleanup API key");
             if current {
+                page.baseline = KeyBaseline::Unknown;
                 page.error = Some(error);
             }
             return;
@@ -463,7 +485,10 @@ impl Actor {
             page.baseline = KeyBaseline::Known(value);
             page.error = None;
         }
-        if provider.model_listing() == ModelListing::WithKey && page.dialog == Some(provider) {
+        if provider.model_listing() == ModelListing::WithKey
+            && page.dialog == Some(provider)
+            && page.save_seq == seq
+        {
             self.list_cleanup_models(provider);
         }
     }
@@ -472,9 +497,14 @@ impl Actor {
     /// queued now, behind every call already issued; the returned closure
     /// blocks until it is done.
     pub(super) fn pending_key_save(&mut self) -> Option<Box<dyn FnOnce() + Send>> {
-        let page = &self.ui.cleanup;
-        let provider = page.key_provider?;
-        let value = written_value(key_write(&page.baseline, &page.text)?);
+        let (provider, value) = {
+            let page = &mut self.ui.cleanup;
+            let provider = page.key_provider?;
+            let value = written_value(key_write(&page.baseline, &page.text)?);
+            page.baseline = KeyBaseline::Known(value.clone());
+            page.save_seq += 1;
+            (provider, value)
+        };
         let secrets = self.ports.secrets.clone();
         let saved = self
             .key_queue()
@@ -516,7 +546,9 @@ impl Actor {
 
     /// "Refresh Models" in the sheet.
     pub(super) fn refresh_cleanup_models(&mut self) {
-        if let Some(provider) = self.ui.cleanup.dialog {
+        if let Some(provider) = self.ui.cleanup.dialog
+            && provider.model_listing() != ModelListing::None
+        {
             self.list_cleanup_models(provider);
         }
     }
@@ -591,7 +623,12 @@ impl Actor {
         // the selected provider's stored key
         let write = page
             .key_provider
-            .zip(key_write(&page.baseline, &page.text).map(written_value));
+            .zip(key_write(&page.baseline, &page.text).map(written_value))
+            .map(|(saved_for, value)| {
+                page.baseline = KeyBaseline::Known(value.clone());
+                page.save_seq += 1;
+                (saved_for, value, page.save_seq)
+            });
         let secrets = self.ports.secrets.clone();
         let transport = self.ports.cleanup.clone();
         let model = self.settings.cleanup_model.clone();
@@ -601,20 +638,21 @@ impl Actor {
         let computer_term = self.ports.platform.computer_term;
         let settings = self.ports.settings.clone();
         let queue = self.key_queue();
-        let saved = write.map(|(saved_for, value)| {
+        let saved = write.map(|(saved_for, value, seq)| {
             let saver = secrets.clone();
             let saving = value.clone();
             let saved = queue.run(move || saver.save_api_key(saved_for, &saving));
-            (saved_for, value, saved)
+            (saved_for, value, seq, saved)
         });
         let stored = provider
             .uses_key()
             .then(|| queue.run(move || secrets.api_key(provider)));
         let task = self.spawn(async move {
-            if let Some((saved_for, value, saved)) = saved {
+            if let Some((saved_for, value, seq, saved)) = saved {
                 let result = saved.await.unwrap_or_else(lost);
                 let _ = messages.send(Msg::Ui(UiMsg::KeySaved {
                     generation: field_generation,
+                    seq,
                     provider: saved_for,
                     value,
                     result,

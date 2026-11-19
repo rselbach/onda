@@ -1578,7 +1578,10 @@ async fn cln_25_the_key_field_loads_and_saves_by_the_rules() {
 #[tokio::test(start_paused = true)]
 async fn cln_24_a_failed_load_shows_inline_and_blank_never_deletes() {
     let h = Harness::with(|s| s.cleanup_enabled = true).await;
-    *lock(&h.secrets.0) = Err("Keychain read failed (OSStatus -25293).".to_owned());
+    h.secrets.set(
+        onda_domain::cleanup::CleanupProvider::OpenRouter,
+        Err("Keychain read failed (OSStatus -25293).".to_owned()),
+    );
     h.app.page_appeared(MainWindowSection::PostProcessing);
     h.app.open_providers_dialog();
     sleep(10).await;
@@ -1597,7 +1600,8 @@ async fn cln_24_a_failed_load_shows_inline_and_blank_never_deletes() {
     h.app.page_disappeared(MainWindowSection::PostProcessing);
     sleep(10).await;
     assert!(
-        lock(&h.secrets.0).is_err(),
+        h.secrets
+            .is_err(onda_domain::cleanup::CleanupProvider::OpenRouter),
         "the unknown stored key survives"
     );
 
@@ -3104,7 +3108,10 @@ async fn cln_25_a_failed_reload_blanks_the_field_and_saves_nothing() {
     );
     h.app.page_disappeared(MainWindowSection::PostProcessing);
 
-    *lock(&h.secrets.0) = Err("Keychain read failed (OSStatus -25293).".to_owned());
+    h.secrets.set(
+        onda_domain::cleanup::CleanupProvider::OpenRouter,
+        Err("Keychain read failed (OSStatus -25293).".to_owned()),
+    );
     h.app.page_appeared(MainWindowSection::PostProcessing);
     h.app.open_providers_dialog();
     sleep(10).await;
@@ -3122,7 +3129,8 @@ async fn cln_25_a_failed_reload_blanks_the_field_and_saves_nothing() {
     h.app.page_disappeared(MainWindowSection::PostProcessing);
     sleep(10).await;
     assert!(
-        lock(&h.secrets.0).is_err(),
+        h.secrets
+            .is_err(onda_domain::cleanup::CleanupProvider::OpenRouter),
         "the stale key is never saved again"
     );
 }
@@ -3271,7 +3279,7 @@ async fn cln_25_the_key_loads_only_while_the_sheet_shows() {
     // every keychain call names the provider whose key it is
     let openrouter = onda_domain::cleanup::CleanupProvider::OpenRouter;
     assert_eq!(
-        *lock(&h.secrets.2),
+        *lock(&h.secrets.calls),
         [("read", openrouter), ("save", openrouter)]
     );
 
@@ -3306,7 +3314,7 @@ async fn unknown_provider_delivers_raw_until_a_model_is_chosen() {
     h.app.test_cleanup();
     sleep(10).await;
     assert_eq!(h.typed(), ["hello world"]);
-    assert!(lock(&h.secrets.2).is_empty());
+    assert!(lock(&h.secrets.calls).is_empty());
     assert_eq!(h.cleanup.calls(), 0);
     let details = post_processing(&h).details.expect("enabled");
     assert!(!details.test_button.enabled);
@@ -3442,7 +3450,7 @@ async fn keyed_providers_list_models_only_with_their_key() {
         let details = post_processing(&h).details.expect("details");
         assert_eq!(details.provider_name, provider.display_name());
         assert_eq!(details.model_name, provider.default_model().display_name);
-        assert!(lock(&h.secrets.2).is_empty(), "no keychain read");
+        assert!(lock(&h.secrets.calls).is_empty(), "no keychain read");
         assert_eq!(h.cleanup.list_calls.load(Ordering::SeqCst), 0);
 
         h.app.open_providers_dialog();
@@ -3461,7 +3469,7 @@ async fn keyed_providers_list_models_only_with_their_key() {
             Some("All models")
         );
         assert!(
-            lock(&h.secrets.2).iter().all(|(_, p)| *p == provider),
+            lock(&h.secrets.calls).iter().all(|(_, p)| *p == provider),
             "every keychain call is for {provider:?}"
         );
 
@@ -3577,7 +3585,7 @@ async fn apple_intelligence_shows_only_where_it_can_run() {
 
     // the test says why it cannot run, and reads no key
     h.app.close_providers_dialog();
-    let reads = lock(&h.secrets.2).len();
+    let reads = lock(&h.secrets.calls).len();
     h.app.test_cleanup();
     sleep(10).await;
     let error = post_processing(&h)
@@ -3589,7 +3597,7 @@ async fn apple_intelligence_shows_only_where_it_can_run() {
         error.message,
         "Turn on Apple Intelligence in System Settings to use it for post-processing."
     );
-    assert_eq!(lock(&h.secrets.2).len(), reads, "no keychain read");
+    assert_eq!(lock(&h.secrets.calls).len(), reads, "no keychain read");
     assert_eq!(h.cleanup.calls(), 0);
 }
 
@@ -3699,4 +3707,134 @@ async fn his_28_recent_items_carry_the_time_and_known_app() {
         vec![(want_times[0], Some("Slack")), (want_times[1], None)],
         "the shell formats the date; the app is omitted when unknown"
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn cln_25_rapid_revert_duplicate_save_and_error_retry() {
+    use onda_domain::cleanup::CleanupProvider;
+
+    let h = Harness::with(|s| s.cleanup_enabled = true).await;
+    h.app.page_appeared(MainWindowSection::PostProcessing);
+    h.app.open_providers_dialog();
+    sleep(10).await;
+
+    let hold = h.secrets.hold_save();
+    h.app.api_key_edited("sk-temp-abed");
+    h.app.api_key_commit();
+    eventually("first save blocked", || hold.started()).await;
+
+    h.app.api_key_edited("sk-or-greendale");
+    h.app.api_key_commit();
+    h.app.api_key_commit();
+    hold.release();
+    sleep(10).await;
+
+    assert_eq!(h.secrets.stored().as_deref(), Some("sk-or-greendale"));
+    let saves: Vec<_> = lock(&h.secrets.calls)
+        .iter()
+        .filter(|(op, provider)| *op == "save" && *provider == CleanupProvider::OpenRouter)
+        .copied()
+        .collect();
+    assert_eq!(
+        saves.len(),
+        2,
+        "revert must save and duplicate commit must skip"
+    );
+
+    *lock(&h.secrets.fail_save) = Some("keychain write refused".to_owned());
+    h.app.api_key_edited("sk-retry-britta");
+    h.app.api_key_commit();
+    sleep(10).await;
+    let key = post_processing(&h)
+        .details
+        .expect("details")
+        .dialog
+        .expect("sheet")
+        .key
+        .expect("key field");
+    assert_eq!(key.error.as_deref(), Some("keychain write refused"));
+    assert_eq!(h.secrets.stored().as_deref(), Some("sk-or-greendale"));
+
+    h.app.api_key_commit();
+    sleep(10).await;
+    let key = post_processing(&h)
+        .details
+        .expect("details")
+        .dialog
+        .expect("sheet")
+        .key
+        .expect("key field");
+    assert_eq!(key.error, None);
+    assert_eq!(h.secrets.stored().as_deref(), Some("sk-retry-britta"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn cln_25_switching_to_apple_intelligence_clears_key_field() {
+    use onda_domain::cleanup::{CleanupProvider, OnDeviceStatus};
+
+    let h = Harness::with(|s| s.cleanup_enabled = true).await;
+    *lock(&h.cleanup.on_device) = Some(OnDeviceStatus::Available);
+    h.app.page_appeared(MainWindowSection::PostProcessing);
+    h.app.open_providers_dialog();
+    sleep(10).await;
+
+    h.app.api_key_edited("sk-unfinished-troy");
+    h.app
+        .select_dialog_provider(CleanupProvider::AppleIntelligence);
+    sleep(10).await;
+    let dialog = post_processing(&h)
+        .details
+        .expect("details")
+        .dialog
+        .expect("sheet");
+    assert_eq!(dialog.key, None);
+
+    h.app.api_key_edited("sk-leak-pierce");
+    h.app.close_providers_dialog();
+    sleep(10).await;
+    assert_eq!(
+        h.secrets.stored_for(CleanupProvider::AppleIntelligence),
+        None
+    );
+    assert!(
+        !lock(&h.secrets.calls)
+            .iter()
+            .any(|(_, p)| *p == CleanupProvider::AppleIntelligence)
+    );
+    assert_eq!(h.secrets.stored().as_deref(), Some("sk-unfinished-troy"));
+
+    h.app.open_providers_dialog();
+    sleep(10).await;
+    h.app.select_dialog_provider(CleanupProvider::OpenRouter);
+    sleep(10).await;
+    let key = post_processing(&h)
+        .details
+        .expect("details")
+        .dialog
+        .expect("sheet")
+        .key
+        .expect("key field");
+    assert_eq!(key.text, "sk-unfinished-troy");
+}
+
+#[tokio::test(start_paused = true)]
+async fn cleanup_disabled_mid_session_skips_keychain_and_refining() {
+    let h = Harness::with(|s| s.cleanup_enabled = true).await;
+    lock(&h.secrets.calls).clear();
+    h.cleanup.respond(vec![Ok("Hello world.".to_owned())]);
+    h.press();
+    sleep(500).await;
+    assert!(h.audio.is_open());
+
+    h.app.set_cleanup_enabled(false);
+    h.release();
+    sleep(1_000).await;
+
+    assert_eq!(h.typed(), ["hello world"]);
+    assert!(
+        lock(&h.secrets.calls).is_empty(),
+        "no keychain read when disabled"
+    );
+    assert_eq!(h.cleanup.calls(), 0);
+    assert!(!h.processing_labels().contains(&"Refining..."));
 }

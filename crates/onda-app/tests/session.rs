@@ -1451,11 +1451,12 @@ async fn cleanup_outcomes() {
 #[tokio::test(start_paused = true)]
 async fn cln_2_missing_key_delivers_raw_silently() {
     let h = Harness::with(|s| s.cleanup_enabled = true).await;
-    *lock(&h.secrets.0) = Ok(None);
+    h.secrets
+        .set(onda_domain::cleanup::CleanupProvider::OpenRouter, Ok(None));
     h.dictate().await;
     assert_eq!(h.cleanup.calls(), 0);
     assert_eq!(
-        *lock(&h.secrets.2),
+        *lock(&h.secrets.calls),
         [("read", onda_domain::cleanup::CleanupProvider::OpenRouter)],
         "the selected provider's key is read"
     );
@@ -1472,7 +1473,10 @@ async fn cln_2_missing_key_delivers_raw_silently() {
 #[tokio::test(start_paused = true)]
 async fn cln_2_an_unreadable_key_delivers_raw_with_a_notice() {
     let h = Harness::with(|s| s.cleanup_enabled = true).await;
-    *lock(&h.secrets.0) = Err("the keychain is locked".to_owned());
+    h.secrets.set(
+        onda_domain::cleanup::CleanupProvider::OpenRouter,
+        Err("the keychain is locked".to_owned()),
+    );
     h.dictate().await;
     assert_eq!(h.cleanup.calls(), 0);
     assert_eq!(h.typed(), vec!["hello world"]);
@@ -1570,7 +1574,7 @@ async fn apple_intelligence_cleans_on_device_without_a_key() {
     h.cleanup.respond(vec![Ok("Hello world.".to_owned())]);
     h.dictate().await;
     assert_eq!(h.typed(), vec!["Hello world."]);
-    assert!(lock(&h.secrets.2).is_empty(), "no keychain read");
+    assert!(lock(&h.secrets.calls).is_empty(), "no keychain read");
     let requests = lock(&h.cleanup.requests).clone();
     assert_eq!(requests.len(), 1);
     assert!(
