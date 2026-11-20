@@ -216,8 +216,41 @@ impl ksni::Tray for Tray {
     }
 }
 
-pub fn start(events: async_channel::Sender<Message>) -> Option<ksni::blocking::Handle<Tray>> {
-    match (Tray {
+enum TrayUpdate {
+    View(TrayView),
+    Menu(StatusMenu),
+    Shutdown,
+}
+
+/// Non-blocking handle to the StatusNotifierItem tray. Updates are coalesced
+/// and applied on a background thread so D-Bus stalls never block GTK; drop
+/// shuts the tray down cleanly.
+pub struct TrayHandle {
+    tx: std::sync::mpsc::Sender<TrayUpdate>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+impl TrayHandle {
+    pub fn set_view(&self, view: TrayView) {
+        let _ = self.tx.send(TrayUpdate::View(view));
+    }
+
+    pub fn set_menu(&self, menu: StatusMenu) {
+        let _ = self.tx.send(TrayUpdate::Menu(menu));
+    }
+}
+
+impl Drop for TrayHandle {
+    fn drop(&mut self) {
+        let _ = self.tx.send(TrayUpdate::Shutdown);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+pub fn start(events: async_channel::Sender<Message>) -> Option<TrayHandle> {
+    let handle = match (Tray {
         events,
         view: TrayView {
             icon: TrayIcon::Preparing,
@@ -228,12 +261,51 @@ pub fn start(events: async_channel::Sender<Message>) -> Option<ksni::blocking::H
     })
     .spawn()
     {
-        Ok(handle) => Some(handle),
+        Ok(handle) => handle,
         Err(error) => {
             tracing::debug!(%error, "tray unavailable");
-            None
+            return None;
         }
-    }
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    let worker = std::thread::Builder::new()
+        .name("onda-tray".into())
+        .spawn(move || {
+            while let Ok(first) = rx.recv() {
+                let mut latest_view = None;
+                let mut latest_menu = None;
+                let mut shutdown = false;
+                let mut absorb = |msg: TrayUpdate| match msg {
+                    TrayUpdate::View(view) => latest_view = Some(view),
+                    TrayUpdate::Menu(menu) => latest_menu = Some(menu),
+                    TrayUpdate::Shutdown => shutdown = true,
+                };
+                absorb(first);
+                while let Ok(next) = rx.try_recv() {
+                    absorb(next);
+                }
+                if shutdown {
+                    handle.shutdown();
+                    return;
+                }
+                if latest_view.is_some() || latest_menu.is_some() {
+                    handle.update(|tray| {
+                        if let Some(view) = latest_view {
+                            tray.view = view;
+                        }
+                        if let Some(menu) = latest_menu {
+                            tray.menu = Some(menu);
+                        }
+                    });
+                }
+            }
+            handle.shutdown();
+        })
+        .ok()?;
+    Some(TrayHandle {
+        tx,
+        worker: Some(worker),
+    })
 }
 
 #[cfg(test)]

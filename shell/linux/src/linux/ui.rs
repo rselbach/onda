@@ -52,7 +52,7 @@ pub struct Window {
     overlay: Overlay,
     overlay_visible: Cell<bool>,
     inhibitor: Cell<Option<u32>>,
-    tray: Option<ksni::blocking::Handle<super::tray::Tray>>,
+    tray: Option<super::tray::TrayHandle>,
 }
 
 impl Window {
@@ -193,10 +193,12 @@ impl Window {
                     stack.visible_child_name().as_deref().unwrap_or("dictation"),
                 );
                 let previous = this.section.replace(section);
-                if previous != section {
-                    this.core.app.page_disappeared(previous);
+                if this.window.is_visible() {
+                    if previous != section {
+                        this.core.app.page_disappeared(previous);
+                    }
+                    this.core.app.page_appeared(section);
                 }
-                this.core.app.page_appeared(section);
             }
         });
         let weak = Rc::downgrade(&this);
@@ -208,9 +210,6 @@ impl Window {
                 this.event(message);
             }
         });
-        for section in MainWindowSection::ALL {
-            this.core.app.page_appeared(section);
-        }
         this.core.app.ui_ready();
         Ok(this)
     }
@@ -354,7 +353,7 @@ impl Window {
                 Event::TrayChanged(view) => {
                     self.getting_started.set_status(&view.accessibility_label);
                     if let Some(tray) = &self.tray {
-                        tray.update(|tray| tray.view = view);
+                        tray.set_view(view);
                     }
                 }
                 Event::DownloadOverlayChanged(view) => {
@@ -384,7 +383,7 @@ impl Window {
                 Event::SpeechChanged(page) => self.speech.update(self, *page),
                 Event::MenuChanged(menu) => {
                     if let Some(tray) = &self.tray {
-                        tray.update(|tray| tray.menu = Some(*menu));
+                        tray.set_menu(*menu);
                     }
                 }
                 Event::GeneralChanged(page) => self.general.update(self, *page),
@@ -393,7 +392,7 @@ impl Window {
                 Event::ReplacementsChanged(page) => self.replacements.update(self, *page),
                 Event::AboutChanged(page) => self.about(*page),
                 Event::PostProcessingChanged(page) => self.post_processing.update(self, *page),
-                Event::HistoryChanged => self.core.app.page_appeared(MainWindowSection::History),
+                Event::HistoryChanged => {}
                 Event::OpenOnboarding => self.onboarding.open(self),
                 Event::OnboardingChanged(view) => self.onboarding.update(*view),
                 Event::CloseOnboarding => self.onboarding.close(),
