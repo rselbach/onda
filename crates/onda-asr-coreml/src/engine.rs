@@ -407,10 +407,12 @@ impl Runtime {
                 .get(request.start..request.end)
                 .ok_or_else(|| failed("window outside the audio"))?;
             let mut padded = vec![0.0f32; MAX_MODEL_SAMPLES];
-            padded
+            let dest = padded
                 .get_mut(..window.len())
-                .ok_or_else(|| failed("window longer than the model input"))?
-                .copy_from_slice(window);
+                .ok_or_else(|| failed("window longer than the model input"))?;
+            for (dst, &src) in dest.iter_mut().zip(window) {
+                *dst = if src.is_finite() { src } else { 0.0 };
+            }
             let first = self.run_window(&padded, request, LengthPolicy::default(), filter)?;
             if !self.spec.v3
                 || !first.is_blank()
@@ -486,10 +488,11 @@ impl Runtime {
                 .ok_or_else(|| failed("mel has no dimensions"))?;
             let frames = i32::try_from(frames).map_err(|_| failed("mel length overflow"))?;
             self.full_mel_length.write_i32(&[frames]).map_err(failed)?;
+            let mel_length = self.full_mel_length.as_ref();
             self.encoder
                 .predict_borrowed(&[
                     (self.spec.mel, &features),
-                    ("mel_length", &self.full_mel_length),
+                    ("mel_length", &mel_length),
                 ])
                 .map_err(failed)?
         } else {

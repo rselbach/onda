@@ -72,7 +72,13 @@ pub(crate) fn should_recover(padded: &[f32], audio_length: usize) -> bool {
     if length < MINIMUM_SAMPLES {
         return false;
     }
-    let energy: f64 = padded[..length].iter().map(|&s| f64::from(s * s)).sum();
+    let energy: f64 = padded[..length]
+        .iter()
+        .map(|&s| {
+            let s = if s.is_finite() { s } else { 0.0 };
+            f64::from(s * s)
+        })
+        .sum();
     (energy / length as f64).sqrt() >= MINIMUM_RMS
 }
 
@@ -114,6 +120,7 @@ mod tests {
                 90_000,
                 true,
             ),
+            ("non-finite samples", vec![f32::NAN; 40_000], 40_000, false),
         ];
         for (name, padded, length, want) in cases {
             assert_eq!(should_recover(&padded, length), want, "{name}");

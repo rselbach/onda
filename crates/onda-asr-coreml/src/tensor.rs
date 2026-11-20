@@ -13,7 +13,12 @@ impl Tensor {
     /// The scalars in row-major order.
     pub(crate) fn to_row_major(&self) -> Vec<f32> {
         if is_row_major(&self.shape, &self.strides) {
-            let count = self.shape.iter().product::<usize>().min(self.data.len());
+            let count = self
+                .shape
+                .iter()
+                .try_fold(1usize, |acc, &dim| acc.checked_mul(dim))
+                .unwrap_or(0)
+                .min(self.data.len());
             return self.data[..count].to_vec();
         }
         offsets(&self.shape, &self.strides)
@@ -45,12 +50,15 @@ pub(crate) fn is_row_major(shape: &[usize], strides: &[usize]) -> bool {
     if shape.len() != strides.len() {
         return false;
     }
-    let mut want = 1;
+    let mut want = 1usize;
     for (&dim, &stride) in shape.iter().zip(strides).rev() {
         if dim != 1 && stride != want {
             return false;
         }
-        want *= dim;
+        let Some(next) = want.checked_mul(dim) else {
+            return false;
+        };
+        want = next;
     }
     true
 }
@@ -149,8 +157,9 @@ impl EncoderFrames {
 
     /// The hidden vector of `frame`.
     pub(crate) fn frame(&self, frame: usize) -> Option<&[f32]> {
-        self.data
-            .get(frame * self.hidden..(frame + 1) * self.hidden)
+        let start = frame.checked_mul(self.hidden)?;
+        let end = start.checked_add(self.hidden)?;
+        self.data.get(start..end)
     }
 }
 
@@ -267,5 +276,9 @@ mod tests {
             strides: vec![1, 1, usize::MAX],
         };
         assert!(EncoderFrames::new(&overflow, 2, 2).is_err());
+
+        assert!(!is_row_major(&[usize::MAX, 2], &[2, 1]));
+        let frames = EncoderFrames::new(&valid_tensor, 2, 2).expect("frames");
+        assert_eq!(frames.frame(usize::MAX), None);
     }
 }

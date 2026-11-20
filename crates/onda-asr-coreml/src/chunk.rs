@@ -140,18 +140,30 @@ struct PlannedWindow {
 /// (FluidAudio `planWindows`, without warm-up prefixes or pause cuts, which
 /// need an encoder ladder).
 fn plan_windows(samples: &[f32], layout: Layout) -> Vec<PlannedWindow> {
-    let total = samples.len();
+    let effective_total = if layout.end_aligned() {
+        speech_end(samples)
+    } else {
+        samples.len()
+    };
+    if layout.end_aligned() && effective_total <= MAX_MODEL_SAMPLES {
+        let request = single_window(effective_total);
+        return vec![PlannedWindow {
+            request,
+            frames: WindowFrames {
+                decode_start: 0,
+                end: (request.end / FRAME_SAMPLES) as i64,
+            },
+        }];
+    }
+    let effective = &samples[..effective_total];
+    let total = effective.len();
     let chunk = layout.chunk_samples();
     let stride = layout.stride_samples();
     let starts = match layout {
-        Layout::V3 => silence_aligned_starts(samples, chunk, stride),
+        Layout::V3 => silence_aligned_starts(effective, chunk, stride),
         Layout::V2 | Layout::Japanese => (0..total).step_by(stride).collect(),
     };
-    let speech_end = if layout.end_aligned() {
-        speech_end(samples)
-    } else {
-        total
-    };
+    let speech_end = total;
     let mut plan: Vec<PlannedWindow> = Vec::new();
     let mut start = starts.first().copied().unwrap_or(0);
     while start < total {
@@ -248,7 +260,14 @@ fn boundary_energy(samples: &[f32], center: usize, half: usize) -> f32 {
     if end <= start {
         return 0.0;
     }
-    samples[start..end].iter().map(|s| s * s).sum::<f32>() / (end - start) as f32
+    samples[start..end]
+        .iter()
+        .map(|&s| {
+            let s = finite_sample(s);
+            s * s
+        })
+        .sum::<f32>()
+        / (end - start) as f32
 }
 
 /// The quietest frame boundary near `target_frame` that keeps the windows
@@ -837,7 +856,7 @@ where
 
             // cold-start at the gap first, then centred on it
             let center = (gap_start_sample + gap_end_sample) / 2;
-            let placements = [gap_start_sample, center - window_samples / 2]
+            let mut placements: Vec<WindowRequest> = [gap_start_sample, center - window_samples / 2]
                 .into_iter()
                 .filter_map(|placement| {
                     let start = placement.min(total - window_samples).max(0) / frame * frame;
@@ -857,6 +876,7 @@ where
                     })
                 })
                 .collect();
+            placements.dedup();
             pass.push(Probe {
                 gap_start,
                 gap_end,
@@ -949,8 +969,19 @@ fn splice_candidate(window: &[Token], probe: &Probe, vocab: &Vocabulary) -> Vec<
     candidate
 }
 
+#[inline]
+fn finite_sample(sample: f32) -> f32 {
+    if sample.is_finite() { sample } else { 0.0 }
+}
+
 fn frame_rms(frame: &[f32]) -> f32 {
-    let sum: f32 = frame.iter().map(|s| s * s).sum();
+    let sum: f32 = frame
+        .iter()
+        .map(|&s| {
+            let s = finite_sample(s);
+            s * s
+        })
+        .sum();
     (sum / frame.len() as f32).sqrt()
 }
 
@@ -961,7 +992,7 @@ fn adaptive_speech_threshold(samples: &[f32]) -> f32 {
         .as_chunks::<FRAME_SAMPLES>()
         .0
         .iter()
-        .filter(|frame| frame.iter().any(|&s| s != 0.0))
+        .filter(|frame| frame.iter().any(|&s| finite_sample(s) != 0.0))
         .map(|frame| frame_rms(frame))
         .collect();
     if levels.is_empty() {
@@ -1748,6 +1779,21 @@ mod tests {
             let want = transcribe(samples, &vocab, Layout::V2, fake_decode(&abed_truth, None))
                 .expect("decode");
             assert_eq!(got, want, "{}", tc.name);
+        }
+    }
+
+    #[test]
+    fn trailing_silence_beyond_one_window_keeps_is_last() {
+        let mut samples = vec![0.1f32; 12 * SAMPLE_RATE];
+        samples.extend(vec![0.0f32; 4 * SAMPLE_RATE]);
+        for layout in [Layout::V3, Layout::Japanese] {
+            let plan = plan_windows(&samples, layout);
+            assert!(!plan.is_empty(), "{layout:?}");
+            assert!(
+                plan.last().is_some_and(|w| w.request.is_last),
+                "{layout:?} must keep is_last on the final speech window"
+            );
+            assert_eq!(plan.len(), 1, "{layout:?} trims to single window");
         }
     }
 }

@@ -7,6 +7,7 @@
 
 use std::cell::RefCell;
 use std::ffi::c_void;
+use std::marker::PhantomData;
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
 use std::ptr::NonNull;
@@ -73,8 +74,15 @@ impl Model {
 
     /// Runs one synchronous prediction borrowing temporary input arrays for
     /// the duration of the call.
-    pub(crate) fn predict_borrowed(&self, arrays: &[(&str, &Array)]) -> Result<Features, String> {
-        let provider = build_provider(arrays)?;
+    pub(crate) fn predict_borrowed(
+        &self,
+        arrays: &[(&str, &ArrayRef<'_>)],
+    ) -> Result<Features, String> {
+        let pairs: Vec<(&str, &MLMultiArray)> = arrays
+            .iter()
+            .map(|(name, array)| (*name, &*array.array))
+            .collect();
+        let provider = build_provider(&pairs)?;
         self.predict_provider(&provider)
     }
 
@@ -114,7 +122,10 @@ unsafe impl Send for BoundInputs {}
 impl BoundInputs {
     /// Wraps `named` arrays into a reusable feature provider.
     pub(crate) fn new(named: Vec<(&str, Array)>) -> Result<BoundInputs, String> {
-        let pairs: Vec<(&str, &Array)> = named.iter().map(|(name, array)| (*name, array)).collect();
+        let pairs: Vec<(&str, &MLMultiArray)> = named
+            .iter()
+            .map(|(name, array)| (*name, &*array.array))
+            .collect();
         let provider = build_provider(&pairs)?;
         let arrays = named.into_iter().map(|(_, array)| array).collect();
         Ok(BoundInputs { arrays, provider })
@@ -147,7 +158,7 @@ pub(crate) struct Features {
 unsafe impl Send for Features {}
 
 fn build_provider(
-    arrays: &[(&str, &Array)],
+    arrays: &[(&str, &MLMultiArray)],
 ) -> Result<Retained<ProtocolObject<dyn MLFeatureProvider>>, String> {
     let keys: Vec<Retained<NSString>> = arrays
         .iter()
@@ -157,7 +168,7 @@ fn build_provider(
     let values: Vec<Retained<MLFeatureValue>> = guarded("wrapping inputs", || {
         arrays
             .iter()
-            .map(|(_, array)| unsafe { MLFeatureValue::featureValueWithMultiArray(&array.array) })
+            .map(|(_, array)| unsafe { MLFeatureValue::featureValueWithMultiArray(array) })
             .collect()
     })?;
     let key_refs: Vec<&NSString> = keys.iter().map(|key| &**key).collect();
@@ -176,8 +187,8 @@ fn build_provider(
 }
 
 impl Features {
-    /// The multi-array feature called `name`.
-    pub(crate) fn array(&self, name: &str) -> Result<Array, String> {
+    /// Read-only handle to the multi-array feature called `name`.
+    pub(crate) fn array(&self, name: &str) -> Result<ArrayRef<'_>, String> {
         let key = NSString::from_str(name);
         // SAFETY: querying a feature provider by name has no preconditions.
         let value = guarded("reading an output", || unsafe {
@@ -187,8 +198,18 @@ impl Features {
         // SAFETY: returns nil for non-array features, handled below.
         let array = guarded("reading an output", || unsafe { value.multiArrayValue() })?
             .ok_or_else(|| format!("output {name} is not a multi-array"))?;
-        Ok(Array { array })
+        Ok(ArrayRef {
+            array,
+            _borrow: PhantomData,
+        })
     }
+}
+
+/// A borrowed read-only `MLMultiArray` view. Not `Send` or `Sync`, so aliased
+/// output buffers cannot escape across threads or be mutated.
+pub(crate) struct ArrayRef<'a> {
+    array: Retained<MLMultiArray>,
+    _borrow: PhantomData<&'a MLMultiArray>,
 }
 
 /// An `MLMultiArray` of `f32` or `i32` scalars.
@@ -246,13 +267,21 @@ impl Array {
         self.write(MLMultiArrayDataType::Int32, values)
     }
 
+    /// Borrows this owned array as a read-only view.
+    pub(crate) fn as_ref(&self) -> ArrayRef<'_> {
+        ArrayRef {
+            array: self.array.clone(),
+            _borrow: PhantomData,
+        }
+    }
+
     fn write<T: Scalar>(
         &mut self,
         data_type: MLMultiArrayDataType,
         values: &[T],
     ) -> Result<(), String> {
-        self.check_type(data_type)?;
-        let shape = self.shape()?;
+        self.as_ref().check_type(data_type)?;
+        let shape = self.as_ref().shape()?;
         let expected = checked_element_count(&shape)?;
         if values.len() != expected {
             return Err(format!("expected {expected} values, got {}", values.len()));
@@ -315,11 +344,14 @@ impl Array {
         })?;
         outcome.into_inner()
     }
+}
 
+impl ArrayRef<'_> {
     /// Copies an `f32` array out, keeping CoreML's strides.
     pub(crate) fn read_f32(&self) -> Result<Tensor, String> {
         self.check_type(MLMultiArrayDataType::Float32)?;
         let shape = self.shape()?;
+        let _ = checked_element_count(&shape)?;
         // SAFETY: reading the strides property has no preconditions.
         let strides = numbers(&*guarded("reading strides", || unsafe {
             self.array.strides()
@@ -354,6 +386,10 @@ impl Array {
     /// The first scalar of an `i32` array.
     pub(crate) fn first_i32(&self) -> Result<i32, String> {
         self.check_type(MLMultiArrayDataType::Int32)?;
+        let shape = self.shape()?;
+        if checked_element_count(&shape)? == 0 {
+            return Err("empty multi-array".to_owned());
+        }
         self.read::<i32>(1)?
             .into_iter()
             .next()
@@ -363,6 +399,10 @@ impl Array {
     /// The first scalar of an `f32` array.
     pub(crate) fn first_f32(&self) -> Result<f32, String> {
         self.check_type(MLMultiArrayDataType::Float32)?;
+        let shape = self.shape()?;
+        if checked_element_count(&shape)? == 0 {
+            return Err("empty multi-array".to_owned());
+        }
         self.read::<f32>(1)?
             .into_iter()
             .next()
