@@ -38,8 +38,8 @@ struct SpeechPageView: View {
             }
         }
         .formStyle(.grouped)
-        .onChange(of: page.alert, initial: true) { old, next in
-            guard let next else {
+        .task(id: page.alert?.id) {
+            guard let next = page.alert else {
                 presentedAlert = nil
                 return
             }
@@ -48,17 +48,13 @@ struct SpeechPageView: View {
                 presentedAlert = next
                 return
             }
-            if old == nil, presentedAlert == nil {
-                presentedAlert = next
-                return
-            }
-            presentedAlert = nil
-            let targetID = next.id
-            Task { @MainActor in
+            if presentedAlert != nil {
+                presentedAlert = nil
                 try? await Task.sleep(for: .milliseconds(50))
-                if page.alert?.id == targetID, answeredAlert != targetID {
-                    presentedAlert = page.alert
-                }
+                guard !Task.isCancelled else { return }
+            }
+            if page.alert?.id == next.id, answeredAlert != next.id {
+                presentedAlert = page.alert
             }
         }
         .alert(presentedAlert?.title ?? "", isPresented: alertPresented, presenting: presentedAlert) { alert in
@@ -90,9 +86,12 @@ struct SpeechPageView: View {
                 guard !isPresented else { return }
                 let dismissed = presentedAlert
                 presentedAlert = nil
-                if let dismissed, answeredAlert != dismissed.id {
-                    answeredAlert = dismissed.id
-                    core.dismissSpeechAlert(id: dismissed.id)
+                guard let dismissed else { return }
+                Task { @MainActor in
+                    if answeredAlert != dismissed.id {
+                        answeredAlert = dismissed.id
+                        core.dismissSpeechAlert(id: dismissed.id)
+                    }
                 }
             }
         )

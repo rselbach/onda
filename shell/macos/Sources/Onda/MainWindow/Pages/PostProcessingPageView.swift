@@ -42,6 +42,7 @@ struct PostProcessingPageView: View {
 private struct PostProcessingModelRows: View {
     let details: PostProcessingDetails
     let core: OndaCore
+    @State private var lastDialog: ProvidersDialog?
 
     var body: some View {
         Button {
@@ -66,16 +67,24 @@ private struct PostProcessingModelRows: View {
         }
         .buttonStyle(.plain)
         // the core owns whether the sheet is open; dismissing it reports back
-        .sheet(isPresented: Binding(
-            get: { details.dialog != nil },
-            set: { presented in
-                if !presented {
-                    core.closeProvidersDialog()
+        .sheet(
+            isPresented: Binding(
+                get: { details.dialog != nil },
+                set: { presented in
+                    if !presented {
+                        core.closeProvidersDialog()
+                    }
                 }
-            }
-        )) {
-            if let dialog = details.dialog {
+            ),
+            onDismiss: { lastDialog = nil }
+        ) {
+            if let dialog = details.dialog ?? lastDialog {
                 ProvidersSheet(dialog: dialog, core: core)
+            }
+        }
+        .onChange(of: details.dialog, initial: true) { _, dialog in
+            if let dialog {
+                lastDialog = dialog
             }
         }
 
@@ -90,6 +99,7 @@ private struct PostProcessingModelRows: View {
 private struct PostProcessingPromptSection: View {
     let prompt: PromptSummaryView
     let core: OndaCore
+    @State private var lastEditor: PromptEditorView?
 
     var body: some View {
         Section {
@@ -123,16 +133,24 @@ private struct PostProcessingPromptSection: View {
             }
             .buttonStyle(.plain)
             // the core owns the draft; dismissing the sheet discards it
-            .sheet(isPresented: Binding(
-                get: { prompt.editor != nil },
-                set: { presented in
-                    if !presented {
-                        core.cancelPromptEditor()
+            .sheet(
+                isPresented: Binding(
+                    get: { prompt.editor != nil },
+                    set: { presented in
+                        if !presented {
+                            core.cancelPromptEditor()
+                        }
                     }
-                }
-            )) {
-                if let editor = prompt.editor {
+                ),
+                onDismiss: { lastEditor = nil }
+            ) {
+                if let editor = prompt.editor ?? lastEditor {
                     PromptEditorSheet(editor: editor, core: core)
+                }
+            }
+            .onChange(of: prompt.editor, initial: true) { _, editor in
+                if let editor {
+                    lastEditor = editor
                 }
             }
         } header: {
@@ -233,7 +251,7 @@ private struct PromptEditorSheet: View {
                 Button(editor.save.title) {
                     core.savePrompt()
                 }
-                .keyboardShortcut(.defaultAction)
+                .keyboardShortcut(.return, modifiers: .command)
                 .disabled(!editor.save.enabled)
             }
             .padding(.top, 14)
@@ -328,7 +346,7 @@ private struct ProvidersSheet: View {
                 Button(dialog.doneTitle) {
                     core.closeProvidersDialog()
                 }
-                .keyboardShortcut(.defaultAction)
+                .keyboardShortcut(.cancelAction)
             }
             .lineLimit(1)
             .padding(.horizontal, 20)
@@ -410,7 +428,7 @@ private enum ProviderLogos {
         let url = Bundle.main.url(forResource: key, withExtension: "svg")
             ?? Bundle.main.url(forResource: id, withExtension: "svg")
         let image = url.flatMap(NSImage.init(contentsOf:))
-        cache[key] = image
+        cache.updateValue(image, forKey: key)
         return image
     }
 }
@@ -475,6 +493,7 @@ private struct ProviderPane: View {
                             submit: useTypedID
                         )
                         Button {
+                            core.apiKeyCommit()
                             core.refreshCleanupModels()
                         } label: {
                             Image(systemName: "arrow.clockwise")

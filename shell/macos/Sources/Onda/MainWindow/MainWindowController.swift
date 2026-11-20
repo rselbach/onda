@@ -19,6 +19,30 @@ final class MainWindowModel {
     var about: AboutPage?
     /// The Getting Started try-it field; local text only (WIN-6).
     var tryItText = ""
+
+    func clear(_ section: MainWindowSection) {
+        switch section {
+        case .gettingStarted: gettingStarted = nil
+        case .general: general = nil
+        case .hotkey: hotkeyPage = nil
+        case .speech: speech = nil
+        case .postProcessing: postProcessing = nil
+        case .replacements: replacements = nil
+        case .history: history = nil
+        case .about: about = nil
+        }
+    }
+
+    func clearAllPages() {
+        gettingStarted = nil
+        general = nil
+        hotkeyPage = nil
+        speech = nil
+        postProcessing = nil
+        replacements = nil
+        history = nil
+        about = nil
+    }
 }
 
 /// The main window (WIN-1..WIN-21): created once and kept (UI-3).
@@ -119,6 +143,7 @@ final class MainWindowController: NSObject, NSWindowDelegate {
 
     func windowWillClose(_: Notification) {
         isOpen = false
+        model.clearAllPages()
         // every visible page disappears with the window; the core ends a
         // running shortcut capture (HOT-8)
         core.mainWindowClosed()
@@ -129,6 +154,7 @@ final class MainWindowController: NSObject, NSWindowDelegate {
     private func select(_ page: MainWindowSection) {
         let previous = model.selection
         guard page != previous else { return }
+        model.clear(previous)
         model.selection = page
         guard isOpen else { return }
         core.pageDisappeared(page: previous)

@@ -54,11 +54,19 @@ struct ReplacementsPageView: View {
             }
         }
         .formStyle(.grouped)
-        .onChange(of: page.revision, initial: true) {
-            drafts = Dictionary(
-                page.rows.map { ($0.id, ReplacementsDraft($0)) },
-                uniquingKeysWith: { first, _ in first }
-            )
+        .onChange(of: page.revision, initial: true) { oldRevision, newRevision in
+            if oldRevision == newRevision {
+                drafts = Dictionary(
+                    page.rows.map { ($0.id, ReplacementsDraft($0)) },
+                    uniquingKeysWith: { first, _ in first }
+                )
+            } else {
+                let validIDs = Set(page.rows.map(\.id))
+                drafts = drafts.filter { validIDs.contains($0.key) }
+                for row in page.rows where drafts[row.id] == nil {
+                    drafts[row.id] = ReplacementsDraft(row)
+                }
+            }
         }
     }
 }

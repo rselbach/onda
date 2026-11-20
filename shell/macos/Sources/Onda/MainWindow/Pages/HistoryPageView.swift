@@ -46,11 +46,6 @@ struct HistoryPageView: View {
             }
         }
         .onAppear { searchText = page.query }
-        .onChange(of: page.query) { _, query in
-            if searchText != query {
-                searchText = query
-            }
-        }
         .onChange(of: page.dialog, initial: true) { _, dialog in
             dialogGeneration &+= 1
             shownDialog = dialog
@@ -157,8 +152,17 @@ struct HistoryPageView: View {
                 return [NSItemProvider(object: transcript as NSString)]
             }
             .onDeleteCommand {
-                if let selection {
+                let rows = sections.lazy.flatMap(\.rows)
+                if let selection, rows.contains(where: { $0.id == selection }) {
                     core.deleteHistoryEntry(id: selection)
+                } else {
+                    selection = nil
+                }
+            }
+            .onChange(of: sections) { _, updated in
+                if let selected = selection,
+                   !updated.lazy.flatMap(\.rows).contains(where: { $0.id == selected }) {
+                    selection = nil
                 }
             }
         }
@@ -339,22 +343,21 @@ enum HistoryDayTitle {
 @MainActor
 private enum HistoryAppIcons {
     private static let maxEntries = 128
-    private static var icons: [String: NSImage] = [:]
+    private static var icons: [String: NSImage?] = [:]
     private static var order: [String] = []
 
     static func icon(forBundleID bundleID: String) -> NSImage? {
         if let cached = icons[bundleID] {
             return cached
         }
-        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else {
-            return nil
-        }
-        let icon = NSWorkspace.shared.icon(forFile: url.path)
+        let icon: NSImage? = NSWorkspace.shared
+            .urlForApplication(withBundleIdentifier: bundleID)
+            .map { NSWorkspace.shared.icon(forFile: $0.path) }
         if icons.count >= maxEntries, let oldest = order.first {
             order.removeFirst()
             icons.removeValue(forKey: oldest)
         }
-        icons[bundleID] = icon
+        icons.updateValue(icon, forKey: bundleID)
         order.append(bundleID)
         return icon
     }
