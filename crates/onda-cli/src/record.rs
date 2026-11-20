@@ -69,6 +69,16 @@ pub fn run(args: &Args) -> Result<()> {
             args.seconds
         ));
     }
+    if args.sessions > 1
+        && Instant::now()
+            .checked_add(Duration::from_millis(args.gap_ms))
+            .is_none()
+    {
+        return Err(anyhow!(
+            "--gap-ms duration is too large (got {})",
+            args.gap_ms
+        ));
+    }
     let selection = args
         .device
         .clone()
@@ -129,7 +139,9 @@ fn watch(
     capture_id: u64,
     peak: &mut f32,
 ) -> bool {
-    let deadline = Instant::now() + duration;
+    let Some(deadline) = Instant::now().checked_add(duration) else {
+        return false;
+    };
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
         match events.recv_timeout(left) {

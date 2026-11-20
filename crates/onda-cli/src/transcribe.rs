@@ -106,10 +106,13 @@ fn read_wav(path: &Path) -> Result<Vec<f32>> {
             spec.sample_rate
         );
     }
+    if spec.channels == 0 {
+        bail!("{} has 0 audio channels", path.display());
+    }
     let interleaved: Vec<f32> = match spec.sample_format {
         hound::SampleFormat::Float => reader.samples::<f32>().collect::<Result<_, _>>(),
         hound::SampleFormat::Int => {
-            if !(1..=64).contains(&spec.bits_per_sample) {
+            if !(1..=32).contains(&spec.bits_per_sample) {
                 bail!(
                     "{} has unsupported {}-bit PCM samples",
                     path.display(),
@@ -124,7 +127,7 @@ fn read_wav(path: &Path) -> Result<Vec<f32>> {
         }
     }
     .with_context(|| path.display().to_string())?;
-    let channels = usize::from(spec.channels.max(1));
+    let channels = usize::from(spec.channels);
     Ok(interleaved
         .chunks(channels)
         .map(|frame| frame.iter().sum::<f32>() / frame.len() as f32)

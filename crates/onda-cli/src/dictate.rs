@@ -197,7 +197,8 @@ pub fn run(args: &Args, paths: &DataPaths, models_dir: &Path) -> Result<()> {
         paths.root().display(),
         snapshot.selected_model
     ));
-    let ready = wait_for_label(&trays, READY_LABEL, LOAD_TIMEOUT).context("loading the model");
+    let ready = wait_for_label(&trays, &console, READY_LABEL, LOAD_TIMEOUT)
+        .context("loading the model");
     drop(trays);
     let result = ready.and_then(|()| {
         let mode = snapshot.activation_mode;
@@ -301,7 +302,9 @@ impl HistoryHooks for Logged {
 
 async fn dictate_once(app: &mut App, held_for: Duration, budget: Duration) -> Result<()> {
     let pressed = TokioInstant::now();
-    let release_at = pressed + held_for;
+    let release_at = pressed
+        .checked_add(held_for)
+        .ok_or_else(|| anyhow::anyhow!("--hold-ms duration is too large"))?;
     let mut press = app.press_dictation_hotkey();
     let mut state = PressState::Pending;
     let mut release_requested = None;
@@ -394,12 +397,29 @@ fn interactive(app: &App, console: &Console, mode: ActivationMode) -> Result<()>
     Ok(())
 }
 
-fn wait_for_label(trays: &Receiver<String>, wanted: &str, timeout: Duration) -> Result<()> {
+const PREPARING_LABEL: &str = "Onda, preparing speech model";
+const UNAVAILABLE_LABEL: &str = "Onda, model unavailable";
+
+fn wait_for_label(
+    trays: &Receiver<String>,
+    console: &Console,
+    wanted: &str,
+    timeout: Duration,
+) -> Result<()> {
     let deadline = Instant::now() + timeout;
+    let mut saw_preparing = false;
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
         match trays.recv_timeout(left) {
             Ok(label) if label == wanted => return Ok(()),
+            Ok(label) if label == PREPARING_LABEL => saw_preparing = true,
+            Ok(label) if saw_preparing && label == UNAVAILABLE_LABEL => {
+                let notice = console.last_overlay();
+                if notice.is_empty() {
+                    bail!("model failed to load");
+                }
+                bail!("model failed to load: {notice}");
+            }
             Ok(_) => {}
             Err(_) => bail!("timed out"),
         }
@@ -421,6 +441,13 @@ struct Shown {
 impl Console {
     fn say(&self, line: &str) {
         eprintln!("[{:7.3}s] {line}", self.started.elapsed().as_secs_f64());
+    }
+
+    fn last_overlay(&self) -> String {
+        self.last
+            .lock()
+            .map(|shown| shown.overlay.clone())
+            .unwrap_or_default()
     }
 }
 
