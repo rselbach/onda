@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use common::{Harness, Hold, eventually, lock};
 use onda_app::{DictateOnceError, DictationPress, DictationPressState as PressState, Event};
+use onda_domain::hotkey::{ModifierKey, Shortcut};
 use onda_domain::messages::UserMessage;
 use onda_domain::types::ActivationMode;
 use tokio::time::{pause, resume, sleep, timeout};
@@ -74,7 +75,7 @@ async fn a_released_hold_or_toggle_does_not_leave_a_pending_capture_open() {
         );
         drop(press);
         assert_eq!(h.audio.starts.load(Ordering::SeqCst), 1, "{mode:?}");
-        assert!(!h.audio.is_open(), "{mode:?}");
+        eventually("abandoned capture closed", || !h.audio.is_open()).await;
         assert!(h.typed().is_empty(), "{mode:?}");
         pause();
     }
@@ -192,4 +193,30 @@ async fn a_successful_one_shot_waits_until_output_returns_in_every_mode() {
         assert_eq!(lock(&h.audio.released_at).is_some(), wants_tail);
         pause();
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_lone_modifier_one_shot_in_automatic_mode_does_not_subtract_debounce() {
+    let mut h = Harness::with(|s| {
+        s.hotkey = Shortcut::lone(ModifierKey::AltRight);
+        s.activation_mode = ActivationMode::Automatic;
+    })
+    .await;
+    sleep(Duration::from_millis(200)).await;
+
+    let mut press = h.app.press_dictation_hotkey();
+    recording(&mut press).await;
+    sleep(Duration::from_millis(260)).await;
+    press.release();
+    assert_eq!(
+        timeout(LONG_HOLD, finished(&mut press)).await.unwrap(),
+        Ok(())
+    );
+    drop(press);
+    assert_eq!(h.typed(), vec!["hello world"]);
+    assert_eq!(
+        *lock(&h.audio.released_at),
+        None,
+        "260 ms simulated press must stay a tap instead of crossing the 400 ms hold threshold"
+    );
 }

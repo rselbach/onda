@@ -937,3 +937,30 @@ async fn hot_8_immediate_end_and_failure_keep_hotkey_registered() {
     assert!(!view.recording);
     assert_eq!(view.message, None);
 }
+
+#[tokio::test(start_paused = true)]
+async fn hot_17_give_up_clears_registration_for_reregister_and_ignores_stray_events() {
+    let h = lone(ActivationMode::Hold).await;
+    let initial_registers = h.log.with("hotkey:register").len();
+    for _ in 0..6 {
+        disable_stream(&h);
+    }
+    sleep(10).await;
+    assert_eq!(h.log.count("hotkey:unregister"), 1);
+    assert_eq!(h.notifications(), vec!["Hotkey Registration Failed"]);
+
+    right_option(&h, true);
+    sleep(500).await;
+    assert!(
+        h.idle(),
+        "stray lone-modifier events are ignored after GiveUp"
+    );
+
+    h.app.settings_changed();
+    sleep(10).await;
+    assert_eq!(
+        h.log.with("hotkey:register").len(),
+        initial_registers + 1,
+        "SettingsChanged re-registers the same shortcut after GiveUp"
+    );
+}

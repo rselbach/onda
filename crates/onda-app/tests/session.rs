@@ -2989,3 +2989,70 @@ async fn switching_models_during_load_download_allows_dictation_and_ignores_aban
         assert_eq!(h.typed(), vec!["hello world"]);
     }
 }
+
+#[tokio::test]
+async fn resuming_an_aborted_start_ends_media_when_dictation_ends() {
+    let h = Harness::with(|s| {
+        s.pause_media = false;
+        s.activation_mode = ActivationMode::Toggle;
+    })
+    .await;
+    eventually("ready and registered", || {
+        h.tray().icon == TrayIcon::Ready && !h.log.with("hotkey:register").is_empty()
+    })
+    .await;
+    h.media.playing_default.store(true, Ordering::SeqCst);
+    let opening = h.audio.hold_next_start();
+    h.tap();
+    eventually("the microphone opening", || opening.started()).await;
+    h.app.on_hotkey_event(HotkeyEvent::Cancel);
+    h.update(|s| s.pause_media = true);
+    h.tap();
+    opening.release();
+    eventually("media paused on resumed start", || {
+        !h.log.with("media:pause").is_empty() && h.audio.is_open()
+    })
+    .await;
+    h.app.on_hotkey_event(HotkeyEvent::Cancel);
+    eventually("session idle and media resumed", || {
+        h.idle() && h.log.with("media:") == vec!["media:pause", "media:play"]
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn discard_capture_finishes_before_the_next_session_starts() {
+    let h = Harness::with(|s| s.activation_mode = ActivationMode::Toggle).await;
+    eventually("ready", || h.tray().icon == TrayIcon::Ready).await;
+    h.app.toggle_dictation_from_menu();
+    eventually("first capture recording", || {
+        h.tray().icon == TrayIcon::Recording && h.audio.is_open()
+    })
+    .await;
+
+    let discard = h.audio.hold_next_stop();
+    h.app.on_hotkey_event(HotkeyEvent::Cancel);
+    eventually("discard stop entered", || discard.started()).await;
+
+    h.app.toggle_dictation_from_menu();
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let starts_while_discarding = h.audio.starts.load(Ordering::SeqCst);
+    discard.release();
+    assert_eq!(
+        starts_while_discarding, 1,
+        "next start must wait for discard_capture to finish"
+    );
+
+    eventually("second capture recording", || {
+        h.audio.starts.load(Ordering::SeqCst) == 2
+            && h.tray().icon == TrayIcon::Recording
+            && h.audio.is_open()
+    })
+    .await;
+
+    h.app.toggle_dictation_from_menu();
+    eventually("second dictation delivered", || {
+        h.idle() && h.typed() == vec!["hello world"]
+    })
+    .await;
+}
