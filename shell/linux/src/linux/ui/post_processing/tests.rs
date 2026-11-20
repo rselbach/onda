@@ -70,10 +70,10 @@ fn real_gui_preserves_provider_keys_and_model_selection() {
     wait_for("launch", || {
         owner.stack.visible_child_name().as_deref() == Some("speech")
     });
+    owner.stack.set_visible_child_name("post-processing");
     wait_for("initial page", || {
         !owner.post_processing.details.is_visible()
     });
-    owner.stack.set_visible_child_name("post-processing");
     let page = &owner.post_processing;
     page.enabled.set_active(true);
     wait_for("post-processing enabled", || page.details.is_visible());

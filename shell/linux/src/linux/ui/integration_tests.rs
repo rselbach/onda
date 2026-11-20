@@ -749,11 +749,12 @@ pub(super) fn exercise_pages(owner: &Rc<Window>) {
     recording(false);
     assert_eq!(owner.getting_started.detail(), super::IDLE_HINT);
     wait_for(|| !overlay_on_screen());
-    assert!(
+    owner.stack.set_visible_child_name("about");
+    wait_for(|| {
         widgets::<adw::PreferencesGroup>(&owner.about)
             .iter()
             .any(|group| group.title() == "Libraries")
-    );
+    });
     assert!(
         widgets::<adw::PreferencesGroup>(&owner.about)
             .iter()
