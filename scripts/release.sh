@@ -92,6 +92,25 @@ app_identity() {
   echo "${authority}"
 }
 
+retry_command() {
+  local label="$1"
+  local max_attempts="$2"
+  shift 2
+  local attempt
+  local delay=5
+  for ((attempt = 1; attempt <= max_attempts; attempt++)); do
+    if "$@"; then
+      return 0
+    fi
+    if ((attempt == max_attempts)); then
+      return 1
+    fi
+    echo "${label} attempt ${attempt} failed; retrying in ${delay}s" >&2
+    sleep "${delay}"
+    delay=$((delay * 2))
+  done
+}
+
 create_dmg() {
   local dmg="$1"
   local identity="$2"
@@ -107,7 +126,8 @@ create_dmg() {
     echo "app is signed ad hoc; leaving the DMG unsigned" >&2
     return
   fi
-  codesign --force --timestamp --sign "${identity}" "${dmg}"
+  retry_command "codesign" 5 \
+    codesign --force --timestamp --sign "${identity}" "${dmg}"
   codesign --verify --strict --verbose=2 "${dmg}"
 }
 
@@ -128,19 +148,25 @@ notarize() {
     echo "notarytool submit failed" >&2
   fi
   local status=""
-  status="$(plutil -extract status raw -o - "${result}")" || true
+  if [[ -s "${result}" ]]; then
+    status="$(plutil -extract status raw -o - "${result}")" || true
+  fi
   if [[ "${status}" != "Accepted" ]]; then
     local id=""
-    id="$(plutil -extract id raw -o - "${result}")" || true
+    if [[ -s "${result}" ]]; then
+      id="$(plutil -extract id raw -o - "${result}")" || true
+    fi
     if [[ -z "${id}" ]]; then
-      cat "${result}" >&2
+      if [[ -s "${result}" ]]; then
+        cat "${result}" >&2
+      fi
       die "notarization did not complete"
     fi
     echo "notarization ${status} (submission ${id}); log:" >&2
     xcrun notarytool log "${id}" "${auth[@]}" >&2 || true
     exit 1
   fi
-  xcrun stapler staple "${target}"
+  retry_command "stapler staple" 5 xcrun stapler staple "${target}"
   xcrun stapler validate "${target}"
 }
 

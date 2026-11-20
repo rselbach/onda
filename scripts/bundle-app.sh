@@ -116,22 +116,44 @@ assemble() {
   embed_frameworks "${bin_dir}"
 }
 
+# Apple's timestamp server drops requests occasionally in CI.
+codesign_run() {
+  local retries="$1"
+  shift
+  local attempt
+  local delay=5
+  for ((attempt = 1; attempt <= retries; attempt++)); do
+    if codesign "$@"; then
+      return 0
+    fi
+    if ((attempt == retries)); then
+      return 1
+    fi
+    echo "codesign attempt ${attempt} failed; retrying in ${delay}s" >&2
+    sleep "${delay}"
+    delay=$((delay * 2))
+  done
+}
+
 sign() {
   local identity="$1"
   local profile="$2"
   local flags=(--force --options runtime --sign "${identity}")
+  local retries=1
   if [[ "${identity}" != "-" && "${profile}" == "release" ]]; then
     flags+=(--timestamp)
+    retries=5
   else
     flags+=(--timestamp=none)
   fi
 
   # REL-2: nested code first, then the executable, then the bundle
-  codesign "${flags[@]}" \
+  codesign_run "${retries}" "${flags[@]}" \
     "${APP}/Contents/Frameworks/libMediaRemoteAdapter.dylib"
-  codesign "${flags[@]}" --entitlements "${ENTITLEMENTS}" \
+  codesign_run "${retries}" "${flags[@]}" --entitlements "${ENTITLEMENTS}" \
     "${APP}/Contents/MacOS/Onda"
-  codesign "${flags[@]}" --entitlements "${ENTITLEMENTS}" "${APP}"
+  codesign_run "${retries}" "${flags[@]}" --entitlements "${ENTITLEMENTS}" \
+    "${APP}"
   codesign --verify --deep --strict --verbose=2 "${APP}"
 }
 
