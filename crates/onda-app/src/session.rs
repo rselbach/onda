@@ -179,8 +179,14 @@ pub(crate) enum Msg {
     Fallback(UserMessage),
     ModelState(ModelState),
     LoadFinished(Result<(), LoadError>),
-    Permissions(PermissionSnapshot),
-    Downloaded(Vec<ModelId>),
+    Permissions {
+        generation: u64,
+        snapshot: PermissionSnapshot,
+    },
+    Downloaded {
+        generation: u64,
+        models: Vec<ModelId>,
+    },
     LaunchChecked(Vec<ModelId>),
     Recent {
         generation: u64,
@@ -400,6 +406,7 @@ pub(crate) struct Actor {
     model_state: ModelState,
     loads: ModelLoads,
     downloaded: Vec<ModelId>,
+    downloaded_gen: u64,
     deleting: HashSet<ModelId>,
     downloads: DownloadTracker,
     // the declined-migration fallback loaded instead of the selection (DL-14)
@@ -409,6 +416,7 @@ pub(crate) struct Actor {
     reload_when_idle: Option<ModelId>,
     pending: PendingSelection,
     permissions: PermissionSnapshot,
+    permissions_gen: u64,
     failed_audio: Option<Arc<[f32]>>,
     // a restart to update was accepted and has not been declined: no
     // dictation may start (UPD-8)
@@ -477,6 +485,7 @@ impl Actor {
             model_state: ModelState::NotReady,
             loads: ModelLoads::new(),
             downloaded: Vec::new(),
+            downloaded_gen: 0,
             deleting: HashSet::new(),
             downloads: DownloadTracker::new(),
             override_model: None,
@@ -486,6 +495,7 @@ impl Actor {
                 microphone: MicrophonePermission::NotDetermined,
                 accessibility: false,
             },
+            permissions_gen: 0,
             failed_audio: None,
             restarting: false,
             last_transcript: None,
@@ -658,8 +668,19 @@ impl Actor {
                 self.loads.reported();
             }
             Msg::LoadFinished(result) => self.load_finished(result),
-            Msg::Permissions(snapshot) => self.permissions = snapshot,
-            Msg::Downloaded(models) => self.downloaded = models,
+            Msg::Permissions {
+                generation,
+                snapshot,
+            } => {
+                if generation == self.permissions_gen {
+                    self.permissions = snapshot;
+                }
+            }
+            Msg::Downloaded { generation, models } => {
+                if generation == self.downloaded_gen {
+                    self.downloaded = models;
+                }
+            }
             Msg::LaunchChecked(models) => self.launch_checked(models),
             Msg::Recent {
                 generation,
@@ -1875,6 +1896,7 @@ impl Actor {
     }
 
     fn download_finished(&mut self, model: ModelId) {
+        self.downloaded_gen += 1;
         if !self.downloaded.contains(&model) {
             self.downloaded.push(model);
         }
@@ -1978,20 +2000,30 @@ impl Actor {
         self.settings = Arc::new(self.ports.settings.snapshot());
     }
 
-    fn refresh_permissions(&self) {
+    fn refresh_permissions(&mut self) {
+        self.permissions_gen += 1;
+        let generation = self.permissions_gen;
         let permissions = self.ports.permissions.clone();
         tokio::spawn(blocking_send(self.messages.clone(), move || {
-            Msg::Permissions(PermissionSnapshot {
-                microphone: permissions.microphone(),
-                accessibility: permissions.accessibility_trusted(),
-            })
+            Msg::Permissions {
+                generation,
+                snapshot: PermissionSnapshot {
+                    microphone: permissions.microphone(),
+                    accessibility: permissions.accessibility_trusted(),
+                },
+            }
         }));
     }
 
-    fn refresh_downloaded(&self) {
+    fn refresh_downloaded(&mut self) {
+        self.downloaded_gen += 1;
+        let generation = self.downloaded_gen;
         let models = self.ports.models.clone();
         tokio::spawn(blocking_send(self.messages.clone(), move || {
-            Msg::Downloaded(models.downloaded())
+            Msg::Downloaded {
+                generation,
+                models: models.downloaded(),
+            }
         }));
     }
 

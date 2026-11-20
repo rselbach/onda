@@ -610,30 +610,27 @@ impl Actor {
         let model = self.settings.cleanup_model.clone();
         // the saved prompt as of now; a save during the test is not picked up
         let prompt = self.settings.cleanup_prompt.clone();
-        let messages = self.messages.clone();
         let computer_term = self.ports.platform.computer_term;
         let settings = self.ports.settings.clone();
         let queue = self.key_queue();
-        let saved = write.map(|(saved_for, value, seq)| {
+        if let Some((saved_for, value, seq)) = write {
             let saver = secrets.clone();
             let saving = value.clone();
             let saved = queue.run(move || saver.save_api_key(saved_for, &saving));
-            (saved_for, value, seq, saved)
-        });
-        let stored = provider
-            .uses_key()
-            .then(|| queue.run(move || secrets.api_key(provider)));
-        let task = self.spawn(async move {
-            if let Some((saved_for, value, seq, saved)) = saved {
-                let result = saved.await.unwrap_or_else(lost);
-                let _ = messages.send(Msg::Ui(UiMsg::KeySaved {
+            tokio::spawn(send_when(self.messages.clone(), async move {
+                Msg::Ui(UiMsg::KeySaved {
                     generation: field_generation,
                     seq,
                     provider: saved_for,
                     value,
-                    result,
-                }));
-            }
+                    result: saved.await.unwrap_or_else(lost),
+                })
+            }));
+        }
+        let stored = provider
+            .uses_key()
+            .then(|| queue.run(move || secrets.api_key(provider)));
+        let task = self.spawn(async move {
             let result = match test_key(provider, &transport, stored, computer_term).await {
                 Ok(key) => {
                     let request =

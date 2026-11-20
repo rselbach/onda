@@ -65,6 +65,7 @@ impl Actor {
     // --- launch (ASR-1, ONB-12, ONB-13, DL-12..DL-14) ---
 
     pub(super) fn launch_checked(&mut self, downloaded: Vec<ModelId>) {
+        self.downloaded_gen += 1;
         self.downloaded = downloaded;
         self.refresh_settings();
         self.preload_history();
@@ -421,6 +422,7 @@ impl Actor {
             }
             return;
         }
+        self.downloaded_gen += 1;
         self.downloaded.retain(|m| *m != model);
         let deleted_override = self.override_model == Some(model);
         if deleted_override {
@@ -461,6 +463,7 @@ impl Actor {
             return;
         }
         self.end_declined();
+        self.downloaded_gen += 1;
         self.downloaded.retain(|m| *m != model);
         self.loads.wait_for_download(model);
         self.model_state = ModelState::Loading {

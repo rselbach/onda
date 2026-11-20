@@ -187,10 +187,15 @@ impl Actor {
                 self.ui.history.generation += 1;
                 self.events.emit(Event::HistoryChanged);
                 self.refresh_recent();
+                if stale && self.ui.is_visible(MainWindowSection::History) {
+                    self.reload_history(false);
+                }
             }
             Err(error) => {
                 tracing::error!(%error, "could not apply history retention");
-                self.ui.history.error = Some(error);
+                if !stale {
+                    self.ui.history.error = Some(error);
+                }
             }
         }
         if stale {

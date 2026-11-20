@@ -130,14 +130,24 @@ pub(crate) enum UiMsg {
     ReplacementsDebounce(u64),
     CopiedElapsed(u64),
     // background results
-    Devices(Vec<InputDeviceInfo>),
-    LoginStatus(Option<LoginItemRegistryStatus>),
+    Devices {
+        generation: u64,
+        devices: Vec<InputDeviceInfo>,
+    },
+    LoginStatus {
+        generation: u64,
+        status: Option<LoginItemRegistryStatus>,
+    },
     LoginToggled {
+        generation: u64,
         enabling: bool,
         result: Result<(), String>,
         status: Option<LoginItemRegistryStatus>,
     },
-    Updater(UpdaterState),
+    Updater {
+        generation: u64,
+        state: UpdaterState,
+    },
     OnDeviceStatus {
         generation: u64,
         status: OnDeviceStatus,
@@ -197,11 +207,15 @@ pub(super) struct SpeechState {
 #[derive(Default)]
 pub(super) struct GeneralState {
     pub(super) devices: Vec<InputDeviceInfo>,
+    pub(super) devices_gen: u64,
     // `None` until read; `Some(None)` when Onda cannot register (LOGIN-1)
     pub(super) login: Option<Option<LoginItemRegistryStatus>>,
+    pub(super) login_gen: u64,
     pub(super) login_error: Option<LoginItemError>,
     pub(super) updater: UpdaterState,
+    pub(super) updater_gen: u64,
     pub(super) input_queue: Option<SerialQueue>,
+    pub(super) login_queue: Option<SerialQueue>,
     pub(super) updater_queue: Option<SerialQueue>,
 }
 
@@ -313,24 +327,33 @@ impl Actor {
             UiMsg::SetPauseMedia(on) => self.apply_setting(SettingChange::PauseMedia(on)),
             UiMsg::SetSounds(on) => self.apply_setting(SettingChange::Sounds(on)),
             UiMsg::SetLaunchAtLogin(enabling) => {
+                self.ui.general.login_gen += 1;
+                let generation = self.ui.general.login_gen;
                 let login = self.ports.login_item.clone();
-                tokio::spawn(blocking_send(self.messages.clone(), move || {
+                let messages = self.messages.clone();
+                self.login_queue().enqueue(move || {
                     let result = login.set_enabled(enabling);
                     // LOGIN-3: re-read after every toggle attempt
-                    Msg::Ui(UiMsg::LoginToggled {
+                    let _ = messages.send(Msg::Ui(UiMsg::LoginToggled {
+                        generation,
                         enabling,
                         result,
                         status: login.status(),
-                    })
-                }));
+                    }));
+                });
             }
             UiMsg::OpenLoginItems => self.effects.send(Effect::OpenLoginItems),
             UiMsg::SetAutomaticUpdates(on) => {
+                self.ui.general.updater_gen += 1;
+                let generation = self.ui.general.updater_gen;
                 let updater = self.ports.updater.clone();
                 let messages = self.messages.clone();
                 self.updater_queue().enqueue(move || {
                     updater.set_automatic_checks(on);
-                    let _ = messages.send(Msg::Ui(UiMsg::Updater(updater.state())));
+                    let _ = messages.send(Msg::Ui(UiMsg::Updater {
+                        generation,
+                        state: updater.state(),
+                    }));
                 });
             }
             UiMsg::SetActivationMode(mode) => {
@@ -424,23 +447,41 @@ impl Actor {
                 }
             }
             UiMsg::CopiedElapsed(generation) => self.copied_elapsed(generation),
-            UiMsg::Devices(devices) => self.ui.general.devices = devices,
-            UiMsg::LoginStatus(status) => self.ui.general.login = Some(status),
+            UiMsg::Devices {
+                generation,
+                devices,
+            } => {
+                if generation == self.ui.general.devices_gen {
+                    self.ui.general.devices = devices;
+                }
+            }
+            UiMsg::LoginStatus { generation, status } => {
+                if generation == self.ui.general.login_gen {
+                    self.ui.general.login = Some(status);
+                }
+            }
             UiMsg::LoginToggled {
+                generation,
                 enabling,
                 result,
                 status,
             } => {
-                self.ui.general.login = Some(status);
-                self.ui.general.login_error = result.err().map(|description| {
-                    tracing::error!(error = %description, enabling, "login item toggle failed");
-                    LoginItemError {
-                        enabling,
-                        description,
-                    }
-                });
+                if generation == self.ui.general.login_gen {
+                    self.ui.general.login = Some(status);
+                    self.ui.general.login_error = result.err().map(|description| {
+                        tracing::error!(error = %description, enabling, "login item toggle failed");
+                        LoginItemError {
+                            enabling,
+                            description,
+                        }
+                    });
+                }
             }
-            UiMsg::Updater(state) => self.ui.general.updater = state,
+            UiMsg::Updater { generation, state } => {
+                if generation == self.ui.general.updater_gen {
+                    self.ui.general.updater = state;
+                }
+            }
             UiMsg::OnDeviceStatus { generation, status } => {
                 self.on_device_status(generation, status);
             }
@@ -574,6 +615,14 @@ impl Actor {
             .clone()
     }
 
+    fn login_queue(&mut self) -> SerialQueue {
+        self.ui
+            .general
+            .login_queue
+            .get_or_insert_with(|| SerialQueue::start("login-item"))
+            .clone()
+    }
+
     fn updater_queue(&mut self) -> SerialQueue {
         self.ui
             .general
@@ -584,18 +633,30 @@ impl Actor {
 
     // --- shell reads (LOGIN-3, UPD-1, WIN-9) ---
 
-    fn refresh_login_item(&self) {
+    fn refresh_login_item(&mut self) {
+        self.ui.general.login_gen += 1;
+        let generation = self.ui.general.login_gen;
         let login = self.ports.login_item.clone();
-        tokio::spawn(blocking_send(self.messages.clone(), move || {
-            Msg::Ui(UiMsg::LoginStatus(login.status()))
-        }));
+        let messages = self.messages.clone();
+        self.login_queue().enqueue(move || {
+            let _ = messages.send(Msg::Ui(UiMsg::LoginStatus {
+                generation,
+                status: login.status(),
+            }));
+        });
     }
 
-    pub(super) fn refresh_updater(&self) {
+    pub(super) fn refresh_updater(&mut self) {
+        self.ui.general.updater_gen += 1;
+        let generation = self.ui.general.updater_gen;
         let updater = self.ports.updater.clone();
-        tokio::spawn(blocking_send(self.messages.clone(), move || {
-            Msg::Ui(UiMsg::Updater(updater.state()))
-        }));
+        let messages = self.messages.clone();
+        self.updater_queue().enqueue(move || {
+            let _ = messages.send(Msg::Ui(UiMsg::Updater {
+                generation,
+                state: updater.state(),
+            }));
+        });
     }
 
     /// The update control in the menu or on General (UPD-1, UPD-6, UPD-7).
@@ -632,16 +693,23 @@ impl Actor {
         self.refresh_updater();
     }
 
-    fn refresh_devices(&self) {
+    fn refresh_devices(&mut self) {
+        self.ui.general.devices_gen += 1;
+        let generation = self.ui.general.devices_gen;
         let audio = self.ports.audio.clone();
         tokio::spawn(blocking_send(self.messages.clone(), move || {
-            Msg::Ui(UiMsg::Devices(audio.input_devices()))
+            Msg::Ui(UiMsg::Devices {
+                generation,
+                devices: audio.input_devices(),
+            })
         }));
     }
 
     // --- permission fixes (WIN-5, WIN-8, ONB-6, PERM-3) ---
 
     pub(super) fn fix_permission(&mut self, fix: PermissionFix) {
+        self.permissions_gen += 1;
+        let generation = self.permissions_gen;
         let permissions = self.ports.permissions.clone();
         tokio::spawn(blocking_send(self.messages.clone(), move || {
             match fix {
@@ -665,10 +733,13 @@ impl Actor {
                     permissions.open_settings(PrivacyPane::Accessibility);
                 }
             }
-            Msg::Permissions(PermissionSnapshot {
-                microphone: permissions.microphone(),
-                accessibility: permissions.accessibility_trusted(),
-            })
+            Msg::Permissions {
+                generation,
+                snapshot: PermissionSnapshot {
+                    microphone: permissions.microphone(),
+                    accessibility: permissions.accessibility_trusted(),
+                },
+            }
         }));
     }
 
