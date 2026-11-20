@@ -4,36 +4,101 @@
 (() => {
   const FEED_URL = "https://rselbach.github.io/onda/update.json";
   const ASSET_PREFIX = "https://github.com/rselbach/onda/releases/download/";
+  const NOTES_PREFIX = "https://github.com/rselbach/onda/releases/tag/";
+  const PUBLIC_KEY_B64 = "2obyIySbPw8xSuXQwzSw2sCbOixUww08jk95se82unc=";
+  const SIGNING_CONTEXT = "onda-update-feed-v1\n";
+  const EXPECTED_APP = "com.rselbach.onda";
+  const EXPECTED_CHANNEL = "stable";
   const KINDS = ["dmg", "app-zip", "deb", "rpm", "pkg.tar.zst", "tar.gz"];
-  const KIND_LABELS = {
+  const KIND_LABELS = Object.assign(Object.create(null), {
     dmg: "DMG",
     "app-zip": "ZIP",
     deb: ".deb",
     rpm: ".rpm",
     "pkg.tar.zst": ".pkg.tar.zst (Arch)",
     "tar.gz": ".tar.gz",
-  };
+  });
   const GROUPS = [
     { os: "macos", arch: "arm64", label: "macOS (Apple Silicon)" },
     { os: "linux", arch: "x86_64", label: "Linux x86_64" },
     { os: "linux", arch: "arm64", label: "Linux ARM64" },
   ];
-  const ARCH_LABELS = { x86_64: "x86_64", arm64: "ARM64" };
+  const ARCH_LABELS = Object.assign(Object.create(null), {
+    x86_64: "x86_64",
+    arm64: "ARM64",
+  });
   const DOWNLOAD_ICON =
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' +
     'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
     '<path d="M12 4v12m0 0-5-5m5 5 5-5M5 20h14"/></svg>';
 
+  function decodeBase64(value) {
+    if (typeof value !== "string" || value.length === 0) {
+      throw new Error("expected non-empty base64 string");
+    }
+    return Uint8Array.from(atob(value), (c) => c.charCodeAt(0));
+  }
+
+  async function verifySignature(payloadBytes, signatureB64) {
+    if (!globalThis.crypto || !globalThis.crypto.subtle) {
+      throw new Error("Web Crypto unavailable for feed verification");
+    }
+    const keyBytes = decodeBase64(PUBLIC_KEY_B64);
+    const sigBytes = decodeBase64(signatureB64);
+    if (sigBytes.length !== 64) {
+      throw new Error("invalid feed signature length");
+    }
+    const prefix = new TextEncoder().encode(SIGNING_CONTEXT);
+    const signed = new Uint8Array(prefix.length + payloadBytes.length);
+    signed.set(prefix, 0);
+    signed.set(payloadBytes, prefix.length);
+    const key = await globalThis.crypto.subtle.importKey(
+      "raw",
+      keyBytes,
+      { name: "Ed25519" },
+      false,
+      ["verify"]
+    );
+    const valid = await globalThis.crypto.subtle.verify(
+      "Ed25519",
+      key,
+      sigBytes,
+      signed
+    );
+    if (!valid) {
+      throw new Error("feed signature verification failed");
+    }
+  }
+
   async function loadRelease() {
     const response = await fetch(FEED_URL);
     if (!response.ok) throw new Error(`feed returned ${response.status}`);
-    const { payload } = await response.json();
-    const bytes = Uint8Array.from(atob(payload), (c) => c.charCodeAt(0));
-    const release = JSON.parse(new TextDecoder().decode(bytes));
-    if (typeof release.version !== "string" || !Array.isArray(release.artifacts)) {
-      throw new Error("feed payload has no version or artifacts");
+    const envelope = await response.json();
+    if (
+      !envelope ||
+      typeof envelope !== "object" ||
+      typeof envelope.payload !== "string" ||
+      typeof envelope.signature !== "string"
+    ) {
+      throw new Error("feed envelope missing payload or signature");
     }
-    release.artifacts = release.artifacts.filter((a) => isReleaseAsset(a.url));
+    const bytes = decodeBase64(envelope.payload);
+    await verifySignature(bytes, envelope.signature);
+    const release = JSON.parse(new TextDecoder().decode(bytes));
+    if (
+      !release ||
+      typeof release !== "object" ||
+      release.schema !== 1 ||
+      release.app !== EXPECTED_APP ||
+      release.channel !== EXPECTED_CHANNEL ||
+      typeof release.version !== "string" ||
+      !Array.isArray(release.artifacts)
+    ) {
+      throw new Error("feed payload failed identity or schema validation");
+    }
+    release.artifacts = release.artifacts.filter(
+      (a) => a && typeof a === "object" && isReleaseAsset(a.url)
+    );
     return release;
   }
 
@@ -49,7 +114,14 @@
 
   function isNotesUrl(url) {
     try {
-      return typeof url === "string" && new URL(url).href.startsWith("https://github.com/rselbach/onda/");
+      if (typeof url !== "string") return false;
+      const parsed = new URL(url);
+      return (
+        parsed.href.startsWith(NOTES_PREFIX) &&
+        parsed.href.length > NOTES_PREFIX.length &&
+        !parsed.search &&
+        !parsed.hash
+      );
     } catch {
       return false;
     }
@@ -76,7 +148,7 @@
     }
 
     let arch;
-    let is32Bit = false;
+    let unsupportedArch = false;
     if (uaData && uaData.getHighEntropyValues && (os === "macos" || os === "linux")) {
       try {
         const { architecture, bitness } = await uaData.getHighEntropyValues([
@@ -84,18 +156,32 @@
           "bitness",
         ]);
         if (bitness === "32") {
-          is32Bit = true;
-        } else {
-          arch = { arm: "arm64", x86: "x86_64" }[architecture];
+          unsupportedArch = true;
+        } else if (architecture === "arm") {
+          arch = "arm64";
+        } else if (architecture === "x86") {
+          arch = "x86_64";
+        } else if (architecture) {
+          unsupportedArch = true;
         }
       } catch {
         // the user agent declined; fall back to the defaults below
       }
     }
-    if (!arch && !is32Bit && os === "linux") {
-      arch = /aarch64|arm64|armv8/i.test(ua) ? "arm64" : "x86_64";
+    if (!arch && !unsupportedArch && os === "linux") {
+      if (/aarch64|arm64|armv8/i.test(ua)) {
+        arch = "arm64";
+      } else if (/x86_64|amd64|x64|win64/i.test(ua)) {
+        arch = "x86_64";
+      } else if (
+        /i[3-6]86|armv[5-7]|armhf|ppc|powerpc|riscv|s390|mips|sparc|loongarch/i.test(ua)
+      ) {
+        unsupportedArch = true;
+      } else {
+        arch = "x86_64";
+      }
     }
-    if (!arch && !is32Bit && os === "macos") arch = "arm64"; // Safari always reports Intel
+    if (!arch && !unsupportedArch && os === "macos") arch = "arm64"; // Safari always reports Intel
     return { os, arch };
   }
 
@@ -116,9 +202,17 @@
       return major ? `macOS ${major} or later on Apple Silicon` : "Apple Silicon";
     }
     if (primary && primary.os === "linux") {
-      return `${KIND_LABELS[primary.kind]} for ${ARCH_LABELS[primary.arch]} · Ubuntu 24.04 or a similarly recent desktop`;
+      const kindLabel = Object.hasOwn(KIND_LABELS, primary.kind)
+        ? KIND_LABELS[primary.kind]
+        : String(primary.kind || "");
+      const archLabel = Object.hasOwn(ARCH_LABELS, primary.arch)
+        ? ARCH_LABELS[primary.arch]
+        : String(primary.arch || "");
+      return `${kindLabel} for ${archLabel} · Ubuntu 24.04 or a similarly recent desktop`;
     }
-    if (platform.os === "macos") return "Onda needs a Mac with Apple Silicon.";
+    if (platform.os === "macos" && platform.arch !== "arm64") {
+      return "Onda needs a Mac with Apple Silicon.";
+    }
     return "Onda runs on macOS and Linux.";
   }
 
@@ -154,7 +248,10 @@
       span.append(`${group.label}: `);
       items.forEach((artifact, i) => {
         if (i > 0) span.append(", ");
-        const a = link(KIND_LABELS[artifact.kind] || artifact.kind, artifact.url);
+        const label = Object.hasOwn(KIND_LABELS, artifact.kind)
+          ? KIND_LABELS[artifact.kind]
+          : String(artifact.kind || "");
+        const a = link(label, artifact.url);
         a.title = megabytes(artifact.size);
         span.append(a);
       });

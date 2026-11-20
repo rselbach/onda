@@ -103,9 +103,9 @@ def third_party_notices(stage, target):
                     path,
                     stage / "share/doc/onda/licenses" / name / path.relative_to(source),
                 )
-    (stage / "share/doc/onda/THIRD-PARTY.txt").write_text(
-        "\n".join(sorted(notices)) + "\n"
-    )
+    notices_path = stage / "share/doc/onda/THIRD-PARTY.txt"
+    notices_path.write_text("\n".join(sorted(notices)) + "\n")
+    notices_path.chmod(0o644)
 
 
 def dependencies(binary, library):
@@ -218,9 +218,9 @@ def package(version, arch, stage, destination, target):
         "glibc": glibc,
         **versions,
     }
-    (stage / "share/doc/onda/build.json").write_text(
-        json.dumps(requirements, indent=2) + "\n"
-    )
+    build_json = stage / "share/doc/onda/build.json"
+    build_json.write_text(json.dumps(requirements, indent=2) + "\n")
+    build_json.chmod(0o644)
     config = {
         "name": "onda",
         "arch": "amd64" if arch == "x86_64" else "arm64",
@@ -233,7 +233,11 @@ def package(version, arch, stage, destination, target):
         "license": "MIT",
         "section": "sound",
         "contents": [
-            {"src": str(p), "dst": "/usr/" + str(p.relative_to(stage))}
+            {
+                "src": str(p),
+                "dst": "/usr/" + str(p.relative_to(stage)),
+                "file_info": {"mode": p.stat().st_mode & 0o777},
+            }
             for p in sorted(stage.rglob("*"))
             if p.is_file()
         ],
@@ -258,11 +262,20 @@ def package(version, arch, stage, destination, target):
     for packager, kind in formats.items():
         marker = stage.parent / f"{packager}-package-kind"
         marker.write_text(kind + "\n")
+        marker.chmod(0o644)
         config["overrides"][packager]["contents"] = config["contents"] + [
-            {"src": str(marker), "dst": "/usr/lib/onda/package-kind"}
+            {
+                "src": str(marker),
+                "dst": "/usr/lib/onda/package-kind",
+                "file_info": {"mode": 0o644},
+            }
         ]
     config["overrides"]["archlinux"]["contents"].append(
-        {"src": str(ROOT / "LICENSE"), "dst": "/usr/share/licenses/onda/LICENSE"}
+        {
+            "src": str(ROOT / "LICENSE"),
+            "dst": "/usr/share/licenses/onda/LICENSE",
+            "file_info": {"mode": 0o644},
+        }
     )
     tool = nfpm(arch)
     artifacts = []
@@ -289,7 +302,9 @@ def package(version, arch, stage, destination, target):
         )
         artifacts.append(artifact)
     copy(ROOT / "shell/linux/packaging/install.sh", stage / "install.sh", 0o755)
-    (stage / "lib/onda/package-kind").write_text("tar.gz\n")
+    tar_kind = stage / "lib/onda/package-kind"
+    tar_kind.write_text("tar.gz\n")
+    tar_kind.chmod(0o644)
     copy(ROOT / "shell/linux/packaging/README.txt", stage / "README.txt")
     archive = destination / f"{stage.name}.tar.gz"
     def normalize_tarinfo(info):
@@ -298,6 +313,10 @@ def package(version, arch, stage, destination, target):
         info.uname = ""
         info.gname = ""
         info.mtime = 0
+        if info.isdir() or (info.isreg() and info.mode & 0o111):
+            info.mode = 0o755
+        elif info.isreg():
+            info.mode = 0o644
         return info
 
     with tarfile.open(archive, "w:gz") as tar:

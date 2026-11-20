@@ -44,10 +44,11 @@ die() {
 cleanup() {
   local status=$?
   if [[ -n "${MOUNT_POINT}" ]]; then
-    hdiutil detach -quiet "${MOUNT_POINT}" || true
+    hdiutil detach -quiet "${MOUNT_POINT}" \
+      || hdiutil detach -quiet -force "${MOUNT_POINT}" || true
   fi
   if [[ -n "${STAGING}" ]]; then
-    rm -rf "${STAGING}"
+    rm -rf "${STAGING}" || true
   fi
   exit "${status}"
 }
@@ -58,7 +59,7 @@ plist_value() {
 }
 
 require_tools() {
-  local tools=(cargo swift xcodebuild codesign hdiutil spctl xcrun ditto)
+  local tools=(cargo swift xcodebuild codesign hdiutil spctl xcrun ditto openssl)
   local tool
   for tool in "${tools[@]}"; do
     if ! command -v "${tool}" >/dev/null; then
@@ -80,7 +81,7 @@ check_notary_credentials() {
 }
 
 # the app's signing authority, or "-" for an ad hoc signature
-app_identity() {
+app_authority() {
   local info
   info="$(codesign --display --verbose=2 "${APP}" 2>&1)"
   local authority
@@ -90,6 +91,31 @@ app_identity() {
     return
   fi
   echo "${authority}"
+}
+
+# honors SIGNING_IDENTITY, else extracts the app's leaf certificate SHA-1
+# fingerprint so DMG signing never collides on a shared Common Name
+dmg_identity() {
+  if [[ -n "${SIGNING_IDENTITY:-}" ]]; then
+    echo "${SIGNING_IDENTITY}"
+    return
+  fi
+  local cert_dir="${STAGING}/certs"
+  mkdir -p "${cert_dir}"
+  rm -f "${cert_dir}"/cert*
+  codesign --display --extract-certificates="${cert_dir}/cert" "${APP}" 2>/dev/null || true
+  if [[ ! -s "${cert_dir}/cert0" ]]; then
+    echo "-"
+    return
+  fi
+  local sha1
+  sha1="$(openssl x509 -inform DER -in "${cert_dir}/cert0" \
+    -noout -fingerprint -sha1 | sed 's/^.*=//; s/://g')"
+  rm -rf "${cert_dir}"
+  if [[ ! "${sha1}" =~ ^[0-9A-Fa-f]{40}$ ]]; then
+    die "failed to extract signing certificate SHA-1 fingerprint"
+  fi
+  echo "${sha1}"
 }
 
 retry_command() {
@@ -300,12 +326,14 @@ main() {
   VERSION="${version}" BUILD="${build}" \
     "${ROOT}/scripts/bundle-app.sh" release
 
-  local identity
-  identity="$(app_identity)"
+  local authority
+  authority="$(app_authority)"
   if [[ "${notarize_dmg}" == "true" \
-    && "${identity}" != "Developer ID Application"* ]]; then
-    die "notarization needs a Developer ID signature; app has '${identity}'"
+    && "${authority}" != "Developer ID Application"* ]]; then
+    die "notarization needs a Developer ID signature; app has '${authority}'"
   fi
+  local identity
+  identity="$(dmg_identity)"
 
   if [[ "${notarize_dmg}" == "true" ]]; then
     notarize_app

@@ -83,13 +83,18 @@ def main():
     for index in range(desktop.get_child_count()):
         try:
             app = desktop.get_child_at_index(index)
+            if app is None:
+                continue
             toolkit = f"{app.get_toolkit_name()} {app.get_toolkit_version()}"
             print(
                 f"app {app.get_name()!r} toolkit={toolkit}"
                 f" pid={app.get_process_id()} windows={app.get_child_count()}"
             )
             for position in range(app.get_child_count()):
-                report_window(app.get_child_at_index(position))
+                window = app.get_child_at_index(position)
+                if window is None:
+                    continue
+                report_window(window)
         except GLib.Error as error:
             print(f"app #{index}: unreadable ({error.message})", file=sys.stderr)
     print(f"report took {1000 * (time.monotonic() - started):.0f} ms")

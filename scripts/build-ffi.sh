@@ -50,10 +50,10 @@ main() {
   STAGING="$(mktemp -d)"
   trap cleanup EXIT
 
-  cargo build --manifest-path "${ROOT}/Cargo.toml" -p onda-ffi \
+  cargo build --locked --manifest-path "${ROOT}/Cargo.toml" -p onda-ffi \
     ${cargo_flags[@]+"${cargo_flags[@]}"}
 
-  cargo run --quiet --manifest-path "${ROOT}/Cargo.toml" -p uniffi-bindgen -- \
+  cargo run --locked --quiet --manifest-path "${ROOT}/Cargo.toml" -p uniffi-bindgen -- \
     generate --library "${lib_dir}/libonda_ffi.dylib" \
     --language swift --out-dir "${STAGING}"
 

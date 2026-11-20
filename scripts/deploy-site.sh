@@ -25,11 +25,7 @@ configure_nginx() {
 set -euo pipefail
 server_conf="\$(readlink -f "${SERVER_CONF}")"
 backup="\$(mktemp -d)"
-trap 'sudo rm -rf "\${backup}" "${upload}"' EXIT
-sudo cp -p "\${server_conf}" "\${backup}/server.conf"
-if [[ -f "${SNIPPET}" ]]; then
-  sudo cp -p "${SNIPPET}" "\${backup}/snippet.conf"
-fi
+committed=0
 restore() {
   sudo cp -p "\${backup}/server.conf" "\${server_conf}"
   if [[ -f "\${backup}/snippet.conf" ]]; then
@@ -38,11 +34,21 @@ restore() {
     sudo rm -f "${SNIPPET}"
   fi
 }
+cleanup() {
+  if (( committed == 0 )) && [[ -f "\${backup}/server.conf" ]]; then
+    restore || true
+  fi
+  sudo rm -rf "\${backup}" "${upload}"
+}
+trap cleanup EXIT
+sudo cp -p "\${server_conf}" "\${backup}/server.conf"
+if [[ -f "${SNIPPET}" ]]; then
+  sudo cp -p "${SNIPPET}" "\${backup}/snippet.conf"
+fi
 
 sudo install -m 644 "${upload}/site-nginx.conf" "${SNIPPET}"
 if ! grep -qF "include ${SNIPPET};" "\${server_conf}"; then
   if (( \$(grep -c '^ *server_name rselbach.com;' "\${server_conf}") != 1 )); then
-    restore
     echo "expected one 'server_name rselbach.com;' in \${server_conf}" >&2
     exit 1
   fi
@@ -52,15 +58,14 @@ fi
 
 if ! sudo nginx -t 2>"\${backup}/nginx-t.log"; then
   cat "\${backup}/nginx-t.log" >&2
-  restore
   echo "nginx rejected the configuration; restored the previous files" >&2
   exit 1
 fi
 if ! sudo systemctl reload nginx; then
-  restore
   echo "nginx did not reload; restored the previous files" >&2
   exit 1
 fi
+committed=1
 REMOTE
 }
 
@@ -90,7 +95,8 @@ main() {
 
   # shellcheck disable=SC2029 # WEB_DIR is a local constant
   ssh "${HOST}" "sudo install -d -o exedev -g www-data -m 755 '${WEB_DIR}'"
-  rsync -rlt --delete --delay-updates "${repo}/site/" "${HOST}:${WEB_DIR}/"
+  rsync -rlt --delete --delay-updates --chmod=Du=rwx,Dg=rx,Do=rx,Fu=rw,Fg=r,Fo=r \
+    "${repo}/site/" "${HOST}:${WEB_DIR}/"
   # shellcheck disable=SC2029 # WEB_DIR is a local constant
   ssh "${HOST}" "chmod -R u=rwX,go=rX '${WEB_DIR}'"
   # a private folder, not a fixed /tmp name another user could claim
