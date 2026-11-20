@@ -176,7 +176,6 @@ pub(crate) enum UiMsg {
     },
     ModelDeleted {
         model: ModelId,
-        reselect: Option<ModelId>,
         result: Result<(), String>,
     },
 }
@@ -471,11 +470,7 @@ impl Actor {
                 generation,
                 outcome,
             } => self.history_copied(id, generation, outcome),
-            UiMsg::ModelDeleted {
-                model,
-                reselect,
-                result,
-            } => self.model_deleted(model, reselect, result),
+            UiMsg::ModelDeleted { model, result } => self.model_deleted(model, result),
         }
     }
 

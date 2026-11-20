@@ -6,6 +6,7 @@
 //! gives up (a cancelled session) frees nothing early: the engine call runs
 //! to completion holding the gate, and its result is simply never read.
 
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, PoisonError};
 use std::time::Duration;
@@ -53,6 +54,9 @@ struct Inner {
     publish_lock: StdMutex<()>,
     // bumped by every unload; a load that sees it change was cancelled
     generation: AtomicU64,
+    // bumped by every load or unload; a stale unload that sees it change skips
+    // clearing a newer slot
+    op_seq: AtomicU64,
     desired: StdMutex<Option<ModelId>>,
     loaded: StdMutex<Option<ModelId>>,
     supports_preview: AtomicBool,
@@ -75,6 +79,7 @@ impl TranscriptionService {
                 load_lock: Mutex::new(()),
                 publish_lock: StdMutex::new(()),
                 generation: AtomicU64::new(0),
+                op_seq: AtomicU64::new(0),
                 desired: StdMutex::new(None),
                 loaded: StdMutex::new(None),
                 supports_preview: AtomicBool::new(false),
@@ -106,25 +111,63 @@ impl TranscriptionService {
         self.inner.min_samples.load(Ordering::SeqCst)
     }
 
+    /// Reserves a load (and optional leading unload) synchronously on the
+    /// caller's thread so stale unloads cannot overtake it, returning the
+    /// future that runs it.
+    pub(crate) fn prepare_load(
+        &self,
+        unload_first: bool,
+    ) -> impl Future<Output = Result<(), LoadError>> + Send + 'static {
+        let (start_generation, start_seq, wait_model) = {
+            let _pub = lock(&self.inner.publish_lock);
+            if unload_first {
+                self.inner.generation.fetch_add(1, Ordering::SeqCst);
+            }
+            let generation = self.inner.generation.load(Ordering::SeqCst);
+            let seq = self.inner.op_seq.fetch_add(1, Ordering::SeqCst) + 1;
+            let desired = *lock(&self.inner.desired);
+            (generation, seq, desired)
+        };
+        let service = self.clone();
+        async move {
+            if unload_first {
+                service.finish_unload(start_generation, start_seq).await;
+            }
+            service.ensure_loaded_at(start_generation, wait_model).await
+        }
+    }
+
     /// Leaves the desired model loaded and ready (ASR-2, ASR-3, ARCH-9).
     ///
     /// Concurrent callers wait for the in-flight load (up to
     /// [`LOAD_WAIT_TIMEOUT`]) and then re-read the desired model, so only
     /// one load runs per selection. A load that finishes after an unload or
     /// a newer selection unloads what it just loaded.
+    #[cfg(test)]
     pub(crate) async fn ensure_loaded(&self) -> Result<(), LoadError> {
+        self.prepare_load(false).await
+    }
+
+    async fn ensure_loaded_at(
+        &self,
+        start_generation: u64,
+        wait_model: Option<ModelId>,
+    ) -> Result<(), LoadError> {
         let inner = &self.inner;
         let Ok(_load) = tokio::time::timeout(LOAD_WAIT_TIMEOUT, inner.load_lock.lock()).await
         else {
             let message = "Model loading timed out".to_owned();
-            (inner.publish)(ModelState::Error {
-                message: message.clone(),
+            return Err(match wait_model {
+                Some(model) => self.fail_if_current(start_generation, model, message),
+                None => self.stale_error(start_generation),
             });
-            return Err(LoadError::Failed(message));
         };
         let (generation, model) = {
             let _pub = lock(&inner.publish_lock);
             let generation = inner.generation.load(Ordering::SeqCst);
+            if generation != start_generation {
+                return Err(LoadError::Cancelled);
+            }
             let Some(model) = *lock(&inner.desired) else {
                 return Err(LoadError::Stale);
             };
@@ -263,23 +306,48 @@ impl TranscriptionService {
         Ok(())
     }
 
+    /// Reserves an unload synchronously on the caller's thread so in-flight
+    /// loads are cancelled at once, returning the future that releases the
+    /// engine after any in-flight call.
+    pub(crate) fn prepare_unload(&self) -> impl Future<Output = ()> + Send + 'static {
+        let (unload_generation, unload_seq) = {
+            let _pub = lock(&self.inner.publish_lock);
+            let generation = self.inner.generation.fetch_add(1, Ordering::SeqCst) + 1;
+            let seq = self.inner.op_seq.fetch_add(1, Ordering::SeqCst) + 1;
+            (generation, seq)
+        };
+        let service = self.clone();
+        async move {
+            service.finish_unload(unload_generation, unload_seq).await;
+        }
+    }
+
     /// Unloads the model after any in-flight engine call and cancels any
     /// in-flight load; publishes `not_ready` (ASR-7, ASR-8).
+    #[cfg(test)]
     pub(crate) async fn unload(&self) {
-        let unload_generation = {
-            let _pub = lock(&self.inner.publish_lock);
-            self.inner.generation.fetch_add(1, Ordering::SeqCst) + 1
-        };
+        self.prepare_unload().await;
+    }
+
+    async fn finish_unload(&self, unload_generation: u64, unload_seq: u64) {
         let mut slot = self.inner.gate.clone().lock_owned().await;
         let service = self.clone();
         blocking(move || {
+            {
+                let _pub = lock(&service.inner.publish_lock);
+                if service.inner.op_seq.load(Ordering::SeqCst) != unload_seq {
+                    return;
+                }
+            }
             if let Some(engine) = slot.engine.as_mut() {
                 engine.unload();
             }
             *slot = Slot::default();
             service.mark_unloaded();
             let _pub = lock(&service.inner.publish_lock);
-            if service.inner.generation.load(Ordering::SeqCst) == unload_generation {
+            if service.inner.generation.load(Ordering::SeqCst) == unload_generation
+                && service.inner.op_seq.load(Ordering::SeqCst) == unload_seq
+            {
                 (service.inner.publish)(ModelState::NotReady);
             }
         })
@@ -949,5 +1017,63 @@ mod tests {
             } => fraction.is_finite(),
             _ => true,
         }));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stale_unload_does_not_wipe_a_newer_loaded_engine() {
+        let store = Arc::new(Store::with(&[V2, UNIFIED]));
+        let (service, states) = service(store.clone());
+        service.set_desired(V2);
+        assert_eq!(service.ensure_loaded().await, Ok(()));
+
+        // Reserve an unload, then supersede it with a newer load before the
+        // stale unload runs its gate acquisition.
+        let stale_unload = service.prepare_unload();
+        service.set_desired(UNIFIED);
+        let newer_load = service.prepare_load(true);
+        assert_eq!(newer_load.await, Ok(()));
+        assert_eq!(service.loaded_model(), Some(UNIFIED));
+
+        // Running the stale unload now must leave the newer engine intact.
+        stale_unload.await;
+        assert_eq!(service.loaded_model(), Some(UNIFIED));
+        assert_eq!(lock(&states).last(), Some(&ModelState::Ready));
+        assert_eq!(
+            service.transcribe(Arc::from(vec![0.0; 16]), None).await,
+            Ok("Troy and Abed in the morning".to_owned())
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn load_wait_timeout_does_not_publish_error_when_stale() {
+        let store = Arc::new(Store::with(&[V2, UNIFIED]));
+        let (hold, started, release) = Hold::new();
+        *lock(&store.hold_load) = Some(hold);
+        let (service, states) = service(store);
+        service.set_desired(V2);
+        let first = tokio::spawn({
+            let service = service.clone();
+            async move { service.ensure_loaded().await }
+        });
+        eventually("the first load", || started.try_recv().is_ok()).await;
+        let waiter = tokio::spawn({
+            let service = service.clone();
+            async move { service.ensure_loaded().await }
+        });
+        tokio::task::yield_now().await;
+
+        // Change desired model before the waiter times out.
+        service.set_desired(UNIFIED);
+        tokio::time::advance(LOAD_WAIT_TIMEOUT + Duration::from_millis(1)).await;
+        eventually("the stale timeout", || waiter.is_finished()).await;
+        assert_eq!(waiter.await.ok(), Some(Err(LoadError::Stale)));
+        assert!(
+            !lock(&states)
+                .iter()
+                .any(|state| matches!(state, ModelState::Error { .. })),
+            "stale timeout must not publish Error"
+        );
+        let _ = release.send(());
+        assert_eq!(first.await.ok(), Some(Err(LoadError::Stale)));
     }
 }

@@ -18,14 +18,14 @@ use onda_domain::model_selection::{
     LaunchLoad, LaunchState, can_redownload, delete_confirmation, delete_failed_message,
     delete_model, launch_load, load_failure_notification,
 };
-use onda_domain::models::ModelId;
+use onda_domain::models::{ModelError, ModelId};
 use onda_domain::non_dictation_ui::ModelDownload;
 use onda_domain::onboarding::{OnboardingDownloadUpdate, launch_plan};
 use onda_domain::routing::routes;
 use onda_domain::types::ModelState;
 
 use super::windows::PendingAlertAction;
-use super::{Actor, Msg, Phase, SerialQueue, UiMsg, blocking_send};
+use super::{Actor, Msg, Phase, SerialQueue, UiMsg};
 use crate::effects::Effect;
 use crate::events::Event;
 use crate::seams::{DownloadUpdate, DownloadUpdateKind, SettingChange};
@@ -40,6 +40,15 @@ impl Actor {
             .model_queue
             .get_or_insert_with(|| SerialQueue::start("models"))
             .clone()
+    }
+
+    /// Downloaded models excluding any currently being deleted.
+    pub(super) fn available_downloaded(&self) -> Vec<ModelId> {
+        self.downloaded
+            .iter()
+            .copied()
+            .filter(|model| !self.deleting.contains(model))
+            .collect()
     }
 
     /// The model loads use: the declined-migration fallback while it
@@ -140,12 +149,13 @@ impl Actor {
     // Speech when none is installed (DL-14, ONB-11)
     pub(super) fn load_declined_fallback(&mut self) -> bool {
         let settings = self.settings.clone();
+        let available = self.available_downloaded();
         match declined_load(
             &self.catalog,
             &self.resolution(),
             &settings.declined_notice_key,
             settings.language,
-            &self.downloaded,
+            &available,
         ) {
             Some(DeclinedLoad::LoadFallback(model)) => {
                 self.override_model = Some(model);
@@ -327,7 +337,10 @@ impl Actor {
     // --- delete and re-download (DL-9..DL-11) ---
 
     pub(super) fn request_delete_model(&mut self, model: ModelId) {
-        if !self.downloaded.contains(&model) || self.catalog.is_built_in(model) {
+        if !self.downloaded.contains(&model)
+            || self.deleting.contains(&model)
+            || self.catalog.is_built_in(model)
+        {
             return;
         }
         let confirmation = delete_confirmation(self.catalog.name(model));
@@ -343,44 +356,69 @@ impl Actor {
     }
 
     pub(super) fn delete_confirmed(&mut self, model: ModelId) {
+        if self.deleting.contains(&model) {
+            return;
+        }
         let settings = self.settings.clone();
+        let available = self.available_downloaded();
+        let name = self.catalog.name(model).to_owned();
+        if self.deleting.contains(&settings.selected_model)
+            && !available.iter().any(|candidate| *candidate != model)
+        {
+            let message = delete_failed_message(&name, &ModelError::CannotDeleteActiveModel.to_string());
+            self.push_speech_alert(DOWNLOAD_ALERT_TITLE, message, None);
+            return;
+        }
         let plan = delete_model(
             &self.catalog,
             model,
             &settings.stored_model,
-            &self.downloaded,
+            &available,
             settings.language,
             default_language(settings.os_language.as_deref()),
         );
-        let name = self.catalog.name(model).to_owned();
-        let reselect = match plan {
-            Ok(plan) => plan.reselect,
-            Err(error) => {
-                let message = delete_failed_message(&name, &error.to_string());
-                self.push_speech_alert(DOWNLOAD_ALERT_TITLE, message, None);
-                return;
-            }
+        if let Err(error) = plan {
+            let message = delete_failed_message(&name, &error.to_string());
+            self.push_speech_alert(DOWNLOAD_ALERT_TITLE, message, None);
+            return;
+        }
+        self.deleting.insert(model);
+        let deleting_active =
+            model == self.desired_model() || self.service.loaded_model() == Some(model);
+        let unload = if deleting_active {
+            self.cancel();
+            Some(self.service.prepare_unload())
+        } else {
+            None
         };
+        let queue = self.model_queue();
         let models = self.ports.models.clone();
-        tokio::spawn(blocking_send(self.messages.clone(), move || {
-            Msg::Ui(UiMsg::ModelDeleted {
-                model,
-                reselect,
-                result: models.delete(model),
-            })
-        }));
+        let messages = self.messages.clone();
+        tokio::spawn(async move {
+            if let Some(unload) = unload {
+                unload.await;
+            }
+            let result = match queue.run(move || models.delete(model)).await {
+                Ok(result) => result,
+                Err(_) => Err("Model deletion was interrupted.".to_owned()),
+            };
+            let _ = messages.send(Msg::Ui(UiMsg::ModelDeleted { model, result }));
+        });
     }
 
-    pub(super) fn model_deleted(
-        &mut self,
-        model: ModelId,
-        reselect: Option<ModelId>,
-        result: Result<(), String>,
-    ) {
+    pub(super) fn model_deleted(&mut self, model: ModelId, result: Result<(), String>) {
+        self.deleting.remove(&model);
         self.refresh_downloaded();
         if let Err(error) = result {
             let message = delete_failed_message(self.catalog.name(model), &error);
             self.push_speech_alert(DOWNLOAD_ALERT_TITLE, message, None);
+            if model == self.desired_model()
+                && self.service.loaded_model().is_none()
+                && !self.load_in_flight()
+                && self.downloaded.contains(&model)
+            {
+                self.start_load(false);
+            }
             return;
         }
         self.downloaded.retain(|m| *m != model);
@@ -389,19 +427,29 @@ impl Actor {
             self.override_model = None;
         }
         self.refresh_settings();
-        if let Some(next) = reselect
-            && self.settings.selected_model == model
-        {
-            // the selected model is gone: select and reload another (DL-10)
-            self.pending.clear();
-            self.switch_model(next, true);
+        if self.settings.selected_model == model {
+            // recompute fallback against live state so concurrent deletes or
+            // selections never leave the deleted model selected (DL-10)
+            let mut live_downloaded = self.available_downloaded();
+            live_downloaded.push(model);
+            let settings = self.settings.clone();
+            if let Ok(plan) = delete_model(
+                &self.catalog,
+                model,
+                &settings.stored_model,
+                &live_downloaded,
+                settings.language,
+                default_language(settings.os_language.as_deref()),
+            ) && let Some(next) = plan.reselect
+            {
+                self.pending.clear();
+                self.switch_model(next, true);
+            }
         } else if deleted_override
             && (!self.load_declined_fallback() || self.override_model.is_none())
         {
-            let service = self.service.clone();
-            tokio::spawn(async move {
-                service.unload().await;
-            });
+            let unload = self.service.prepare_unload();
+            tokio::spawn(unload);
         }
     }
 
@@ -436,13 +484,14 @@ impl Actor {
 
     pub(super) fn select_language_from_menu(&mut self, language: LanguageSetting) {
         let settings = self.settings.clone();
+        let available = self.available_downloaded();
         let Some(plan) = switch_language_from_menu(
             &self.catalog,
             language,
             matches!(self.phase, Phase::Idle),
             &settings.stored_recent_languages,
             &settings.stored_model,
-            &self.downloaded,
+            &available,
         ) else {
             return;
         };

@@ -16,6 +16,7 @@ mod onboarding;
 mod rules_editor;
 mod windows;
 
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -399,6 +400,7 @@ pub(crate) struct Actor {
     model_state: ModelState,
     loads: ModelLoads,
     downloaded: Vec<ModelId>,
+    deleting: HashSet<ModelId>,
     downloads: DownloadTracker,
     // the declined-migration fallback loaded instead of the selection (DL-14)
     override_model: Option<ModelId>,
@@ -475,6 +477,7 @@ impl Actor {
             model_state: ModelState::NotReady,
             loads: ModelLoads::new(),
             downloaded: Vec::new(),
+            deleting: HashSet::new(),
             downloads: DownloadTracker::new(),
             override_model: None,
             reload_when_idle: None,
@@ -1797,12 +1800,9 @@ impl Actor {
         if unload_first {
             self.loads.announce();
         }
-        let service = self.service.clone();
+        let load = self.service.prepare_load(unload_first);
         tokio::spawn(send_when(self.messages.clone(), async move {
-            if unload_first {
-                service.unload().await;
-            }
-            Msg::LoadFinished(service.ensure_loaded().await)
+            Msg::LoadFinished(load.await)
         }));
     }
 
@@ -1822,10 +1822,11 @@ impl Actor {
     }
 
     fn switch_model(&mut self, model: ModelId, explicit: bool) {
+        let available = self.available_downloaded();
         match select_model(
             model,
             self.settings.selected_model.as_str(),
-            &self.downloaded,
+            &available,
         ) {
             SelectOutcome::NotDownloaded => {
                 tracing::warn!(

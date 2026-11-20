@@ -254,6 +254,7 @@ impl Actor {
         }
         // never start a download the user did not agree to
         if outcome.load_model && !self.load_declined_fallback() {
+            self.override_model = None;
             self.start_load(false);
         }
         if outcome.request_notifications {
@@ -278,6 +279,8 @@ impl Actor {
         self.apply_setting(SettingChange::Language(language));
         if let Some(model) = ModelId::parse(&pick.model_id) {
             self.pending.clear();
+            self.override_model = None;
+            self.end_declined();
             self.apply_setting(SettingChange::SelectedModel(model));
         }
     }
@@ -307,13 +310,16 @@ impl Actor {
 
     // ONB-8 "Use This Model"
     pub(super) fn onboarding_choose_model(&mut self, model: ModelId) {
-        if self.downloaded.contains(&model) {
+        if self.available_downloaded().contains(&model) {
+            self.override_model = None;
+            self.end_declined();
             self.apply_setting(SettingChange::SelectedModel(model));
         }
     }
 
     // ONB-8 "Download": selects and starts the download
     pub(super) fn onboarding_download_model(&mut self, model: ModelId) {
+        self.override_model = None;
         self.apply_setting(SettingChange::SelectedModel(model));
         if let Some(state) = &mut self.ui.onboarding {
             state
