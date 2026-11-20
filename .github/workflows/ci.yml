@@ -4,9 +4,17 @@ name: CI
 
 on:
   pull_request:
+    paths-ignore:
+      - 'site/**'
+      - 'LICENSE'
+      - '**.md'
   push:
     branches:
       - main
+    paths-ignore:
+      - 'site/**'
+      - 'LICENSE'
+      - '**.md'
 
 permissions:
   contents: read
@@ -16,13 +24,97 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      run_macos: ${{ steps.changes.outputs.run_macos }}
+      run_linux: ${{ steps.changes.outputs.run_linux }}
+      run_linux_packages: ${{ steps.changes.outputs.run_linux_packages }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed areas
+        id: changes
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [[ "${EVENT_NAME}" != "pull_request" ]]; then
+            {
+              echo "run_macos=true"
+              echo "run_linux=true"
+              echo "run_linux_packages=true"
+            } >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          run_macos=false
+          run_linux=false
+          run_linux_packages=false
+
+          while IFS= read -r path; do
+            case "${path}" in
+              shell/macos/* | .swiftformat | scripts/build-ffi.sh | scripts/bundle-app.sh | scripts/release.sh | .github/workflows/release.yml)
+                run_macos=true
+                ;;
+              shell/linux/* | scripts/*linux* | .github/workflows/linux-packages.yml)
+                run_linux=true
+                run_linux_packages=true
+                ;;
+              Cargo.toml | Cargo.lock | assets/* | .github/workflows/ci.yml)
+                run_macos=true
+                run_linux=true
+                run_linux_packages=true
+                ;;
+              crates/*)
+                run_macos=true
+                run_linux=true
+                ;;
+              site/* | LICENSE | *.md | .agents/* | scripts/deploy-site.sh | scripts/site-nginx.conf | scripts/verify-published-feeds.py | scripts/gen-model-manifest.py | .github/workflows/republish-feeds.yml | .github/actionlint.yaml)
+                ;;
+              *)
+                run_macos=true
+                run_linux=true
+                ;;
+            esac
+          done < <(git diff --name-only "${BASE_SHA}...HEAD")
+
+          {
+            echo "run_macos=${run_macos}"
+            echo "run_linux=${run_linux}"
+            echo "run_linux_packages=${run_linux_packages}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Rust format
+        run: cargo fmt --all --check
+
+      - name: Shell lint
+        run: |
+          shellcheck scripts/build-ffi.sh scripts/build-linux.sh \
+            scripts/build-linux-layer-shell.sh scripts/bundle-app.sh \
+            scripts/deploy-site.sh scripts/install-linux.sh \
+            scripts/release.sh scripts/test-linux-dictation.sh \
+            scripts/test-linux-gui.sh scripts/test-linux-overlay.sh \
+            shell/linux/packaging/install.sh \
+            .agents/skills/verify-onda/scripts/verify-onda \
+            .agents/skills/verify-onda/scripts/verify-onda-linux
+
   linux-packages:
+    needs: lint
+    if: needs.lint.outputs.run_linux_packages == 'true'
     uses: ./.github/workflows/linux-packages.yml
     with:
       version: 0.0.0-ci
 
   linux:
+    needs: lint
+    if: needs.lint.outputs.run_linux == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     container:
       image: fedora:44
       # The real-GUI tests start gnome-keyring-daemon. As root it keeps only
@@ -32,56 +124,69 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Install Linux build dependencies
+      - name: Install Linux dependencies
         run: |
-          dnf install -y rust cargo rustfmt clippy gcc-c++ cmake clang-devel \
+          dnf install -y rust cargo clippy gcc-c++ cmake clang-devel \
             pkgconf-pkg-config gtk4-devel libadwaita-devel gtk4-layer-shell-devel \
             alsa-lib-devel openssl-devel libX11-devel libXtst-devel \
-            libxkbcommon-devel wayland-devel ShellCheck
+            libxkbcommon-devel wayland-devel xorg-x11-server-Xvfb \
+            dbus-daemon dbus-tools gnome-keyring libsecret xclip xdotool \
+            python3
 
-      - name: Rust format
-        run: cargo fmt --all --check
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          shared-key: linux-fedora
 
       - name: Linux lint
-        run: cargo clippy --locked -p onda-linux --all-targets -- -D warnings
+        run: cargo clippy --locked -p onda-linux -p onda-settings --all-targets -- -D warnings
 
-      - name: Linux and shared core tests
+      - name: Linux tests
         run: |
-          cargo test --locked -p onda-domain -p onda-app -p onda-adapters -p onda-audio \
-            -p onda-linux -- --test-threads=1
-          # Bundle swap and codesign tests run in the macOS job.
-          cargo test --locked -p onda-update -- --skip install::tests
+          cargo test --locked -p onda-settings
+          cargo test --locked -p onda-linux -- --test-threads=1
 
       - name: Linux real-GUI tests
-        run: |
-          dnf install -y xorg-x11-server-Xvfb dbus-daemon dbus-tools \
-            gnome-keyring libsecret xclip xdotool python3
-          scripts/test-linux-gui.sh
+        run: scripts/test-linux-gui.sh
 
       - name: Linux build
         run: scripts/build-linux.sh
 
-      - name: Shell lint
-        run: |
-          shellcheck scripts/build-ffi.sh scripts/build-linux.sh \
-            scripts/bundle-app.sh scripts/deploy-site.sh \
-            scripts/install-linux.sh scripts/release.sh \
-            scripts/test-linux-dictation.sh scripts/test-linux-gui.sh \
-            scripts/test-linux-overlay.sh \
-            .agents/skills/verify-onda/scripts/verify-onda \
-            .agents/skills/verify-onda/scripts/verify-onda-linux
-
   build-and-test:
+    needs: lint
+    if: needs.lint.outputs.run_macos == 'true'
     runs-on: xcode-27
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Swift format
+        run: swiftformat --lint .
+
+      - name: Set deployment target
+        run: |
+          target="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' shell/macos/Info.plist)"
+          echo "MACOSX_DEPLOYMENT_TARGET=${target}" >> "${GITHUB_ENV}"
+
       - name: Install Rust
         run: |
-          rustup toolchain install stable --profile minimal \
-            --component rustfmt,clippy
+          rustup toolchain install stable --profile minimal --component clippy
           rustup default stable
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          shared-key: macos-rust
+          env-vars: MACOSX_DEPLOYMENT_TARGET
+
+      - name: Cache SwiftPM
+        uses: actions/cache@v4
+        with:
+          path: shell/macos/.build
+          key: swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('shell/macos/Package.swift', 'shell/macos/Package.resolved') }}
+          restore-keys: |
+            swiftpm-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Show toolchains
         run: |
@@ -90,30 +195,27 @@ jobs:
           rustc --version
           cargo --version
 
-      - name: Rust format
-        run: cargo fmt --all --check
-
       - name: Rust lint
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
       - name: Rust tests
-        run: cargo test --workspace
+        run: cargo test --locked --workspace
 
-      - name: Install SwiftFormat
-        run: brew install swiftformat
+      - name: App bundle (debug)
+        if: github.event_name != 'push'
+        env:
+          SIGNING_IDENTITY: '-'
+        run: scripts/bundle-app.sh debug
 
-      - name: Swift format
-        run: swiftformat --lint .
-
-      - name: Swift build (debug)
-        run: |
-          scripts/build-ffi.sh debug
-          swift build --package-path shell/macos --arch arm64
+      - name: Build FFI (debug)
+        if: github.event_name == 'push'
+        run: scripts/build-ffi.sh debug
 
       - name: Swift tests
         run: swift test --package-path shell/macos --arch arm64
 
-      - name: Release build
+      - name: App bundle (release)
+        if: github.event_name == 'push'
         env:
           SIGNING_IDENTITY: '-'
         run: scripts/bundle-app.sh release

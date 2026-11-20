@@ -27,6 +27,7 @@ jobs:
           - runner: ubuntu-24.04-arm
             arch: arm64
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
     env:
       PKG_CONFIG_PATH: ${{ github.workspace }}/build/linux-layer-shell/install/lib/pkgconfig
       VERSION: ${{ inputs.version }}
@@ -51,6 +52,11 @@ jobs:
         run: |
           rustup toolchain install 1.99.1 --profile minimal
           rustup default 1.99.1
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          shared-key: linux-packages-${{ matrix.arch }}
+          workspaces: '. -> build/linux-target'
       - name: Build private GTK4 Layer Shell
         run: scripts/build-linux-layer-shell.sh
       - name: Check packaging scripts
@@ -80,6 +86,7 @@ jobs:
             build/linux/*.pkg.tar.zst
             build/linux/*.tar.gz
             build/linux/*.sha256
+          retention-days: 1
           if-no-files-found: error
 
   install-rpm:
@@ -93,6 +100,7 @@ jobs:
           - runner: ubuntu-24.04-arm
             arch: arm64
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
     container: fedora:44
     env:
       VERSION: ${{ inputs.version }}
@@ -116,6 +124,7 @@ jobs:
   install-archlinux:
     needs: package
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     container: archlinux:base
     env:
       VERSION: ${{ inputs.version }}
