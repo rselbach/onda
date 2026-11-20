@@ -9,6 +9,15 @@ pub fn run(program: &str, args: &[&str], input: &[u8]) -> anyhow::Result<Vec<u8>
     run_for(program, args, input, Duration::from_secs(3))
 }
 
+pub fn run_for_output(
+    program: &str,
+    args: &[&str],
+    input: &[u8],
+    timeout: Duration,
+) -> anyhow::Result<Output> {
+    execute(program, args, input, timeout, true)
+}
+
 pub fn run_for(
     program: &str,
     args: &[&str],

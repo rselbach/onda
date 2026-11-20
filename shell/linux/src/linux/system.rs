@@ -97,13 +97,13 @@ fn show_item(path: &Path, activation_token: &str) -> Result<(), glib::Error> {
 }
 
 fn autostart() -> Option<PathBuf> {
-    let root = std::env::var_os("XDG_CONFIG_HOME")
+    let root = std::env::var_os("ONDA_DATA_DIR")
         .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
+        .map(|data| PathBuf::from(data).join("config"))
         .or_else(|| {
-            std::env::var_os("ONDA_DATA_DIR")
+            std::env::var_os("XDG_CONFIG_HOME")
                 .filter(|value| !value.is_empty())
-                .map(|data| PathBuf::from(data).join("config"))
+                .map(PathBuf::from)
         })
         .or_else(|| {
             std::env::var_os("HOME")
@@ -111,6 +111,20 @@ fn autostart() -> Option<PathBuf> {
                 .map(|home| PathBuf::from(home).join(".config"))
         })?;
     Some(root.join("autostart/com.rselbach.onda.desktop"))
+}
+
+fn escape_desktop_exec_arg(executable: &Path) -> Result<String, String> {
+    let raw = executable.to_string_lossy();
+    if raw.contains(['\n', '\r', '\0']) {
+        return Err("Executable path contains control characters".into());
+    }
+    let exec_quoted = raw
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('`', "\\`")
+        .replace('$', "\\$")
+        .replace('%', "%%");
+    Ok(exec_quoted.replace('\\', "\\\\"))
 }
 
 impl LoginItem for Desktop {
@@ -131,13 +145,7 @@ impl LoginItem for Desktop {
             };
         }
         let executable = std::env::current_exe().map_err(|e| e.to_string())?;
-        let executable = executable
-            .to_string_lossy()
-            .replace('\\', "\\\\")
-            .replace('"', "\\\"")
-            .replace('`', "\\`")
-            .replace('$', "\\$")
-            .replace('%', "%%");
+        let executable = escape_desktop_exec_arg(&executable)?;
         let parent = path.parent().ok_or("No autostart directory")?;
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         std::fs::write(path, format!("[Desktop Entry]\nType=Application\nName=Onda\nExec=\"{executable}\" --background\nIcon={}\n", super::APP_ID)).map_err(|e| e.to_string())
@@ -209,5 +217,21 @@ impl SecretSource for Secrets {
                     Err("The desktop keyring did not save the API key.".into())
                 }
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn desktop_exec_arg_escapes_spec_metacharacters_and_rejects_control_chars() {
+        let escaped =
+            escape_desktop_exec_arg(Path::new(r#"/opt/on"da/a\b`c$d%e/onda"#)).expect("valid");
+        assert_eq!(escaped, r#"/opt/on\\"da/a\\\\b\\`c\\$d%%e/onda"#);
+
+        assert!(escape_desktop_exec_arg(Path::new("/opt/onda\nExec=evil")).is_err());
+        assert!(escape_desktop_exec_arg(Path::new("/opt/onda\r")).is_err());
+        assert!(escape_desktop_exec_arg(Path::new("/opt/onda\0")).is_err());
     }
 }

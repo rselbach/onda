@@ -118,9 +118,12 @@ impl Hotkeys {
     /// Closes the hotkey channel, releases any Escape claim, and waits for the
     /// worker thread to finish. Idempotent.
     pub fn shutdown(&self) {
-        let sender = self.sender.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let (sender, escape) = {
+            let mut sender = self.sender.lock().unwrap_or_else(|e| e.into_inner());
+            let mut escape = self.escape.lock().unwrap_or_else(|e| e.into_inner());
+            (sender.take(), escape.take())
+        };
         drop(sender);
-        let escape = self.escape.lock().unwrap_or_else(|e| e.into_inner()).take();
         drop(escape);
         let worker = self.worker.lock().unwrap_or_else(|e| e.into_inner()).take();
         if let Some(worker) = worker
@@ -219,16 +222,23 @@ impl HotkeySource for Hotkeys {
         if super::process::wayland() {
             return Ok(());
         }
-        let mut escape = self.escape.lock().unwrap_or_else(|e| e.into_inner());
-        if escape.is_some() {
-            return Ok(());
+        {
+            let sender = self.sender.lock().unwrap_or_else(|e| e.into_inner());
+            let escape = self.escape.lock().unwrap_or_else(|e| e.into_inner());
+            if sender.is_none() || escape.is_some() {
+                return Ok(());
+            }
         }
         let events = self.events.clone();
         let claim = escape::Claim::new(modifiers, move || {
             send(&events, Message::Hotkey(HotkeyEvent::Cancel));
         })
         .map_err(|error| error.to_string())?;
-        *escape = Some(claim);
+        let sender = self.sender.lock().unwrap_or_else(|e| e.into_inner());
+        let mut escape = self.escape.lock().unwrap_or_else(|e| e.into_inner());
+        if sender.is_some() && escape.is_none() {
+            *escape = Some(claim);
+        }
         Ok(())
     }
     fn unregister_cancel(&self) {
@@ -367,12 +377,20 @@ async fn portal(
     held: &HeldKeys,
 ) -> anyhow::Result<()> {
     let trigger = trigger(shortcut)?;
-    let portal = GlobalShortcuts::with_connection(super::portal::connection().await?).await?;
-    let session = portal.create_session(Default::default()).await?;
+    let connection = tokio::select! {
+        result = super::portal::connection() => result?,
+        _ = changes.changed() => return Ok(()),
+    };
+    let portal = tokio::select! {
+        result = GlobalShortcuts::with_connection(connection) => result?,
+        _ = changes.changed() => return Ok(()),
+    };
+    let session = tokio::select! {
+        result = portal.create_session(Default::default()) => result?,
+        _ = changes.changed() => return Ok(()),
+    };
     let result = async {
-        let mut pressed = portal.receive_activated().await?;
-        let mut released = portal.receive_deactivated().await?;
-        let mut changed = portal.receive_shortcuts_changed().await?;
+        let mut signals = portal.receive_all_signals().await?;
         let mut closed = session.receive_closed().await?;
         let shortcuts = [NewShortcut::new(format!("dictation-{trigger}"), "Dictate with Onda").preferred_trigger(trigger.as_str())];
         let parent = DialogParent::ask(events).await;
@@ -390,19 +408,41 @@ async fn portal(
         loop {
             tokio::select! {
                 _ = changes.changed() => break,
-                event = pressed.next() => {
-                    anyhow::ensure!(event.is_some(), "shortcut connection closed");
-                    held.update(true);
-                    send(events, Message::Hotkey(HotkeyEvent::ComboDown));
-                }
-                event = released.next() => {
-                    anyhow::ensure!(event.is_some(), "shortcut connection closed");
-                    held.update(false);
-                    send(events, Message::Hotkey(HotkeyEvent::ComboUp));
-                }
-                event = changed.next() => {
-                    if let Some(event) = event { describe(event.shortcuts()); }
-                    else { anyhow::bail!("shortcut connection closed"); }
+                signal = signals.next() => {
+                    let Some(message) = signal else {
+                        anyhow::bail!("shortcut connection closed");
+                    };
+                    match message.header().member().map(|member| member.as_str()) {
+                        Some("Activated") => {
+                            if message
+                                .body()
+                                .deserialize::<ashpd::desktop::global_shortcuts::Activated>()
+                                .is_ok()
+                            {
+                                held.update(true);
+                                send(events, Message::Hotkey(HotkeyEvent::ComboDown));
+                            }
+                        }
+                        Some("Deactivated") => {
+                            if message
+                                .body()
+                                .deserialize::<ashpd::desktop::global_shortcuts::Deactivated>()
+                                .is_ok()
+                            {
+                                held.update(false);
+                                send(events, Message::Hotkey(HotkeyEvent::ComboUp));
+                            }
+                        }
+                        Some("ShortcutsChanged") => {
+                            if let Ok(event) = message
+                                .body()
+                                .deserialize::<ashpd::desktop::global_shortcuts::ShortcutsChanged>()
+                            {
+                                describe(event.shortcuts());
+                            }
+                        }
+                        _ => {}
+                    }
                 }
                 _ = closed.next() => {
                     send(events, Message::Hotkey(HotkeyEvent::Cancel));
@@ -412,8 +452,10 @@ async fn portal(
         }
         Ok(())
     }.await;
-    if let Err(error) = session.close().await {
-        tracing::debug!(%error, "closing shortcut session");
+    match tokio::time::timeout(Duration::from_secs(2), session.close()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => tracing::debug!(%error, "closing shortcut session"),
+        Err(_) => tracing::debug!("timed out closing shortcut session"),
     }
     result
 }

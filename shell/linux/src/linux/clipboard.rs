@@ -240,10 +240,21 @@ impl X11PasteKeys {
             let offset = usize::from(code.checked_sub(first_key)?);
             let key = symbols.get(offset)?;
             let group_count = usize::from(key.group_info & 0x0f);
-            let group = if group_count == 1 { 0 } else { group };
-            if group >= group_count {
+            if group_count == 0 {
                 return None;
             }
+            let group = if group < group_count {
+                group
+            } else {
+                match key.group_info & 0xc0 {
+                    0x40 => group_count - 1,
+                    0x80 => {
+                        let redirect = usize::from((key.group_info >> 4) & 0x03);
+                        if redirect < group_count { redirect } else { 0 }
+                    }
+                    _ => group % group_count,
+                }
+            };
             let key_type = types.get(usize::from(*key.kt_index.get(group)?))?;
             let level = key_type
                 .map
@@ -343,6 +354,24 @@ fn filter_x11_targets(types: &str) -> anyhow::Result<Vec<&str>> {
     Ok(targets)
 }
 
+fn is_empty_clipboard_error(
+    wayland: bool,
+    status: std::process::ExitStatus,
+    stderr: &[u8],
+) -> bool {
+    if status.code() != Some(1) {
+        return false;
+    }
+    let message = String::from_utf8_lossy(stderr).to_ascii_lowercase();
+    if wayland {
+        message.contains("nothing is copied") || message.contains("no selection")
+    } else {
+        message.contains("target targets not available")
+            || message.contains("selection clipboard not available")
+            || message.trim().is_empty()
+    }
+}
+
 fn validate_wayland_mime(mime: &str) -> anyhow::Result<&str> {
     anyhow::ensure!(
         !mime.is_empty() && !mime.starts_with('-'),
@@ -400,19 +429,40 @@ impl<'a> Paste<'a> {
                 deadline.saturating_duration_since(Instant::now()),
             )
         };
-        let types = if process::wayland() {
-            read(&["--list-types"])?
+        let wayland = process::wayland();
+        let types_output = if wayland {
+            process::run_for_output(
+                "wl-paste",
+                &["--list-types"],
+                &[],
+                deadline.saturating_duration_since(Instant::now()),
+            )?
         } else {
-            read(&["-selection", "clipboard", "-out", "-target", "TARGETS"])?
+            process::run_for_output(
+                "xclip",
+                &["-selection", "clipboard", "-out", "-target", "TARGETS"],
+                &[],
+                deadline.saturating_duration_since(Instant::now()),
+            )?
         };
-        let types = String::from_utf8(types)?;
+        if !types_output.status.success() {
+            if is_empty_clipboard_error(wayland, types_output.status, &types_output.stderr) {
+                return Ok(Vec::new());
+            }
+            anyhow::bail!(
+                "{} failed ({})",
+                if wayland { "wl-paste" } else { "xclip" },
+                types_output.status
+            );
+        }
+        let types = String::from_utf8(types_output.stdout)?;
         let mut formats: Vec<(String, Vec<u8>)> = Vec::new();
         let mut size = 0;
-        if process::wayland() {
-            for mime in types.lines().filter(|mime| {
-                !mime.is_empty()
-                    && !matches!(*mime, "TARGETS" | "TIMESTAMP" | "MULTIPLE" | "SAVE_TARGETS")
-            }) {
+        if wayland {
+            for mime in types
+                .lines()
+                .filter(|mime| !mime.is_empty() && !X11_SKIP_TARGETS.contains(mime))
+            {
                 let mime = validate_wayland_mime(mime)?;
                 let type_arg = format!("--type={mime}");
                 let bytes = read(&["--no-newline", &type_arg])?;
@@ -825,5 +875,74 @@ mod tests {
         assert!(validate_wayland_mime("").is_err());
         assert!(validate_wayland_mime("--clear").is_err());
         assert!(validate_wayland_mime("-n").is_err());
+    }
+
+    #[test]
+    fn xkb_out_of_range_group_handling_wraps_clamps_and_redirects() {
+        use xkb::SAType;
+        use xproto::ModMask;
+
+        let make_map = |v_group_info: u8, v_syms: Vec<u32>| xkb::GetMapMap {
+            modmap_rtrn: Some(vec![xkb::KeyModMap {
+                keycode: 37,
+                mods: ModMask::CONTROL,
+            }]),
+            types_rtrn: Some(vec![xkb::KeyType::default()]),
+            syms_rtrn: Some(vec![
+                xkb::KeySymMap {
+                    group_info: 1,
+                    width: 1,
+                    syms: vec![0xffe3],
+                    ..Default::default()
+                },
+                xkb::KeySymMap {
+                    group_info: v_group_info,
+                    width: 1,
+                    syms: v_syms,
+                    ..Default::default()
+                },
+            ]),
+            key_actions: Some(xkb::GetMapMapKeyActions {
+                acts_rtrn_count: vec![1, 0],
+                acts_rtrn_acts: vec![
+                    xkb::SASetMods {
+                        type_: SAType::SET_MODS,
+                        mask: ModMask::CONTROL,
+                        ..Default::default()
+                    }
+                    .into(),
+                ],
+            }),
+            ..Default::default()
+        };
+
+        let mut state = xkb::GetStateReply::default();
+        state.group = xkb::Group::M3; // index 2, out of range for 2-group key
+
+        // WrapIntoRange (0x00): 2 % 2 = 0 -> 'v' (0x76)
+        let wrap_map = make_map(0x02, vec![0x76, 0x06d7]);
+        assert_eq!(
+            X11PasteKeys::resolve(&wrap_map, 37, &state, false)
+                .unwrap()
+                .v,
+            38
+        );
+
+        // ClampIntoRange (0x40): group_count - 1 = 1 -> 0x06d7 (not 'v')
+        let clamp_map = make_map(0x40 | 0x02, vec![0x76, 0x06d7]);
+        assert!(X11PasteKeys::resolve(&clamp_map, 37, &state, false).is_err());
+
+        // RedirectIntoRange (0x80) to group 0 -> 'v' (0x76)
+        let redirect_map = make_map(0x80 | 0x02, vec![0x76, 0x06d7]);
+        assert_eq!(
+            X11PasteKeys::resolve(&redirect_map, 37, &state, false)
+                .unwrap()
+                .v,
+            38
+        );
+
+        // Zero groups: unmapped
+        let empty_map = make_map(0x00, vec![]);
+        assert!(X11PasteKeys::resolve(&empty_map, 37, &state, false).is_err());
     }
 }
