@@ -14,7 +14,7 @@ use std::time::{Instant, SystemTime};
 use onda_asr::ModelManifest;
 use sha2::{Digest, Sha256};
 
-use crate::validate::{manifest_file_path, validate_folder};
+use crate::validate::{check_no_symlinks, manifest_file_path, validate_folder};
 
 /// File name of the verification marker inside a model folder (ARCH-12: it
 /// never lives outside the models directory).
@@ -124,7 +124,14 @@ pub(crate) fn mark_verified(folder: &Path, manifest: &ModelManifest) {
 
 /// Hex SHA-256 of the file at `path`; `on_read` hears every chunk's length.
 pub(crate) fn sha256_file(path: &Path, on_read: &mut dyn FnMut(u64)) -> io::Result<String> {
-    let mut file = std::fs::File::open(path)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
+    }
+    let mut file = options.open(path)?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0; 1 << 20];
     loop {
@@ -148,9 +155,12 @@ pub(crate) fn sha256_file(path: &Path, on_read: &mut dyn FnMut(u64)) -> io::Resu
 fn marker_text(folder: &Path, manifest: &ModelManifest) -> io::Result<String> {
     let mut text = format!("{MARKER_HEADER}\n");
     for file in manifest.files {
-        let path = manifest_file_path(folder, file.path)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, file.path))?;
-        let meta = std::fs::metadata(path)?;
+        let Some(meta) = check_no_symlinks(folder, file.path)? else {
+            return Err(io::Error::new(io::ErrorKind::NotFound, file.path));
+        };
+        if !meta.file_type().is_file() {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, file.path));
+        }
         let modified = match meta.modified()?.duration_since(SystemTime::UNIX_EPOCH) {
             Ok(since) => since.as_nanos().to_string(),
             Err(before) => format!("-{}", before.duration().as_nanos()),
@@ -166,8 +176,20 @@ fn marker_text(folder: &Path, manifest: &ModelManifest) -> io::Result<String> {
 }
 
 fn marker_is_current(folder: &Path, want: &str) -> bool {
-    match std::fs::read_to_string(folder.join(VERIFIED_MARKER)) {
-        Ok(text) => text == want,
+    let marker = folder.join(VERIFIED_MARKER);
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
+    }
+    let mut text = String::new();
+    match options
+        .open(&marker)
+        .and_then(|mut file| file.read_to_string(&mut text))
+    {
+        Ok(_) => text == want,
         Err(error) if error.kind() == io::ErrorKind::NotFound => false,
         Err(error) => {
             tracing::warn!(%error, "could not read the verification marker");
@@ -182,6 +204,21 @@ fn write_marker(folder: &Path, text: &str) {
     let marker = folder.join(VERIFIED_MARKER);
     let prefix = format!("{VERIFIED_MARKER}.");
     let write = || -> io::Result<()> {
+        let folder_meta = std::fs::symlink_metadata(folder)?;
+        if folder_meta.file_type().is_symlink() || !folder_meta.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "model folder is not a real directory",
+            ));
+        }
+        if let Ok(meta) = std::fs::symlink_metadata(&marker)
+            && meta.file_type().is_symlink()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "verification marker is a symlink",
+            ));
+        }
         let mut tmp = tempfile::Builder::new()
             .prefix(&prefix)
             .suffix(".tmp")

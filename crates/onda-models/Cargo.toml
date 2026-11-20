@@ -17,6 +17,9 @@ tokio = { version = "1.54.1", features = ["fs", "io-util", "rt", "sync", "time",
 tokio-util = "0.7.20"
 tracing = "0.1.44"
 
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1.6", features = ["fs"] }
+
 [dev-dependencies]
 tokio = { version = "1.54.1", features = ["net"] }
 

@@ -29,6 +29,51 @@ pub(crate) fn manifest_file_path(folder: &Path, rel: &str) -> Option<PathBuf> {
     (count > 0).then_some(out)
 }
 
+/// Checks that `folder` (if it exists) and every existing path component of
+/// `rel` under `folder` are not symlinks. Returns `Ok(true)` if the final file
+/// exists as a regular file, `Ok(false)` if any component is missing, or
+/// `Err(io::Error)` if any component is a symlink or unreadable.
+pub(crate) fn check_no_symlinks(folder: &Path, rel: &str) -> io::Result<Option<std::fs::Metadata>> {
+    match std::fs::symlink_metadata(folder) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "symlink inside models directory",
+            ));
+        }
+        Ok(meta) if !meta.is_dir() => return Ok(None),
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    }
+    let mut current = folder.to_path_buf();
+    let components: Vec<_> = Path::new(rel).components().collect();
+    for (idx, component) in components.iter().enumerate() {
+        let Component::Normal(part) = component else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "unsafe manifest path",
+            ));
+        };
+        current.push(part);
+        let is_last = idx + 1 == components.len();
+        match std::fs::symlink_metadata(&current) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "symlink inside models directory",
+                ));
+            }
+            Ok(meta) if is_last => return Ok(Some(meta)),
+            Ok(meta) if meta.is_dir() => {}
+            Ok(_) => return Ok(None),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(None)
+}
+
 /// Checks a model folder against its manifest (DL-5): every file must exist
 /// with exactly the manifest size. Only metadata is read, so this is cheap
 /// enough for launch; hashes are checked when a file is downloaded and
@@ -40,8 +85,8 @@ pub(crate) fn manifest_file_path(folder: &Path, rel: &str) -> Option<PathBuf> {
 pub fn validate_folder(folder: &Path, manifest: &ModelManifest) -> FolderValidation {
     let all_files = || manifest.files.iter().map(|f| f.path.to_string()).collect();
     let has_weights = !manifest.files.iter().any(|f| is_weight(f.path));
-    match std::fs::metadata(folder) {
-        Ok(meta) if meta.is_dir() => {}
+    match std::fs::symlink_metadata(folder) {
+        Ok(meta) if !meta.file_type().is_symlink() && meta.is_dir() => {}
         Ok(_) => return missing_folder(all_files(), has_weights),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             return missing_folder(all_files(), has_weights);
@@ -65,9 +110,9 @@ pub fn validate_folder(folder: &Path, manifest: &ModelManifest) -> FolderValidat
     for file in manifest.files {
         let complete = match manifest_file_path(folder, file.path) {
             None => false,
-            Some(path) => match std::fs::metadata(path) {
-                Ok(meta) => meta.is_file() && meta.len() == file.size,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Some(_) => match check_no_symlinks(folder, file.path) {
+                Ok(Some(meta)) => meta.file_type().is_file() && meta.len() == file.size,
+                Ok(None) => false,
                 Err(error) => {
                     tracing::warn!(path = file.path, %error, "could not read model file");
                     false

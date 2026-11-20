@@ -18,5 +18,5 @@ mod tests;
 pub use error::Error;
 pub use event::{DownloadEvent, DownloadEventKind};
 pub use integrity::VERIFIED_MARKER;
-pub use manager::ModelManager;
+pub use manager::{DownloadOutcome, ModelManager};
 pub use validate::validate_folder;

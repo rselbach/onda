@@ -37,6 +37,27 @@ type Outcome = Option<Result<PathBuf, Error>>;
 
 /// Downloads, validates, and deletes model folders under one models
 /// directory. Cheap to clone; clones share downloads and the event channel.
+/// Outcome of a download request: either the folder was already complete under
+/// the manager's lock (so no download task ran or emitted events) or a download
+/// task completed and emitted its own events.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DownloadOutcome {
+    /// The folder was already complete; no download events were emitted.
+    AlreadyComplete(PathBuf),
+    /// A download task ran and emitted its own lifecycle events.
+    Downloaded(PathBuf),
+}
+
+impl DownloadOutcome {
+    /// The installed model folder path.
+    pub fn path(self) -> PathBuf {
+        match self {
+            Self::AlreadyComplete(path) | Self::Downloaded(path) => path,
+        }
+    }
+}
+
+/// Manages speech models under `<data>/Models/` (DL-1..DL-15).
 #[derive(Clone)]
 pub struct ModelManager {
     inner: Arc<Inner>,
@@ -216,15 +237,21 @@ impl ModelManager {
     /// Dropping the returned future does not stop the download; use
     /// [`ModelManager::cancel`].
     pub async fn download(&self, model: ModelId) -> Result<PathBuf, Error> {
+        self.fetch(model, false).await.map(DownloadOutcome::path)
+    }
+
+    /// Like [`ModelManager::download`], distinguishing an already-complete
+    /// folder (which emits no manager events) from a completed download task.
+    pub async fn download_or_complete(&self, model: ModelId) -> Result<DownloadOutcome, Error> {
         self.fetch(model, false).await
     }
 
     /// Checks and repairs installed files even when their sizes already match.
     pub async fn download_verified(&self, model: ModelId) -> Result<PathBuf, Error> {
-        self.fetch(model, true).await
+        self.fetch(model, true).await.map(DownloadOutcome::path)
     }
 
-    async fn fetch(&self, model: ModelId, check_existing: bool) -> Result<PathBuf, Error> {
+    async fn fetch(&self, model: ModelId, check_existing: bool) -> Result<DownloadOutcome, Error> {
         enum FetchAction {
             Join {
                 outcome: watch::Receiver<Outcome>,
@@ -250,7 +277,7 @@ impl ModelManager {
                     None => {
                         let folder = self.model_dir(model);
                         if !check_existing && validate_folder(&folder, manifest).is_complete() {
-                            return Ok(folder);
+                            return Ok(DownloadOutcome::AlreadyComplete(folder));
                         }
                         let token = CancellationToken::new();
                         let (sender, outcome) = watch::channel(None);
@@ -278,7 +305,7 @@ impl ModelManager {
                     // a cancelled download still winding down is not joined: wait for
                     // it to end, then start a fresh one
                     if joinable {
-                        return result;
+                        return result.map(DownloadOutcome::Downloaded);
                     }
                 }
             }
@@ -396,9 +423,30 @@ impl ModelManager {
     /// (DL-11). A deletion failure also reports a failed download. If a
     /// download is already running, its own task reports the outcome.
     pub async fn redownload(&self, model: ModelId) -> Result<PathBuf, Error> {
-        match self.delete(model) {
+        let manager = self.clone();
+        let deleted = tokio::task::spawn_blocking(move || manager.delete(model))
+            .await
+            .map_err(|error| Error::Io(format!("Could not delete model folder: {error}")))
+            .and_then(|res| res);
+        match deleted {
             Ok(()) | Err(Error::Model(ModelError::NotFound { .. })) => {}
-            Err(error @ Error::Downloading(_)) => return Err(error),
+            Err(error @ Error::Downloading(_)) => {
+                // If no in-process download is active, an external process holds the
+                // cross-process lock and will not emit a local event.
+                let local_download = matches!(
+                    self.inner.lock_active().get(&model),
+                    Some(ActiveEntry::Downloading(_))
+                );
+                if !local_download {
+                    self.inner.emit(
+                        model,
+                        DownloadEventKind::Failed {
+                            error: error.to_string(),
+                        },
+                    );
+                }
+                return Err(error);
+            }
             Err(error) => {
                 self.inner.emit(
                     model,
@@ -527,10 +575,12 @@ impl Inner {
             start: Instant::now(),
             throttle: ProgressThrottle::new(),
         };
-        let locked = tokio::task::spawn_blocking(move || lock_model_blocking(&lock_path))
-            .await
-            .map_err(|error| Error::Io(format!("Could not lock model folder: {error}")))
-            .and_then(|res| res);
+        let lock_token = token.clone();
+        let locked =
+            tokio::task::spawn_blocking(move || lock_model_blocking(&lock_path, &lock_token))
+                .await
+                .map_err(|error| Error::Io(format!("Could not lock model folder: {error}")))
+                .and_then(|res| res);
         let result = match locked {
             Ok(_file_lock) => {
                 if token.is_cancelled() {
@@ -636,6 +686,10 @@ impl Job<'_> {
             tracing::error!(%model, path = file.path, "refusing unsafe manifest file path");
             Error::UnsafePath(PathBuf::from(file.path))
         })?;
+        crate::validate::check_no_symlinks(folder, file.path).map_err(|_| {
+            tracing::error!(%model, path = file.path, "refusing symlink inside models directory");
+            Error::UnsafePath(dest.clone())
+        })?;
         if file_len(&dest).await == Some(file.size) {
             let Some(want) = file.sha256 else {
                 return Ok(false);
@@ -649,10 +703,41 @@ impl Job<'_> {
             }
         }
         let part = part_path(&dest);
+        if let Ok(meta) = tokio::fs::symlink_metadata(&part).await
+            && meta.file_type().is_symlink()
+        {
+            return Err(Error::UnsafePath(part));
+        }
         if let Some(parent) = dest.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
                 .map_err(|e| Error::Io(format!("Could not create {}: {e}", parent.display())))?;
+            crate::validate::check_no_symlinks(folder, file.path).map_err(|_| {
+                Error::UnsafePath(dest.clone())
+            })?;
+        }
+        // If a previous run left a full-sized `.part` file, verify it before
+        // entering the retry loop; if it is corrupt, remove it and download
+        // fresh from byte 0 instead of failing immediately.
+        if file_len(&part).await == Some(file.size) {
+            let valid = match file.sha256 {
+                Some(want) => match verify_sha256(model, &part, file.path, want, self.token).await {
+                    Ok(()) => true,
+                    Err(Error::Cancelled) => return Err(Error::Cancelled),
+                    Err(error) => {
+                        tracing::warn!(%model, path = file.path, %error, "discarding corrupt partial file and restarting");
+                        let _ = discard(&part, error).await;
+                        false
+                    }
+                },
+                None => true,
+            };
+            if valid {
+                tokio::fs::rename(&part, &dest)
+                    .await
+                    .map_err(|e| Error::Io(format!("Could not move {}: {e}", dest.display())))?;
+                return Ok(true);
+            }
         }
         let url = manifest.url(file);
         let mut retries = 0;
@@ -706,14 +791,14 @@ impl Job<'_> {
         done: u64,
     ) -> Result<(), Attempt> {
         let model = self.model;
-        let mut offset = file_len(part).await.unwrap_or(0);
-        if offset == file.size {
-            // a previous run stopped between the last byte and the hash check
-            return Ok(());
-        }
-        if offset > file.size {
-            offset = 0;
-        }
+        let mut offset = match file_len(part).await {
+            Some(len) if len == file.size => {
+                // a previous run stopped between the last byte and the hash check
+                return Ok(());
+            }
+            Some(len) if len < file.size => len,
+            _ => 0,
+        };
         let mut request = self.inner.client.get(url);
         if offset > 0 {
             tracing::info!(%model, path = file.path, offset, size = file.size, "resuming file");
@@ -748,11 +833,13 @@ impl Job<'_> {
                 }
                 offset = 0;
             }
-            StatusCode::RANGE_NOT_SATISFIABLE => {
+            StatusCode::RANGE_NOT_SATISFIABLE if offset > 0 => {
                 tracing::warn!(%model, path = file.path, offset, "partial file rejected by the server; restarting file");
-                tokio::fs::remove_file(part)
-                    .await
-                    .map_err(|e| io_attempt("delete", part, &e))?;
+                if let Err(e) = tokio::fs::remove_file(part).await
+                    && e.kind() != std::io::ErrorKind::NotFound
+                {
+                    return Err(io_attempt("delete", part, &e));
+                }
                 return Err(Attempt::Retry {
                     message: format!("HTTP {status}"),
                     timed_out: false,
@@ -785,9 +872,18 @@ impl Job<'_> {
         offset: u64,
         done: u64,
     ) -> Result<(), Attempt> {
-        let opened = match offset {
-            0 => tokio::fs::File::create(part).await,
-            _ => tokio::fs::OpenOptions::new().append(true).open(part).await,
+        let opened = {
+            let mut options = tokio::fs::OpenOptions::new();
+            if offset == 0 {
+                options.create(true).write(true).truncate(true);
+            } else {
+                options.append(true);
+            }
+            #[cfg(unix)]
+            {
+                options.custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
+            }
+            options.open(part).await
         };
         let mut out = opened.map_err(|e| io_attempt("open", part, &e))?;
         let mut written = offset;
@@ -885,8 +981,8 @@ async fn discard(part: &Path, error: Error) -> Error {
 }
 
 async fn file_len(path: &Path) -> Option<u64> {
-    let meta = tokio::fs::metadata(path).await.ok()?;
-    meta.is_file().then_some(meta.len())
+    let meta = tokio::fs::symlink_metadata(path).await.ok()?;
+    meta.file_type().is_file().then_some(meta.len())
 }
 
 fn part_path(dest: &Path) -> PathBuf {
@@ -905,11 +1001,12 @@ fn open_lock_file(path: &Path) -> std::io::Result<File> {
     {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
+        options.custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
     }
     options.open(path)
 }
 
-fn lock_model_blocking(path: &Path) -> Result<File, Error> {
+fn lock_model_blocking(path: &Path, token: &CancellationToken) -> Result<File, Error> {
     let io_err = |error: &std::io::Error| {
         Error::Io(format!(
             "Could not lock {}: {}",
@@ -918,6 +1015,16 @@ fn lock_model_blocking(path: &Path) -> Result<File, Error> {
         ))
     };
     let file = open_lock_file(path).map_err(|error| io_err(&error))?;
-    file.lock().map_err(|error| io_err(&error))?;
-    Ok(file)
+    loop {
+        if token.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(TryLockError::WouldBlock) => {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(TryLockError::Error(error)) => return Err(io_err(&error)),
+        }
+    }
 }

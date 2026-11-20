@@ -11,7 +11,7 @@ use onda_asr::{AsrError, LoadProgress, SpeechEngine};
 use onda_domain::languages::Language;
 use onda_domain::migration::REMOVED_MODEL_IDS;
 use onda_domain::models::{Catalog, ModelId};
-use onda_models::{DownloadEvent, DownloadEventKind, ModelManager};
+use onda_models::{DownloadEvent, DownloadEventKind, DownloadOutcome, ModelManager};
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -54,37 +54,34 @@ impl Models {
     }
 
     fn run(&self, model: ModelId, redownload: bool) {
-        // the manager reports nothing for a model that needs no download
-        let complete = self.manager.validate(model).map(|v| v.is_complete());
-        let listener = self.listener.clone();
-        match complete {
-            None => {
-                listener(DownloadUpdate {
-                    model,
-                    kind: DownloadUpdateKind::Failed {
-                        error: format!("Model '{model}' cannot be downloaded."),
-                    },
-                });
-                return;
-            }
-            Some(true) if !redownload => {
-                listener(DownloadUpdate {
-                    model,
-                    kind: DownloadUpdateKind::Finished,
-                });
-                return;
-            }
-            Some(_) => {}
+        if self.manager.validate(model).is_none() {
+            (self.listener)(DownloadUpdate {
+                model,
+                kind: DownloadUpdateKind::Failed {
+                    error: format!("Model '{model}' cannot be downloaded."),
+                },
+            });
+            return;
         }
         let manager = self.manager.clone();
+        let listener = self.listener.clone();
         self.runtime.spawn(async move {
             let result = match redownload {
-                true => manager.redownload(model).await,
-                false => manager.download(model).await,
+                true => manager.redownload(model).await.map(DownloadOutcome::Downloaded),
+                false => manager.download_or_complete(model).await,
             };
-            if let Err(error) = result {
-                // the manager already reported it through its events
-                tracing::warn!(%error, model = model.as_str(), "download ended without a model");
+            match result {
+                Ok(DownloadOutcome::AlreadyComplete(_)) => {
+                    listener(DownloadUpdate {
+                        model,
+                        kind: DownloadUpdateKind::Finished,
+                    });
+                }
+                Ok(DownloadOutcome::Downloaded(_)) => {}
+                Err(error) => {
+                    // the manager already reported it through its events
+                    tracing::warn!(%error, model = model.as_str(), "download ended without a model");
+                }
             }
         });
     }

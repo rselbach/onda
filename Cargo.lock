@@ -2739,6 +2739,7 @@ dependencies = [
  "onda-asr",
  "onda-domain",
  "reqwest",
+ "rustix",
  "sha2",
  "tempfile",
  "tokio",
