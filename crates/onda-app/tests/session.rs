@@ -2951,6 +2951,7 @@ async fn a_mute_ends_with_the_recording_not_the_delivery() {
 #[tokio::test]
 async fn dict_28a_quit_while_the_microphone_opens_resumes_media() {
     let h = Harness::with(|s| s.pause_media = true).await;
+    eventually("ready", || h.tray().icon == TrayIcon::Ready).await;
     h.media.playing_default.store(true, Ordering::SeqCst);
     let opening = h.audio.hold_next_start();
     h.stop_now();
