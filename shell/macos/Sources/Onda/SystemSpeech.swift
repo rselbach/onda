@@ -31,6 +31,10 @@ final class SystemSpeech: SystemSpeechPort, Sendable {
 
     /// How often asset-download progress is reported.
     private static let progressInterval = Duration.milliseconds(100)
+    /// Bounded wait for asset preparation (aligned with `LOAD_WAIT_TIMEOUT`).
+    private static let prepareTimeout: DispatchTimeInterval = .seconds(600)
+    /// Bounded wait for a single transcription call.
+    private static let transcribeTimeout: DispatchTimeInterval = .seconds(120)
 
     /// What each prepared locale runs with, by the identifier the core
     /// sent. The core runs one engine call at a time (ARCH-8).
@@ -51,13 +55,13 @@ final class SystemSpeech: SystemSpeechPort, Sendable {
     }
 
     func prepare(locale: String, progress: SpeechProgress) throws {
-        try Self.blocking {
+        try Self.blocking(timeout: Self.prepareTimeout) {
             _ = try await self.prepareLocale(locale, progress: progress)
         }
     }
 
     func transcribe(samples: [Float], locale: String) throws -> [String] {
-        try Self.blocking {
+        try Self.blocking(timeout: Self.transcribeTimeout) {
             let entry = try await self.cachedOrPrepared(locale)
             return try await Self.finalResults(of: samples, with: entry)
         }
@@ -130,7 +134,11 @@ final class SystemSpeech: SystemSpeechPort, Sendable {
                 }
             }
             defer { monitor.cancel() }
-            try await request.downloadAndInstall()
+            try await withTaskCancellationHandler {
+                try await request.downloadAndInstall()
+            } onCancel: {
+                downloaded.cancel()
+            }
             progress?.report(fraction: 1)
         }
         let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [module])
@@ -253,6 +261,7 @@ final class SystemSpeech: SystemSpeechPort, Sendable {
     /// it finishes. Never called on the main thread: the core calls ports
     /// from its own threads, and waiting here would stall the UI.
     private static func blocking<Value: Sendable>(
+        timeout: DispatchTimeInterval,
         _ work: @escaping @Sendable () async throws -> Value
     ) throws -> Value {
         if Thread.isMainThread {
@@ -260,7 +269,7 @@ final class SystemSpeech: SystemSpeechPort, Sendable {
         }
         let outcome = Answer<Result<Value, SpeechError>?>(nil)
         let done = DispatchSemaphore(value: 0)
-        Task.detached {
+        let task = Task.detached {
             do {
                 let value = try await work()
                 outcome.set(.success(value))
@@ -269,7 +278,10 @@ final class SystemSpeech: SystemSpeechPort, Sendable {
             }
             done.signal()
         }
-        done.wait()
+        if done.wait(timeout: .now() + timeout) == .timedOut {
+            task.cancel()
+            throw SpeechError.Cancelled
+        }
         guard let result = outcome.get() else {
             throw SpeechError.Failed(message: "system speech finished without a result")
         }

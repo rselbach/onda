@@ -9,6 +9,9 @@ import OndaCore
 /// The core calls `respond` from its background threads and it blocks, so
 /// the async work runs in a detached task while the caller waits.
 final class OnDeviceCleanup: OnDeviceCleanupPort, Sendable {
+    /// Aligned with the core's cleanup `REQUEST_TIMEOUT` (20 s).
+    private static let respondTimeout: DispatchTimeInterval = .seconds(20)
+
     func availability() -> OnDeviceAvailability {
         switch SystemLanguageModel.default.availability {
         case .available:
@@ -30,7 +33,7 @@ final class OnDeviceCleanup: OnDeviceCleanupPort, Sendable {
         }
         let outcome = Answer<Result<String, OnDeviceError>?>(nil)
         let done = DispatchSemaphore(value: 0)
-        Task.detached {
+        let task = Task.detached {
             do {
                 let session = LanguageModelSession(instructions: instructions)
                 let response = try await session.respond(
@@ -43,7 +46,10 @@ final class OnDeviceCleanup: OnDeviceCleanupPort, Sendable {
             }
             done.signal()
         }
-        done.wait()
+        if done.wait(timeout: .now() + Self.respondTimeout) == .timedOut {
+            task.cancel()
+            throw OnDeviceError.Failed(message: "The on-device model timed out.")
+        }
         guard let result = outcome.get() else {
             throw OnDeviceError.Failed(message: "the on-device model finished without a result")
         }

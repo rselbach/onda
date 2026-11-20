@@ -8,6 +8,7 @@ import Darwin
 enum OutputMute {
     private static let system = AudioObjectID(kAudioObjectSystemObject)
     private static let tokens = MutedTokens()
+    private static let watcher = DeviceReconnectWatcher()
 
     /// File in the data folder that lists, one per line, the UIDs of devices
     /// Onda muted, so a run that crashed or quit mid-session is undone at
@@ -16,13 +17,18 @@ enum OutputMute {
 
     /// Unmutes the devices an earlier run muted and never unmuted. A device
     /// stays listed until it is seen unmuted, so one that is unplugged now
-    /// is unmuted at a later launch.
+    /// is unmuted when it reconnects or at a later launch.
     static func restore(record: URL) {
         let pending = recorded(record).filter { uid in !restored(uid) }
         do {
             try remember(pending, in: record)
         } catch {
             Log.media.warning("Could not update the muted-output record: \(error.localizedDescription, privacy: .public)")
+        }
+        if pending.isEmpty {
+            watcher.stop()
+        } else {
+            watcher.watch(record: record)
         }
     }
 
@@ -85,25 +91,30 @@ enum OutputMute {
     }
 
     static func unmute(_ token: UInt32, record: URL) -> Bool {
-        guard let uid = tokens.uid(for: token) else {
+        guard let uid = tokens.take(token) else {
             Log.media.warning("Unknown mute token \(token, privacy: .public)")
             return false
         }
         guard let device = device(uid: uid) else {
             Log.media.warning("Audio output \(uid, privacy: .public) is no longer available to unmute")
+            watcher.watch(record: record)
             return false
         }
         let unmuted = set(muted: false, on: device)
         guard unmuted else {
-            // the record stays, so the next launch tries again
+            // the record stays, so reconnect or the next launch tries again
             Log.media.warning("Could not unmute audio output \(device, privacy: .public)")
+            watcher.watch(record: record)
             return false
         }
-        tokens.remove(token)
+        let remaining = recorded(record).filter { $0 != uid }
         do {
-            try remember(recorded(record).filter { $0 != uid }, in: record)
+            try remember(remaining, in: record)
         } catch {
             Log.media.warning("Could not update the muted-output record: \(error.localizedDescription, privacy: .public)")
+        }
+        if remaining.isEmpty {
+            watcher.stop()
         }
         return true
     }
@@ -178,13 +189,14 @@ enum OutputMute {
     }
 
     private static func isMuted(on device: AudioObjectID) -> Bool? {
-        if let main = value(
-            kAudioDevicePropertyMute,
-            kAudioDevicePropertyScopeOutput,
-            element: kAudioObjectPropertyElementMain,
-            of: device,
-            UInt32(0)
-        ) {
+        if hasSettableMute(on: device, element: kAudioObjectPropertyElementMain),
+           let main = value(
+               kAudioDevicePropertyMute,
+               kAudioDevicePropertyScopeOutput,
+               element: kAudioObjectPropertyElementMain,
+               of: device,
+               UInt32(0)
+           ) {
             return main == 1
         }
         let channels = [AudioObjectPropertyElement(1), AudioObjectPropertyElement(2)].compactMap { element in
@@ -277,13 +289,64 @@ private final class MutedTokens: @unchecked Sendable {
         }
     }
 
-    func uid(for token: UInt32) -> String? {
-        lock.withLock { uids[token] }
+    func take(_ token: UInt32) -> String? {
+        lock.withLock {
+            uids.removeValue(forKey: token)
+        }
+    }
+}
+
+/// Watches CoreAudio device-list changes while muted-output has pending UIDs so
+/// reconnecting a disconnected output device unmutes it without restarting Onda.
+private final class DeviceReconnectWatcher: @unchecked Sendable {
+    private let lock = NSLock()
+    private let queue = DispatchQueue(label: "com.rselbach.onda.output-mute-reconnect")
+    private var listener: AudioObjectPropertyListenerBlock?
+    private var record: URL?
+
+    func watch(record: URL) {
+        lock.withLock {
+            self.record = record
+            guard listener == nil else { return }
+            var address = AudioObjectPropertyAddress(
+                mSelector: kAudioHardwarePropertyDevices,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+                guard let self, let url = self.lock.withLock({ self.record }) else { return }
+                OutputMute.restore(record: url)
+            }
+            let status = AudioObjectAddPropertyListenerBlock(
+                AudioObjectID(kAudioObjectSystemObject),
+                &address,
+                queue,
+                block
+            )
+            if status == noErr {
+                listener = block
+            } else {
+                Log.media.warning("Could not install output reconnect listener: \(status, privacy: .public)")
+            }
+        }
     }
 
-    func remove(_ token: UInt32) {
-        _ = lock.withLock {
-            uids.removeValue(forKey: token)
+    func stop() {
+        lock.withLock {
+            record = nil
+            guard let block = listener else { return }
+            listener = nil
+            var address = AudioObjectPropertyAddress(
+                mSelector: kAudioHardwarePropertyDevices,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            AudioObjectRemovePropertyListenerBlock(
+                AudioObjectID(kAudioObjectSystemObject),
+                &address,
+                queue,
+                block
+            )
         }
     }
 }
