@@ -75,7 +75,7 @@ impl Actor {
                     return;
                 }
                 self.hotkeys.combo_down = true;
-                self.key_down();
+                self.key_down(false);
             }
             HotkeyEvent::ComboUp => {
                 // only a tracked press is released: HOT-18 already sent the
@@ -119,7 +119,7 @@ impl Actor {
                 self.hotkeys.debounce = Some(self.timer(after, Msg::Debounce(token)));
             }
             GestureAction::CancelDebounce => self.hotkeys.debounce = None,
-            GestureAction::Down => self.key_down(),
+            GestureAction::Down => self.key_down(true),
             GestureAction::Up => self.key_up(),
             GestureAction::Discard => {
                 let intent = self.press.discard(self.snapshot());
@@ -150,7 +150,7 @@ impl Actor {
                 tracing::error!(
                     "the OS keeps disabling the hotkey event stream; giving up (Accessibility was likely revoked)"
                 );
-                self.effects.send(Effect::UnregisterHotkey);
+                self.unregister_hotkey();
                 self.check_hotkey_failure(Some(self.hotkeys.generation), status);
             }
             StreamDisableDecision::AlreadyDead => {}

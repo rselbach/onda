@@ -384,6 +384,7 @@ pub(crate) struct Actor {
     events: Arc<EventBus>,
     effects: Effects,
     media: Option<Media>,
+    audio_queue: Option<SerialQueue>,
     service: TranscriptionService,
     settings: Arc<Settings>,
     phase: Phase,
@@ -459,6 +460,7 @@ impl Actor {
             events,
             effects,
             media,
+            audio_queue: None,
             service,
             settings,
             phase: Phase::Idle,
@@ -733,12 +735,12 @@ impl Actor {
 
     // --- hotkey presses (HOT-24..HOT-33) ---
 
-    fn key_down(&mut self) {
+    fn key_down(&mut self, debounced: bool) {
         self.refresh_settings();
         let mut down_at = mono(self.origin);
         // a lone-modifier press gets here only once its debounce has run,
         // and Automatic measures the hold from the physical press
-        if self.settings.hotkey.is_lone_modifier() {
+        if debounced {
             down_at = down_at.saturating_sub(LONE_MODIFIER_DEBOUNCE);
         }
         let intent = self
@@ -915,15 +917,13 @@ impl Actor {
             StartKind::Record { provisional } => {
                 let media_begun = !provisional && self.begin_media(id, &starting.settings);
                 let audio = self.ports.audio.clone();
+                let opened = self.audio_queue().run(move || audio.start());
                 let task = self.spawn(async move {
-                    let result =
-                        spawn_blocking(move || audio.start())
-                            .await
-                            .unwrap_or_else(|error| {
-                                Err(UserMessage::AudioProcessingError {
-                                    error: error.to_string(),
-                                })
-                            });
+                    let result = opened.await.unwrap_or_else(|error| {
+                        Err(UserMessage::AudioProcessingError {
+                            error: error.to_string(),
+                        })
+                    });
                     Msg::CaptureOpened { id, result }
                 });
                 self.phase = Phase::Starting(Starting {
@@ -998,7 +998,7 @@ impl Actor {
                     started_at: now,
                     target: opening.target,
                     settings: starting.settings,
-                    media_begun: opening.media_begun,
+                    media_begun,
                     preview,
                     last_preview: None,
                     silent: SilentMicDetector::default(),
@@ -1576,9 +1576,15 @@ impl Actor {
         }
     }
 
-    fn discard_capture(&self) {
+    fn audio_queue(&mut self) -> SerialQueue {
+        self.audio_queue
+            .get_or_insert_with(|| SerialQueue::start("audio-capture"))
+            .clone()
+    }
+
+    fn discard_capture(&mut self) {
         let audio = self.ports.audio.clone();
-        spawn_blocking(move || {
+        self.audio_queue().enqueue(move || {
             let _ = audio.stop();
         });
     }

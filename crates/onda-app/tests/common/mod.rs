@@ -499,6 +499,7 @@ pub struct FakeAudio {
     pub stops: AtomicUsize,
     pub released_at: Mutex<Option<usize>>,
     hold_start: Mutex<Option<Arc<Hold>>>,
+    hold_stop: Mutex<Option<Arc<Hold>>>,
 }
 
 impl FakeAudio {
@@ -506,6 +507,13 @@ impl FakeAudio {
     pub fn hold_next_start(&self) -> Arc<Hold> {
         let hold = Hold::new();
         *lock(&self.hold_start) = Some(hold.clone());
+        hold
+    }
+
+    /// Blocks the next `stop` until the hold is released.
+    pub fn hold_next_stop(&self) -> Arc<Hold> {
+        let hold = Hold::new();
+        *lock(&self.hold_stop) = Some(hold.clone());
         hold
     }
 
@@ -552,6 +560,7 @@ impl AudioSource for FakeAudio {
 
     fn stop(&self) -> Vec<f32> {
         self.stops.fetch_add(1, Ordering::SeqCst);
+        wait_at(&self.hold_stop);
         self.open.store(false, Ordering::SeqCst);
         std::mem::take(&mut *lock(&self.buffer))
     }
