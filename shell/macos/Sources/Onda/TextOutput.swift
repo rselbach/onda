@@ -18,6 +18,7 @@ final class TextOutput: TextOutputPort, @unchecked Sendable {
     private static let restoreDelay: TimeInterval = 0.5
     private static let vKey: CGKeyCode = 0x09
     private static let keyLookupTimeout: DispatchTimeInterval = .milliseconds(100)
+    private static let pasteboardLock = NSLock()
     static let transientType = NSPasteboard.PasteboardType("org.nspasteboard.TransientType")
 
     func focusedTarget() -> TargetApp? {
@@ -68,23 +69,27 @@ final class TextOutput: TextOutputPort, @unchecked Sendable {
     }
 
     func copy(text: String) -> Bool {
-        Self.writeTranscript(text, to: .general, transient: false)
+        Self.pasteboardLock.withLock {
+            Self.writeTranscript(text, to: .general, transient: false) != nil
+        }
     }
 
-    static func writeTranscript(_ text: String, to pasteboard: NSPasteboard, transient: Bool) -> Bool {
+    @discardableResult
+    static func writeTranscript(_ text: String, to pasteboard: NSPasteboard, transient: Bool) -> Int? {
         let item = NSPasteboardItem()
         guard item.setString(text, forType: .string),
               !transient || item.setData(Data(), forType: transientType)
         else {
             Log.output.error("Could not copy the transcript to the clipboard")
-            return false
+            return nil
         }
-        pasteboard.clearContents()
+        let changeCount = pasteboard.clearContents()
         let copied = pasteboard.writeObjects([item])
         if !copied {
             Log.output.error("Could not copy the transcript to the clipboard")
+            return nil
         }
-        return copied
+        return changeCount
     }
 
     // MARK: - Strategies
@@ -191,31 +196,78 @@ final class TextOutput: TextOutputPort, @unchecked Sendable {
     /// Strategy 4: paste, then restore the previous clipboard only if
     /// nothing else changed it meanwhile.
     private func pasteWithRestore(_ text: String) -> InsertResult {
-        let pasteboard = NSPasteboard.general
-        let snapshot = PasteboardSnapshot.capture(from: pasteboard)
-        guard Self.writeTranscript(text, to: pasteboard, transient: true) else {
-            // OUT-6: put back what was there before reporting
-            if !snapshot.restore(to: pasteboard) {
-                Log.output.error("Could not restore the clipboard after a failed copy")
+        Self.pasteWithRestore(
+            text,
+            on: .general,
+            lock: Self.pasteboardLock,
+            pasteDelay: Self.pasteDelay,
+            restoreDelay: Self.restoreDelay
+        ) {
+            let source = CGEventSource(stateID: .hidSystemState)
+            let pasteKey = Self.virtualKeyForV()
+            guard let down = CGEvent(keyboardEventSource: source, virtualKey: pasteKey, keyDown: true),
+                  let up = CGEvent(keyboardEventSource: source, virtualKey: pasteKey, keyDown: false) else {
+                // OUT-4: the transcript stays on the clipboard
+                Log.output.error("Could not create the paste key event")
+                return nil
             }
+            down.flags = .maskCommand
+            up.flags = .maskCommand
+            return {
+                down.post(tap: .cghidEventTap)
+                up.post(tap: .cghidEventTap)
+            }
+        }
+    }
+
+    static func pasteWithRestore(
+        _ text: String,
+        on pasteboard: NSPasteboard,
+        lock: NSLock,
+        pasteDelay: TimeInterval,
+        restoreDelay: TimeInterval,
+        afterWrite: () -> Void = {},
+        afterPaste: () -> Void = {},
+        preparePaste: () -> (() -> Void)?
+    ) -> InsertResult {
+        let prepared: (snapshot: PasteboardSnapshot, written: Int)? = lock.withLock {
+            let snapshot = PasteboardSnapshot.capture(from: pasteboard)
+            guard let written = writeTranscript(text, to: pasteboard, transient: true) else {
+                // OUT-6: put back what was there before reporting
+                if !snapshot.restore(to: pasteboard) {
+                    Log.output.error("Could not restore the clipboard after a failed copy")
+                }
+                return nil
+            }
+            return (snapshot, written)
+        }
+        guard let (snapshot, written) = prepared else {
             return .copyFailed
         }
-        let written = pasteboard.changeCount
-        Thread.sleep(forTimeInterval: Self.pasteDelay)
-        let source = CGEventSource(stateID: .hidSystemState)
-        let pasteKey = Self.virtualKeyForV()
-        guard let down = CGEvent(keyboardEventSource: source, virtualKey: pasteKey, keyDown: true),
-              let up = CGEvent(keyboardEventSource: source, virtualKey: pasteKey, keyDown: false) else {
-            // OUT-4: the transcript stays on the clipboard
-            Log.output.error("Could not create the paste key event")
+        afterWrite()
+        if pasteDelay > 0 {
+            Thread.sleep(forTimeInterval: pasteDelay)
+        }
+        guard let postPaste = preparePaste() else {
             return .pasteFailed
         }
-        down.flags = .maskCommand
-        up.flags = .maskCommand
-        down.post(tap: .cghidEventTap)
-        up.post(tap: .cghidEventTap)
-        Thread.sleep(forTimeInterval: Self.restoreDelay)
-        switch snapshot.restore(to: pasteboard, ifChangeCountIs: written) {
+        let posted = lock.withLock {
+            guard pasteboard.changeCount == written else { return false }
+            postPaste()
+            return true
+        }
+        guard posted else {
+            Log.output.info("Clipboard changed before the paste; skipping paste")
+            return .pasteInterrupted
+        }
+        afterPaste()
+        if restoreDelay > 0 {
+            Thread.sleep(forTimeInterval: restoreDelay)
+        }
+        let outcome = lock.withLock {
+            snapshot.restore(to: pasteboard, ifChangeCountIs: written)
+        }
+        switch outcome {
         case .restored:
             return .inserted
         case .changed:
@@ -233,27 +285,73 @@ final class TextOutput: TextOutputPort, @unchecked Sendable {
         if Thread.isMainThread {
             return lookupVirtualKeyForV()
         }
-        final class Box: @unchecked Sendable {
-            var code: CGKeyCode?
-        }
-        let box = Box()
+        return resolveVirtualKeyOnQueue(
+            timeout: keyLookupTimeout,
+            schedule: { DispatchQueue.main.async(execute: $0) },
+            lookup: lookupVirtualKeyForV
+        )
+    }
+
+    static func resolveVirtualKeyOnQueue(
+        timeout: DispatchTimeInterval,
+        schedule: (@escaping @Sendable () -> Void) -> Void,
+        lookup: @escaping @Sendable () -> CGKeyCode
+    ) -> CGKeyCode {
+        let answer = Answer<CGKeyCode?>(nil)
         let done = DispatchSemaphore(value: 0)
-        DispatchQueue.main.async {
-            box.code = lookupVirtualKeyForV()
+        schedule {
+            answer.set(lookup())
             done.signal()
         }
-        _ = done.wait(timeout: .now() + keyLookupTimeout)
-        return box.code ?? vKey
+        guard done.wait(timeout: .now() + timeout) == .success else {
+            return vKey
+        }
+        return answer.get() ?? vKey
     }
 
     private static func lookupVirtualKeyForV() -> CGKeyCode {
-        guard let source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
-              let raw = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData)
-        else { return vKey }
-        let data = Unmanaged<CFData>.fromOpaque(raw).takeUnretainedValue()
-        guard let bytes = CFDataGetBytePtr(data) else { return vKey }
-        let layout = UnsafeRawPointer(bytes).assumingMemoryBound(to: UCKeyboardLayout.self)
         let keyboardType = UInt32(LMGetKbdType())
+        if let source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
+           let code = virtualKeyForV(in: source, keyboardType: keyboardType) {
+            return code
+        }
+        if let source = TISCopyCurrentASCIICapableKeyboardLayoutInputSource()?.takeRetainedValue(),
+           let code = virtualKeyForV(in: source, keyboardType: keyboardType) {
+            return code
+        }
+        return vKey
+    }
+
+    static func virtualKeyForV(in source: TISInputSource, keyboardType: UInt32 = UInt32(LMGetKbdType())) -> CGKeyCode? {
+        guard let raw = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData) else {
+            return nil
+        }
+        let data = Unmanaged<CFData>.fromOpaque(raw).takeUnretainedValue()
+        return virtualKeyForV(in: data, keyboardType: keyboardType)
+    }
+
+    static func virtualKeyForV(in layoutData: CFData, keyboardType: UInt32 = UInt32(LMGetKbdType())) -> CGKeyCode? {
+        guard let bytes = CFDataGetBytePtr(layoutData) else { return nil }
+        let layout = UnsafeRawPointer(bytes).assumingMemoryBound(to: UCKeyboardLayout.self)
+        // Check the Command modifier table first so layouts like Dvorak - QWERTY ⌘
+        // resolve Cmd+V to QWERTY V (0x09) rather than unmodified 'v' (0x2F, Cmd+.).
+        for modifierKeyState in [UInt32(cmdKey >> 8), 0] {
+            if let code = findVirtualKeyForV(
+                in: layout,
+                modifierKeyState: modifierKeyState,
+                keyboardType: keyboardType
+            ) {
+                return code
+            }
+        }
+        return nil
+    }
+
+    private static func findVirtualKeyForV(
+        in layout: UnsafePointer<UCKeyboardLayout>,
+        modifierKeyState: UInt32,
+        keyboardType: UInt32
+    ) -> CGKeyCode? {
         var uppercaseFallback: CGKeyCode?
         for code in UInt16(0) ..< UInt16(128) {
             var deadKeyState: UInt32 = 0
@@ -263,7 +361,7 @@ final class TextOutput: TextOutputPort, @unchecked Sendable {
                 layout,
                 code,
                 UInt16(kUCKeyActionDisplay),
-                0,
+                modifierKeyState,
                 keyboardType,
                 OptionBits(kUCKeyTranslateNoDeadKeysBit),
                 &deadKeyState,
@@ -279,7 +377,7 @@ final class TextOutput: TextOutputPort, @unchecked Sendable {
                 uppercaseFallback = CGKeyCode(code)
             }
         }
-        return uppercaseFallback ?? vKey
+        return uppercaseFallback
     }
 
     // MARK: - Accessibility helpers
@@ -395,28 +493,43 @@ final class TextOutput: TextOutputPort, @unchecked Sendable {
 struct PasteboardSnapshot {
     static let maxSnapshotBytes = 32 * 1024 * 1024
 
-    private let items: [[NSPasteboard.PasteboardType: Data?]]
+    private struct Representation {
+        let type: NSPasteboard.PasteboardType
+        let data: Data
+    }
+
+    private static let markerTypes: Set<NSPasteboard.PasteboardType> = [
+        NSPasteboard.PasteboardType("org.nspasteboard.TransientType"),
+        NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType"),
+        NSPasteboard.PasteboardType("org.nspasteboard.AutoGeneratedType")
+    ]
+
+    private let items: [[Representation]]
     let restorable: Bool
 
     static func capture(
         from pasteboard: NSPasteboard,
         maxBytes: Int = PasteboardSnapshot.maxSnapshotBytes
     ) -> PasteboardSnapshot {
-        var captured: [[NSPasteboard.PasteboardType: Data?]] = []
+        var captured: [[Representation]] = []
         var totalBytes = 0
         for item in pasteboard.pasteboardItems ?? [] {
-            var types: [NSPasteboard.PasteboardType: Data?] = [:]
+            var representations: [Representation] = []
+            representations.reserveCapacity(item.types.count)
             for type in item.types {
-                let data = item.data(forType: type)
-                if let data {
+                if let data = item.data(forType: type) {
                     totalBytes += data.count
                     if totalBytes > maxBytes {
                         return PasteboardSnapshot(items: [], restorable: false)
                     }
+                    representations.append(Representation(type: type, data: data))
+                } else if markerTypes.contains(type) {
+                    representations.append(Representation(type: type, data: Data()))
                 }
-                types.updateValue(data, forKey: type)
             }
-            captured.append(types)
+            if !representations.isEmpty {
+                captured.append(representations)
+            }
         }
         return PasteboardSnapshot(items: captured, restorable: true)
     }
@@ -453,10 +566,10 @@ struct PasteboardSnapshot {
         guard restorable else { return nil }
         var restored: [NSPasteboardItem] = []
         restored.reserveCapacity(items.count)
-        for item in items {
+        for representations in items {
             let pasteboardItem = NSPasteboardItem()
-            for (type, data) in item {
-                guard pasteboardItem.setData(data ?? Data(), forType: type) else { return nil }
+            for representation in representations {
+                guard pasteboardItem.setData(representation.data, forType: representation.type) else { return nil }
             }
             restored.append(pasteboardItem)
         }

@@ -108,6 +108,8 @@ pub enum InsertResult {
     TargetLeft,
     /// The paste key event could not be created (OUT-4).
     PasteFailed,
+    /// Something else changed the clipboard before the paste key event was posted.
+    PasteInterrupted,
     /// The previous clipboard could not be restored (OUT-5).
     ClipboardRestoreFailed,
     /// Copying to the clipboard failed (OUT-6).
@@ -479,6 +481,7 @@ impl TextOutput for Shell {
             InsertResult::Inserted => InsertOutcome::Inserted,
             InsertResult::TargetLeft => InsertOutcome::TargetLeft,
             InsertResult::PasteFailed => InsertOutcome::PasteFailed,
+            InsertResult::PasteInterrupted => InsertOutcome::PasteInterrupted,
             InsertResult::ClipboardRestoreFailed => InsertOutcome::ClipboardRestoreFailed,
             InsertResult::CopyFailed => InsertOutcome::CopyFailed,
             InsertResult::Cancelled => InsertOutcome::Cancelled,
