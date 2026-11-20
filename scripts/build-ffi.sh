@@ -42,12 +42,16 @@ main() {
       ;;
   esac
 
-  local lib_dir="${ROOT}/target/${TARGET}/${profile}"
+  local lib_dir="${ROOT}/target/${profile}"
+  if [[ "$(uname -m)" != "arm64" ]]; then
+    cargo_flags+=(--target "${TARGET}")
+    lib_dir="${ROOT}/target/${TARGET}/${profile}"
+  fi
   STAGING="$(mktemp -d)"
   trap cleanup EXIT
 
   cargo build --manifest-path "${ROOT}/Cargo.toml" -p onda-ffi \
-    --target "${TARGET}" ${cargo_flags[@]+"${cargo_flags[@]}"}
+    ${cargo_flags[@]+"${cargo_flags[@]}"}
 
   cargo run --quiet --manifest-path "${ROOT}/Cargo.toml" -p uniffi-bindgen -- \
     generate --library "${lib_dir}/libonda_ffi.dylib" \
@@ -56,7 +60,9 @@ main() {
   mkdir -p "${STAGING}/headers" "${SWIFT_OUT}" "${GENERATED_DIR}"
   mv "${STAGING}/onda_ffiFFI.h" "${STAGING}/headers/"
   mv "${STAGING}/onda_ffiFFI.modulemap" "${STAGING}/headers/module.modulemap"
-  mv "${STAGING}/onda_ffi.swift" "${SWIFT_OUT}/onda_ffi.swift"
+  if ! cmp -s "${STAGING}/onda_ffi.swift" "${SWIFT_OUT}/onda_ffi.swift"; then
+    mv "${STAGING}/onda_ffi.swift" "${SWIFT_OUT}/onda_ffi.swift"
+  fi
 
   rm -rf "${GENERATED_DIR}/OndaFFI.xcframework"
   xcodebuild -create-xcframework \

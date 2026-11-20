@@ -29,14 +29,34 @@ wait_for_file() {
   return 1
 }
 
-# Passes its arguments to the test harness of the GTK shell.
-gui_tests() {
+resolve_test_binary() {
   if [[ -n "${ONDA_GUI_TEST_BINARY:-}" ]]; then
-    "${ONDA_GUI_TEST_BINARY}" "$@"
+    printf '%s\n' "${ONDA_GUI_TEST_BINARY}"
     return
   fi
-  cargo test --locked --manifest-path "${root}/Cargo.toml" -p onda-linux \
-    -- "$@"
+  cargo test --locked --no-run --manifest-path "${root}/Cargo.toml" \
+    -p onda-linux --bin onda --message-format=json \
+    | python3 -c '
+import json, sys
+executables = [
+    msg["executable"]
+    for line in sys.stdin
+    if line.startswith("{")
+    for msg in (json.loads(line),)
+    if msg.get("reason") == "compiler-artifact"
+    and msg.get("target", {}).get("name") == "onda"
+    and msg.get("profile", {}).get("test")
+    and msg.get("executable")
+]
+if len(executables) != 1:
+    sys.exit(f"expected 1 onda test binary, found {len(executables)}")
+print(executables[0])
+'
+}
+
+# Passes its arguments to the test harness of the GTK shell.
+gui_tests() {
+  "${test_binary}" "$@"
 }
 
 # Adds a line to the request log through the proxy. The proxy answers in
@@ -62,6 +82,7 @@ main() {
   fi
   work="$(mktemp -d)"
   trap cleanup EXIT
+  test_binary="$(resolve_test_binary)"
   # the harness prints one "<name>: test" line for each test
   local listing
   listing="$(gui_tests --list --ignored --skip ::tests::wayland_)"
@@ -112,11 +133,13 @@ main() {
   export HTTPS_PROXY="${proxy}" https_proxy="${proxy}" HTTP_PROXY="${proxy}"
   export http_proxy="${proxy}" ALL_PROXY="${proxy}" all_proxy="${proxy}"
   unset NO_PROXY no_proxy
-  local name
+  local name test_timeout
+  test_timeout="${ONDA_GUI_TEST_TIMEOUT:-60}"
   for name in "${tests[@]}"; do
     ONDA_DATA_DIR="$(mktemp -d "${work}/onda.XXXXXX")"
     export ONDA_DATA_DIR
-    gui_tests "${name}" --exact --ignored --test-threads=1
+    timeout --kill-after=10 "${test_timeout}" \
+      "${test_binary}" "${name}" --exact --ignored --test-threads=1
     mark_requests "end of ${name}"
     if grep -qF "${MODEL_HOST}" "${work}/requests"; then
       echo "${name} tried to reach ${MODEL_HOST}, the host of the speech" \
