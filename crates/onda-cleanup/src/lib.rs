@@ -16,7 +16,7 @@ use std::time::Duration;
 use onda_domain::cleanup::{
     ApiKey, CleanupError, CleanupModel, CleanupProvider, CleanupRequest, HttpCleanupRequest,
     MAX_MODEL_PAGES, ModelsRequest, REQUEST_TIMEOUT, finish_models, models_request,
-    parse_models_page, parse_response,
+    parse_models_page_redacting, parse_response_redacting,
 };
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue};
 use tokio::time::Instant;
@@ -119,7 +119,8 @@ impl CleanupClient {
                 return Err(error);
             }
         };
-        let result = parse_response(status, &body).map_err(|error| redact_error(error, secret));
+        let result = parse_response_redacting(status, &body, secret)
+            .map_err(|error| redact_error(error, secret));
         match &result {
             Ok(_) => tracing::info!(provider, model, status, latency_ms, "cleanup finished"),
             Err(error) => {
@@ -186,7 +187,8 @@ impl CleanupClient {
             let (status, body) = tokio::time::timeout(REQUEST_TIMEOUT, self.fetch(&request))
                 .await
                 .unwrap_or_else(|_elapsed| Err(CleanupError::Transport(TIMED_OUT.to_owned())))?;
-            let page = parse_models_page(provider, status, &body)?;
+            let page =
+                parse_models_page_redacting(provider, status, &body, key.map(ApiKey::expose))?;
             models.extend(page.models);
             token = page.next_page_token;
             if token.is_none() {

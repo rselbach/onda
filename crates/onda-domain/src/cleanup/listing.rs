@@ -12,7 +12,7 @@ use serde_json::Value;
 use super::catalog::CleanupModel;
 use super::deepseek;
 use super::fireworks;
-use super::openrouter::{self, ApiKey, CleanupError, error_message};
+use super::openrouter::{self, ApiKey, CleanupError};
 use super::provider::CleanupProvider;
 
 /// The most pages one listing follows, so a provider that keeps returning
@@ -87,10 +87,21 @@ pub fn parse_models_page(
     status: u16,
     body: &[u8],
 ) -> Result<ModelsPage, CleanupError> {
+    parse_models_page_redacting(provider, status, body, None)
+}
+
+/// Like [`parse_models_page`], redacting `secret` from provider error messages
+/// before truncating them.
+pub fn parse_models_page_redacting(
+    provider: CleanupProvider,
+    status: u16,
+    body: &[u8],
+    secret: Option<&str>,
+) -> Result<ModelsPage, CleanupError> {
     if !(200..300).contains(&status) {
         return Err(CleanupError::Http {
             status,
-            message: error_message(body),
+            message: openrouter::error_message_redacting(body, secret),
         });
     }
     let json: Value = serde_json::from_slice(body).map_err(|_| CleanupError::Malformed)?;

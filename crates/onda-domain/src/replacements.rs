@@ -280,7 +280,8 @@ impl Resolved {
                 .position(|g| !pred(g))
                 .map_or(graphemes.len(), |i| from + i)
         };
-        let ends_at = |i: usize| i == graphemes.len() || graphemes[i] == "\n";
+        let ends_at =
+            |i: usize| i == graphemes.len() || matches!(graphemes[i], "\n" | "\r\n" | "\r");
         let after_spaces = skip(end, is_horizontal_space);
 
         if self.is_at_sentence_start() {
@@ -320,7 +321,7 @@ impl Resolved {
             .chars()
             .rev()
             .find(|c| *c != ' ' && *c != '\t')
-            .is_none_or(|c| matches!(c, '.' | '!' | '?' | '\n'))
+            .is_none_or(|c| matches!(c, '.' | '!' | '?' | '\n' | '\r'))
     }
 
     fn trim_trailing_space(&mut self) {
@@ -916,5 +917,16 @@ mod tests {
         for tc in cases {
             assert_eq!(rules_to_persist(&tc.input), tc.want, "{}", tc.name);
         }
+    }
+
+    #[test]
+    fn deleting_phrase_before_crlf_cleans_comma_and_space() {
+        let rules = vec![ReplacementRule {
+            id: RuleId("1".to_owned()),
+            triggers: vec!["um".to_owned()],
+            replacement: String::new(),
+        }];
+        assert_eq!(apply("Hello, um\r\nWorld", &rules), "Hello\r\nWorld");
+        assert_eq!(apply("Hello\r\nUm, world", &rules), "Hello\r\nWorld");
     }
 }

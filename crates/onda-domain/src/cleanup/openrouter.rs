@@ -414,10 +414,20 @@ fn escape_transcript(transcript: &str) -> Cow<'_, str> {
 ///
 /// Empty content is a valid result (CLN-12), not an error.
 pub fn parse_response(status: u16, body: &[u8]) -> Result<String, CleanupError> {
+    parse_response_redacting(status, body, None)
+}
+
+/// Like [`parse_response`], redacting `secret` from provider error messages
+/// before truncating them so a key straddling the length limit cannot leak.
+pub fn parse_response_redacting(
+    status: u16,
+    body: &[u8],
+    secret: Option<&str>,
+) -> Result<String, CleanupError> {
     if !(200..300).contains(&status) {
         return Err(CleanupError::Http {
             status,
-            message: error_message(body),
+            message: error_message_redacting(body, secret),
         });
     }
     let json: Value = serde_json::from_slice(body).map_err(|_| CleanupError::Malformed)?;
@@ -501,11 +511,15 @@ fn unwrap_transcript_tags(content: &str) -> String {
         .to_owned()
 }
 
-pub(super) fn error_message(body: &[u8]) -> Option<String> {
+pub(super) fn error_message_redacting(body: &[u8], secret: Option<&str>) -> Option<String> {
     let json: Value = serde_json::from_slice(body).ok()?;
     let message = json.get("error")?.get("message")?.as_str()?;
+    let sanitized: Cow<'_, str> = match secret.filter(|s| !s.is_empty()) {
+        Some(key) => Cow::Owned(message.replace(key, "<redacted>")),
+        None => Cow::Borrowed(message),
+    };
     Some(
-        message
+        sanitized
             .graphemes(true)
             .take(MAX_ERROR_MESSAGE_CHARS)
             .collect(),
@@ -1132,5 +1146,24 @@ mod tests {
             "Fireworks AI API key is not set.",
             "the message names the provider"
         );
+    }
+
+    #[test]
+    fn redacts_secret_before_truncating_http_error_message() {
+        let prefix = "x".repeat(MAX_ERROR_MESSAGE_CHARS - 6);
+        let secret = "sk-greendale-secret-key-99999";
+        let body = json!({ "error": { "message": format!("{prefix}{secret} trailing") } })
+            .to_string();
+        let err = parse_response_redacting(401, body.as_bytes(), Some(secret))
+            .expect_err("must fail");
+        let CleanupError::Http {
+            status: 401,
+            message: Some(msg),
+        } = err
+        else {
+            panic!("unexpected error: {err:?}");
+        };
+        assert!(!msg.contains("sk-greendale"), "key prefix leaked: {msg}");
+        assert!(msg.ends_with("<redac") || msg.contains("<redacted>"), "{msg}");
     }
 }
