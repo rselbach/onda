@@ -32,6 +32,7 @@ final class SystemSettingsGuide {
             let frame = GuideLayout.frame(for: window.frame.size, beside: settingsFrame, in: visible)
             window.setFrame(frame, display: true, animate: true)
         }
+        guard !Task.isCancelled, current == session else { return }
 
         guard dropsApp,
               let icon = window.contentView?.firstSubview(of: AppIconDragSourceView.self),
@@ -111,6 +112,12 @@ final class SystemSettingsGuide {
         panel.alphaValue = 0
         panel.orderFrontRegardless()
         phantom = panel
+        defer {
+            panel.orderOut(nil)
+            if phantom === panel {
+                phantom = nil
+            }
+        }
 
         // lift the copy off the icon, carry it into the list, then let go
         let lifted = start.insetBy(dx: -6, dy: -6)

@@ -135,7 +135,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case let .appPresenceChanged(regular):
             // UI-2: the core counts the windows; a regular app gets the dock
             // icon, the app switcher, and the app menu
+            let wasAccessory = NSApp.activationPolicy() != .regular
             NSApp.setActivationPolicy(regular ? .regular : .accessory)
+            if regular, wasAccessory, NSApp.windows.contains(where: \.isVisible) {
+                NSApp.activate(ignoringOtherApps: true)
+            }
         case .activateApp:
             // CLN-25: the Keychain prompt took the focus; the cooperative
             // `activate()` would be refused

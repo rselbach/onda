@@ -54,6 +54,9 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
 
     func windowWillClose(_: Notification) {
         endGuide()
+        deferred = nil
+        model.view = nil
+        model.forward = true
         guard !closingFromCore else { return }
         // ONB-11: the core decides what an early close means, and ends a
         // running shortcut capture (HOT-8)
@@ -82,8 +85,11 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
     /// steps slide in from the edge `forward` names (ONB-1); the direction
     /// renders before the step so the outgoing step leaves the same way
     private func render(_ view: OnboardingView) {
-        // a granted card drops its button, which ends the walk
-        if let guiding = model.guiding, !view.offers(guiding) {
+        let hadClipboardLink = (deferred ?? model.view)?.hasClipboardLink ?? false
+        // a granted card drops its button, or switching to clipboard drops the
+        // link, either of which ends the walk
+        if let guiding = model.guiding,
+           !view.offers(guiding) || (guiding == .openAccessibilitySettings && hadClipboardLink && !view.hasClipboardLink) {
             endGuide()
         }
         if deferred != nil {
@@ -105,7 +111,7 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
         model.forward = view.forward
         deferred = view
         DispatchQueue.main.async { [weak self] in
-            guard let self, let latest = deferred else { return }
+            guard let self, let latest = deferred, window?.isVisible == true else { return }
             deferred = nil
             model.forward = latest.forward
             withAnimation(Self.stepAnimation) {
@@ -115,9 +121,9 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
     }
 
     private func fix(_ button: PermissionFixButton) {
+        endGuide()
         core.fixPermission(fix: button.fix)
         guard let guide = button.guide, let window else { return }
-        guideTask?.cancel()
         model.guiding = button.fix
         guideTask = Task {
             await settingsGuide.begin(beside: window, dropsApp: guide.acceptsDroppedApp)
@@ -310,5 +316,10 @@ private extension OnboardingView {
     func offers(_ fix: PermissionFix) -> Bool {
         guard case let .permissions(_, microphone, typingAccess, _) = content else { return false }
         return [microphone, typingAccess].contains { $0.button?.fix == fix }
+    }
+
+    var hasClipboardLink: Bool {
+        guard case let .permissions(_, _, _, clipboardLink) = content else { return false }
+        return clipboardLink != nil
     }
 }
