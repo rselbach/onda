@@ -41,6 +41,36 @@ impl Prefs {
         }
     }
 
+    /// Acquires an exclusive cross-process lock on `<file>.lock`, reloads
+    /// `file` from disk, merges monotonic fields (`highest_build_seen`,
+    /// `last_check`) with `in_memory`, applies `change`, and persists the
+    /// result atomically.
+    pub(crate) fn update_locked<E>(
+        file: &Path,
+        in_memory: &Self,
+        change: impl FnOnce(&mut Self) -> Result<(), E>,
+    ) -> Result<Self, E> {
+        let _lock = lock_prefs(file);
+        let mut merged = if file.exists() {
+            let mut on_disk = Self::load(file, in_memory.automatic_checks);
+            on_disk.highest_build_seen = on_disk
+                .highest_build_seen
+                .max(in_memory.highest_build_seen);
+            on_disk.last_check = match (on_disk.last_check, in_memory.last_check) {
+                (Some(a), Some(b)) => Some(a.max(b)),
+                (a, b) => a.or(b),
+            };
+            on_disk
+        } else {
+            in_memory.clone()
+        };
+        change(&mut merged)?;
+        if let Err(error) = merged.save(file) {
+            tracing::error!(%error, "could not save the updater state");
+        }
+        Ok(merged)
+    }
+
     /// Writes `file` atomically.
     pub(crate) fn save(&self, file: &Path) -> std::io::Result<()> {
         let parent = file
@@ -72,6 +102,40 @@ impl Prefs {
             .ok()
             .map(|since| since.as_secs());
     }
+}
+
+fn lock_prefs(file: &Path) -> Option<std::fs::File> {
+    let parent = file
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    if let Err(error) = std::fs::create_dir_all(parent) {
+        tracing::warn!(%error, "could not create updater state directory for lock");
+        return None;
+    }
+    let mut lock_name = file.as_os_str().to_os_string();
+    lock_name.push(".lock");
+    let lock_path = std::path::PathBuf::from(lock_name);
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).truncate(false).read(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+        options.custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
+    }
+    let lock_file = match options.open(&lock_path) {
+        Ok(lock_file) => lock_file,
+        Err(error) => {
+            tracing::warn!(%error, path = %lock_path.display(), "could not open updater prefs lock");
+            return None;
+        }
+    };
+    if let Err(error) = lock_file.lock() {
+        tracing::warn!(%error, path = %lock_path.display(), "could not acquire updater prefs lock");
+        return None;
+    }
+    Some(lock_file)
 }
 
 #[cfg(test)]

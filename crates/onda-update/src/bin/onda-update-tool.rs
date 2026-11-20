@@ -48,7 +48,7 @@ struct Args {
 }
 
 impl Args {
-    fn parse(args: &[String], flags: &[&str]) -> Result<Self, String> {
+    fn parse(args: &[String], allowed_options: &[&str], flags: &[&str]) -> Result<Self, String> {
         let mut parsed = Self {
             options: HashMap::new(),
             flags: Vec::new(),
@@ -63,6 +63,9 @@ impl Args {
             if flags.contains(&name) {
                 parsed.flags.push(name.to_owned());
                 continue;
+            }
+            if !allowed_options.contains(&name) {
+                return Err(format!("unknown option --{name}"));
             }
             let value = iter
                 .next()
@@ -121,7 +124,31 @@ fn artifact(
 }
 
 fn sign_feed(args: &[String]) -> Result<(), String> {
-    let args = Args::parse(args, &[])?;
+    let args = Args::parse(
+        args,
+        &[
+            "version",
+            "build",
+            "arch",
+            "minimum-os",
+            "published-at",
+            "notes-url",
+            "zip",
+            "zip-url",
+            "dmg",
+            "dmg-url",
+            "linux-dir",
+            "linux-base-url",
+            "out",
+        ],
+        &[],
+    )?;
+    if !args.positional.is_empty() {
+        return Err(format!(
+            "unexpected positional argument {}",
+            args.positional[0]
+        ));
+    }
     let build = args
         .get("build")?
         .parse()
@@ -185,6 +212,7 @@ fn sign_feed(args: &[String]) -> Result<(), String> {
 
 fn linux_artifacts(directory: &Path, version: &str, base: &str) -> Result<Vec<Artifact>, String> {
     semver::Version::parse(version).map_err(|_| "invalid Linux release version".to_owned())?;
+    let base = base.trim_end_matches('/');
     let mut artifacts = Vec::new();
     for arch in ["x86_64", "arm64"] {
         for kind in ["deb", "rpm", "pkg.tar.zst", "tar.gz"] {
@@ -204,13 +232,13 @@ fn linux_artifacts(directory: &Path, version: &str, base: &str) -> Result<Vec<Ar
 }
 
 fn sparkle_signature(args: &[String]) -> Result<(), String> {
-    let args = Args::parse(args, &[])?;
+    let args = Args::parse(args, &[], &[])?;
     let [file] = args.positional.as_slice() else {
         return Err("usage: onda-update-tool sparkle-signature FILE".to_owned());
     };
     let bytes = std::fs::read(file).map_err(|error| format!("could not read {file}: {error}"))?;
     let key = pinned_key()?;
-    println!("{}", feed::sparkle_signature(&bytes, &key));
+    println!("{}", feed::sparkle_signature(&bytes, &key)?);
     Ok(())
 }
 
@@ -220,7 +248,7 @@ fn open_pinned(bytes: &[u8]) -> Result<Release, String> {
 }
 
 fn verify_feed(args: &[String]) -> Result<(), String> {
-    let args = Args::parse(args, &["download"])?;
+    let args = Args::parse(args, &["version", "build", "arch"], &["download"])?;
     let [file] = args.positional.as_slice() else {
         return Err(
             "usage: onda-update-tool verify-feed FILE [--version V --build N] [--arch A] [--download]"

@@ -16,7 +16,7 @@ use reqwest::redirect::Policy;
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 
-use crate::feed::{Artifact, MAX_FEED_BYTES, Origins};
+use crate::feed::{Artifact, MAX_ARTIFACT_BYTES, MAX_FEED_BYTES, Origins, is_sha256};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const READ_TIMEOUT: Duration = Duration::from_secs(60);
@@ -30,6 +30,8 @@ const RETRY_DELAY: Duration = Duration::from_millis(if cfg!(test) { 10 } else { 
 pub enum TransferError {
     /// The network or server failed; trying again later may work.
     Network(String),
+    /// A non-retryable HTTP status error; partial data is kept.
+    Http(String),
     /// The bytes are not the signed ones; the partial file is gone.
     Mismatch(String),
     /// The local disk failed.
@@ -39,7 +41,9 @@ pub enum TransferError {
 impl fmt::Display for TransferError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Network(why) | Self::Mismatch(why) | Self::Io(why) => f.write_str(why),
+            Self::Network(why) | Self::Http(why) | Self::Mismatch(why) | Self::Io(why) => {
+                f.write_str(why)
+            }
         }
     }
 }
@@ -111,17 +115,41 @@ impl Transport {
         dir: &Path,
         progress: &(dyn Fn(u64) + Send + Sync),
     ) -> Result<PathBuf, TransferError> {
+        self.download_locked(artifact, dir, progress)
+            .await
+            .map(|(path, _lock)| path)
+    }
+
+    /// Like [`Transport::download`], returning the held cross-process lock
+    /// file so the caller can keep it across staging.
+    pub(crate) async fn download_locked(
+        &self,
+        artifact: &Artifact,
+        dir: &Path,
+        progress: &(dyn Fn(u64) + Send + Sync),
+    ) -> Result<(PathBuf, std::fs::File), TransferError> {
         if !self.origins.allows_artifact(&artifact.url) {
             return Err(TransferError::Mismatch(format!(
                 "refused to download {}",
                 artifact.url
             )));
         }
+        if !is_sha256(&artifact.sha256) {
+            return Err(TransferError::Mismatch(
+                "invalid artifact SHA-256".to_owned(),
+            ));
+        }
+        if !(1..=MAX_ARTIFACT_BYTES).contains(&artifact.size) {
+            return Err(TransferError::Mismatch(format!(
+                "invalid artifact size {}",
+                artifact.size
+            )));
+        }
         tokio::fs::create_dir_all(dir)
             .await
             .map_err(|error| io_error("create", dir, &error))?;
         let lock_path = dir.join(format!("{}.download.lock", artifact.sha256));
-        let _lock = tokio::task::spawn_blocking(move || lock_download(&lock_path))
+        let lock = tokio::task::spawn_blocking(move || lock_download(&lock_path))
             .await
             .map_err(|error| {
                 TransferError::Io(format!("could not lock update download: {error}"))
@@ -145,6 +173,7 @@ impl Transport {
                         tracing::warn!(attempt, %why, "update download interrupted");
                         last = Some(TransferError::Network(why));
                     }
+                    Err(error @ TransferError::Http(_)) => return Err(error),
                     Err(error) => return Err(discard(&part, error).await),
                 }
             }
@@ -159,7 +188,7 @@ impl Transport {
                     TransferError::Io(format!("could not check the update: {error}"))
                 })?;
             match verdict {
-                Ok(()) => return Ok(part),
+                Ok(()) => return Ok((part, lock)),
                 Err(error @ TransferError::Mismatch(_)) if !fetched && !retried_exact_corrupt => {
                     tracing::warn!(
                         %error,
@@ -224,13 +253,17 @@ impl Transport {
                 }
             }
             StatusCode::OK => offset = 0,
-            status if status.is_server_error() || status == StatusCode::TOO_MANY_REQUESTS => {
+            status
+                if status.is_server_error()
+                    || status == StatusCode::TOO_MANY_REQUESTS
+                    || status == StatusCode::REQUEST_TIMEOUT =>
+            {
                 return Err(TransferError::Network(format!(
                     "the update download answered HTTP {status}"
                 )));
             }
             status => {
-                return Err(TransferError::Mismatch(format!(
+                return Err(TransferError::Http(format!(
                     "the update download answered HTTP {status}"
                 )));
             }
@@ -334,20 +367,33 @@ fn io_error(action: &str, path: &Path, error: &std::io::Error) -> TransferError 
     TransferError::Io(format!("could not {action} {}: {error}", path.display()))
 }
 
-fn lock_download(path: &Path) -> Result<std::fs::File, TransferError> {
+fn open_download_lock(path: &Path) -> std::io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.create(true).truncate(false).read(true).write(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
+        options.custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
     }
-    let file = options
-        .open(path)
-        .map_err(|error| io_error("lock", path, &error))?;
+    options.open(path)
+}
+
+fn lock_download(path: &Path) -> Result<std::fs::File, TransferError> {
+    let file = open_download_lock(path).map_err(|error| io_error("lock", path, &error))?;
     file.lock()
         .map_err(|error| io_error("lock", path, &error))?;
     Ok(file)
+}
+
+/// Attempts a non-blocking exclusive lock on a download lock file.
+pub(crate) fn try_lock_download(path: &Path) -> std::io::Result<Option<std::fs::File>> {
+    let file = open_download_lock(path)?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(error)) => Err(error),
+    }
 }
 
 /// The error and its causes on one line; reqwest's own text omits them.

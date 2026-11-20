@@ -519,6 +519,7 @@ fn swap(a: &Path, b: &Path) -> Result<(), InstallError> {
 }
 
 fn unpack(zip: &Path, folder: &Path) -> Result<(), InstallError> {
+    validate_zip(zip)?;
     let output = Command::new("/usr/bin/ditto")
         .args(["-x", "-k"])
         .arg(zip)
@@ -533,6 +534,221 @@ fn unpack(zip: &Path, folder: &Path) -> Result<(), InstallError> {
         )));
     }
     Ok(())
+}
+
+/// Cap on total uncompressed bytes across all entries of an update archive.
+const MAX_UNCOMPRESSED_ZIP_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// Cap on central-directory entry count.
+const MAX_ZIP_ENTRIES: u64 = 100_000;
+
+/// Scans a ZIP archive's central directory before `ditto` touches disk:
+/// enforces an uncompressed size cap, relative `Onda.app/` path confinement,
+/// and symlink targets staying inside `Onda.app/`.
+fn validate_zip(zip: &Path) -> Result<(), InstallError> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let reject = |why: &str| InstallError::Rejected(format!("invalid update archive: {why}"));
+    let mut file = fs::File::open(zip).map_err(|e| failed("open", zip, &e))?;
+    let file_len = file
+        .metadata()
+        .map_err(|e| failed("read", zip, &e))?
+        .len();
+    if file_len < 22 {
+        return Err(reject("truncated ZIP archive"));
+    }
+
+    let tail_len = file_len.min(65_557) as usize;
+    let tail_start = file_len - tail_len as u64;
+    file.seek(SeekFrom::Start(tail_start))
+        .map_err(|e| failed("seek", zip, &e))?;
+    let mut tail = vec![0u8; tail_len];
+    file.read_exact(&mut tail)
+        .map_err(|e| failed("read", zip, &e))?;
+
+    let eocd_pos = (0..=tail_len - 22)
+        .rev()
+        .find(|&i| tail[i..i + 4] == [0x50, 0x4b, 0x05, 0x06])
+        .ok_or_else(|| reject("missing ZIP end-of-central-directory"))?;
+    let eocd = &tail[eocd_pos..];
+    let mut entries = u64::from(u16::from_le_bytes([eocd[10], eocd[11]]));
+    let mut cd_size = u64::from(u32::from_le_bytes([eocd[12], eocd[13], eocd[14], eocd[15]]));
+    let mut cd_offset = u64::from(u32::from_le_bytes([eocd[16], eocd[17], eocd[18], eocd[19]]));
+
+    if entries == 0xFFFF || cd_size == 0xFFFF_FFFF || cd_offset == 0xFFFF_FFFF {
+        if eocd_pos < 20 || tail[eocd_pos - 20..eocd_pos - 16] != [0x50, 0x4b, 0x06, 0x07] {
+            return Err(reject("missing ZIP64 locator"));
+        }
+        let loc = &tail[eocd_pos - 20..eocd_pos];
+        let z64_offset = u64::from_le_bytes(loc[8..16].try_into().unwrap_or([0; 8]));
+        file.seek(SeekFrom::Start(z64_offset))
+            .map_err(|e| failed("seek", zip, &e))?;
+        let mut z64 = [0u8; 56];
+        file.read_exact(&mut z64)
+            .map_err(|e| failed("read", zip, &e))?;
+        if z64[0..4] != [0x50, 0x4b, 0x06, 0x06] {
+            return Err(reject("invalid ZIP64 end-of-central-directory"));
+        }
+        entries = u64::from_le_bytes(z64[32..40].try_into().unwrap_or([0; 8]));
+        cd_size = u64::from_le_bytes(z64[40..48].try_into().unwrap_or([0; 8]));
+        cd_offset = u64::from_le_bytes(z64[48..56].try_into().unwrap_or([0; 8]));
+    }
+
+    if entries > MAX_ZIP_ENTRIES {
+        return Err(reject("too many archive entries"));
+    }
+    if cd_offset.checked_add(cd_size).is_none_or(|end| end > file_len) {
+        return Err(reject("central directory exceeds archive size"));
+    }
+    let cd_len = usize::try_from(cd_size).map_err(|_| reject("central directory too large"))?;
+    file.seek(SeekFrom::Start(cd_offset))
+        .map_err(|e| failed("seek", zip, &e))?;
+    let mut cd = vec![0u8; cd_len];
+    file.read_exact(&mut cd)
+        .map_err(|e| failed("read", zip, &e))?;
+
+    let mut pos = 0usize;
+    let mut total_uncompressed = 0u64;
+    for _ in 0..entries {
+        if pos + 46 > cd.len() || cd[pos..pos + 4] != [0x50, 0x4b, 0x01, 0x02] {
+            return Err(reject("malformed central directory header"));
+        }
+        let method = u16::from_le_bytes([cd[pos + 10], cd[pos + 11]]);
+        let mut comp_size =
+            u64::from(u32::from_le_bytes([cd[pos + 20], cd[pos + 21], cd[pos + 22], cd[pos + 23]]));
+        let mut uncomp_size =
+            u64::from(u32::from_le_bytes([cd[pos + 24], cd[pos + 25], cd[pos + 26], cd[pos + 27]]));
+        let name_len = usize::from(u16::from_le_bytes([cd[pos + 28], cd[pos + 29]]));
+        let extra_len = usize::from(u16::from_le_bytes([cd[pos + 30], cd[pos + 31]]));
+        let comment_len = usize::from(u16::from_le_bytes([cd[pos + 32], cd[pos + 33]]));
+        let ext_attrs =
+            u32::from_le_bytes([cd[pos + 38], cd[pos + 39], cd[pos + 40], cd[pos + 41]]);
+        let mut local_offset =
+            u64::from(u32::from_le_bytes([cd[pos + 42], cd[pos + 43], cd[pos + 44], cd[pos + 45]]));
+
+        let name_start = pos + 46;
+        let extra_start = name_start + name_len;
+        let next_pos = extra_start + extra_len + comment_len;
+        if next_pos > cd.len() {
+            return Err(reject("truncated central directory entry"));
+        }
+        let name = std::str::from_utf8(&cd[name_start..extra_start])
+            .map_err(|_| reject("non-UTF-8 entry name"))?;
+
+        // Parse ZIP64 extra field (0x0001) if any 32-bit field is saturated.
+        if uncomp_size == 0xFFFF_FFFF || comp_size == 0xFFFF_FFFF || local_offset == 0xFFFF_FFFF {
+            let extra = &cd[extra_start..extra_start + extra_len];
+            let mut ep = 0;
+            while ep + 4 <= extra.len() {
+                let id = u16::from_le_bytes([extra[ep], extra[ep + 1]]);
+                let sz = usize::from(u16::from_le_bytes([extra[ep + 2], extra[ep + 3]]));
+                ep += 4;
+                if ep + sz > extra.len() {
+                    break;
+                }
+                if id == 0x0001 {
+                    let mut p = ep;
+                    if uncomp_size == 0xFFFF_FFFF && p + 8 <= ep + sz {
+                        uncomp_size = u64::from_le_bytes(extra[p..p + 8].try_into().unwrap_or([0; 8]));
+                        p += 8;
+                    }
+                    if comp_size == 0xFFFF_FFFF && p + 8 <= ep + sz {
+                        comp_size = u64::from_le_bytes(extra[p..p + 8].try_into().unwrap_or([0; 8]));
+                        p += 8;
+                    }
+                    if local_offset == 0xFFFF_FFFF && p + 8 <= ep + sz {
+                        local_offset = u64::from_le_bytes(extra[p..p + 8].try_into().unwrap_or([0; 8]));
+                    }
+                    break;
+                }
+                ep += sz;
+            }
+        }
+
+        total_uncompressed = total_uncompressed
+            .checked_add(uncomp_size)
+            .filter(|&total| total <= MAX_UNCOMPRESSED_ZIP_BYTES)
+            .ok_or_else(|| reject("uncompressed size exceeds limit"))?;
+
+        validate_zip_entry_path(name).map_err(reject)?;
+
+        let unix_mode = (ext_attrs >> 16) & 0o170000;
+        if unix_mode == 0o120000 {
+            if method != 0 || uncomp_size > 4096 {
+                return Err(reject("unsupported symlink entry"));
+            }
+            let target = read_stored_entry(&mut file, local_offset, comp_size as usize)
+                .map_err(|_| reject("unreadable symlink entry"))?;
+            let target_str =
+                std::str::from_utf8(&target).map_err(|_| reject("non-UTF-8 symlink target"))?;
+            validate_zip_symlink_target(name, target_str).map_err(reject)?;
+        }
+
+        pos = next_pos;
+    }
+    Ok(())
+}
+
+fn validate_zip_entry_path(name: &str) -> Result<(), &'static str> {
+    if name.is_empty() || name.starts_with('/') || name.contains('\\') || name.contains('\0') {
+        return Err("unsafe entry path");
+    }
+    let trimmed = name.trim_end_matches('/');
+    if trimmed != "Onda.app" && !trimmed.starts_with("Onda.app/") {
+        return Err("entry outside Onda.app/");
+    }
+    for segment in trimmed.split('/') {
+        if segment.is_empty() || segment == "." || segment == ".." {
+            return Err("traversal segment in entry path");
+        }
+    }
+    Ok(())
+}
+
+fn validate_zip_symlink_target(entry_name: &str, target: &str) -> Result<(), &'static str> {
+    if target.is_empty() || target.starts_with('/') || target.contains('\0') {
+        return Err("symlink escapes Onda.app/");
+    }
+    let mut depth = entry_name
+        .trim_end_matches('/')
+        .split('/')
+        .count()
+        .saturating_sub(1);
+    for segment in target.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                if depth <= 1 {
+                    return Err("symlink escapes Onda.app/");
+                }
+                depth -= 1;
+            }
+            _ => depth += 1,
+        }
+    }
+    Ok(())
+}
+
+fn read_stored_entry(
+    file: &mut fs::File,
+    local_offset: u64,
+    size: usize,
+) -> std::io::Result<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    file.seek(SeekFrom::Start(local_offset))?;
+    let mut header = [0u8; 30];
+    file.read_exact(&mut header)?;
+    if header[0..4] != [0x50, 0x4b, 0x03, 0x04] {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "bad local header",
+        ));
+    }
+    let name_len = u64::from(u16::from_le_bytes([header[26], header[27]]));
+    let extra_len = u64::from(u16::from_le_bytes([header[28], header[29]]));
+    file.seek(SeekFrom::Start(local_offset + 30 + name_len + extra_len))?;
+    let mut data = vec![0u8; size];
+    file.read_exact(&mut data)?;
+    Ok(data)
 }
 
 /// Checks the unpacked app before anything runs from it.

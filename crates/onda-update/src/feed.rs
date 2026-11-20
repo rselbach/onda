@@ -151,7 +151,7 @@ impl Origins {
             && parsed.fragment().is_none()
             && !url[self.artifact_prefix.len()..]
                 .split('/')
-                .any(|s| s == "..")
+                .any(|s| s.is_empty() || s == "..")
     }
 
     /// A redirect to `url` may be followed.
@@ -236,14 +236,18 @@ pub fn seal(release: &Release, key: &SigningKey) -> Vec<u8> {
 
 /// The legacy Sparkle appcast's enclosure attributes for `archive`: a plain
 /// Ed25519 signature over the file's bytes, which is what Sparkle's
-/// `sign_update` prints.
-pub fn sparkle_signature(archive: &[u8], key: &SigningKey) -> String {
+/// `sign_update` prints. Refuses inputs starting with [`SIGNING_CONTEXT`] so
+/// the Sparkle signing command can never be used as a feed-signing oracle.
+pub fn sparkle_signature(archive: &[u8], key: &SigningKey) -> Result<String, String> {
+    if archive.starts_with(SIGNING_CONTEXT) {
+        return Err("refusing to sign input that begins with the feed signing context".to_owned());
+    }
     let signature = key.sign(archive);
-    format!(
+    Ok(format!(
         "sparkle:edSignature=\"{}\" length=\"{}\"",
         STANDARD.encode(signature.to_bytes()),
         archive.len()
-    )
+    ))
 }
 
 /// Verifies `feed` with `key` and returns its release, checked against
@@ -345,7 +349,7 @@ fn is_version(text: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+'))
 }
 
-fn is_sha256(text: &str) -> bool {
+pub(crate) fn is_sha256(text: &str) -> bool {
     text.len() == 64
         && text
             .bytes()
@@ -791,13 +795,13 @@ mod tests {
         const ARCHIVE: &[u8] = b"Troy Barnes studies at Greendale Community College.\n";
         const SPARKLE: &str = "sparkle:edSignature=\"a9MFQo4pEzUdbld0uRTT0Xa1i7PWEgGqLL9G+LHd+ycBTxP43leyifKpFwJGb6Qrt5r6jNcwe42u/Fv7ZwLvCQ==\" length=\"52\"";
         let key = signing_key(SEED).unwrap();
-        assert_eq!(sparkle_signature(ARCHIVE, &key), SPARKLE);
+        assert_eq!(sparkle_signature(ARCHIVE, &key).unwrap(), SPARKLE);
     }
 
     #[test]
     fn sparkle_signatures_are_plain_ed25519_over_the_archive() {
         let archive = b"Greendale Human Being archive";
-        let text = sparkle_signature(archive, &key(3));
+        let text = sparkle_signature(archive, &key(3)).unwrap();
         let encoded = text
             .strip_prefix("sparkle:edSignature=\"")
             .and_then(|rest| rest.split_once('"'))
@@ -809,5 +813,20 @@ mod tests {
             .verify_strict(archive, &Signature::from_bytes(&bytes))
             .unwrap();
         assert!(text.ends_with(&format!("length=\"{}\"", archive.len())));
+    }
+
+    #[test]
+    fn sparkle_signature_rejects_feed_signing_context() {
+        let mut payload = SIGNING_CONTEXT.to_vec();
+        payload.extend_from_slice(b"{\"schema\":1}");
+        assert!(sparkle_signature(&payload, &key(3)).is_err());
+    }
+
+    #[test]
+    fn origins_rejects_double_slash_in_artifact_url() {
+        let origins = Origins::github();
+        assert!(!origins.allows_artifact(
+            "https://github.com/rselbach/onda/releases/download/v3.2.0//Onda.zip"
+        ));
     }
 }

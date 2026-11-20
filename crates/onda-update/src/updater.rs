@@ -244,14 +244,9 @@ impl Shared {
             .prefs_write
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let snapshot = {
-            let mut state = self.lock();
-            change(&mut state.prefs)?;
-            state.prefs.clone()
-        };
-        if let Err(error) = snapshot.save(&self.prefs_file) {
-            tracing::error!(%error, "could not save the updater state");
-        }
+        let in_memory = self.lock().prefs.clone();
+        let updated = Prefs::update_locked(&self.prefs_file, &in_memory, change)?;
+        self.lock().prefs = updated;
         Ok(())
     }
 }
@@ -647,15 +642,17 @@ impl Worker {
             }
         };
         progress(0);
-        let zip = self
+        let (zip, _download_lock) = self
             .transport
-            .download(artifact, &downloads, &progress)
+            .download_locked(artifact, &downloads, &progress)
             .await
             .map_err(|error| {
                 tracing::error!(%error, "update download failed");
                 match error {
                     TransferError::Mismatch(_) => UpdateFailure::Verify,
-                    TransferError::Network(_) | TransferError::Io(_) => UpdateFailure::Download,
+                    TransferError::Network(_)
+                    | TransferError::Http(_)
+                    | TransferError::Io(_) => UpdateFailure::Download,
                 }
             })?;
         let installer = self.installer.clone().ok_or(UpdateFailure::Install)?;
@@ -667,7 +664,8 @@ impl Worker {
         // a staged update does not outlive this process, so the archive
         // stays for the next launch to stage again without a download
         if staged.is_err()
-            && let Err(error) = std::fs::remove_file(&zip)
+            && let Err(error) = tokio::fs::remove_file(&zip).await
+            && error.kind() != std::io::ErrorKind::NotFound
         {
             tracing::warn!(%error, "could not delete the update archive");
         }
@@ -680,11 +678,7 @@ impl Worker {
         })?;
         tracing::info!(version = release.version, path = %staged.app.display(), "update ready");
         let earlier = self.shared.lock().staged.replace(staged);
-        if let Some(earlier) = earlier
-            && let Some(installer) = &self.installer
-        {
-            installer.discard(&earlier);
-        }
+        self.discard_staged(earlier).await;
         Ok(ready)
     }
 
@@ -789,17 +783,36 @@ impl Worker {
     }
 }
 
-/// Removes downloads other than the one for `keep` (a SHA-256), if any.
+/// Removes downloads other than the one for `keep` (a SHA-256), if any,
+/// skipping lock files and any archive currently locked by another process.
 fn prune(downloads: &Path, keep: Option<&str>) {
     let Ok(entries) = std::fs::read_dir(downloads) else {
         return;
     };
     for entry in entries.flatten() {
-        let current = entry
-            .file_name()
-            .to_str()
-            .is_some_and(|name| keep.is_some_and(|keep| name.starts_with(keep)));
-        if !current && let Err(error) = std::fs::remove_file(entry.path()) {
+        let name = entry.file_name();
+        let Some(name_str) = name.to_str() else {
+            continue;
+        };
+        if name_str.ends_with(".lock") {
+            continue;
+        }
+        if keep.is_some_and(|keep| name_str.starts_with(keep)) {
+            continue;
+        }
+        if name_str.ends_with(".download") {
+            let lock_path = downloads.join(format!("{name_str}.lock"));
+            let Ok(Some(_lock)) = crate::transport::try_lock_download(&lock_path) else {
+                continue;
+            };
+            if let Err(error) = std::fs::remove_file(entry.path())
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                tracing::warn!(%error, "could not delete an old update download");
+            }
+        } else if let Err(error) = std::fs::remove_file(entry.path())
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
             tracing::warn!(%error, "could not delete an old update download");
         }
     }
@@ -1270,8 +1283,18 @@ mod tests {
         .unwrap();
         assert_eq!(package_check(&updated).await, UpdateStatus::UpToDate);
         let downloads = fixture.config.state_dir.join("downloads");
+        let remaining_archives = std::fs::read_dir(downloads)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                !entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.ends_with(".lock"))
+            })
+            .count();
         assert_eq!(
-            std::fs::read_dir(downloads).unwrap().count(),
+            remaining_archives,
             0,
             "the archive goes once the update is installed"
         );
