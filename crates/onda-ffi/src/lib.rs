@@ -343,13 +343,14 @@ impl OndaCore {
     /// already granted (AUD-4).
     pub fn ui_ready(&self) {
         self.with_app(App::ui_ready);
+        let app = self.app.clone();
         let permissions = self.permissions.clone();
         let microphone = self.microphone.clone();
         let spawned = thread::Builder::new()
             .name("onda-audio-prepare".to_owned())
             .spawn(move || {
                 let granted = matches!(permissions.microphone(), MicrophoneStatus::Granted);
-                if granted {
+                if granted && lock(&app).is_some() {
                     microphone.capture().prepare();
                 }
             });
@@ -484,6 +485,7 @@ impl OndaCore {
             }
             None => app.shutdown(),
         }
+        self.microphone.shutdown();
         tracing::info!("core stopped");
     }
 }

@@ -273,6 +273,14 @@ impl<B: Backend> Engine<B> {
         self.rebuild = None;
         self.standby_until = None;
         self.retried_missing_first_buffer = false;
+        if self
+            .prepared
+            .as_mut()
+            .and_then(|p| p.input.take_fault())
+            .is_some()
+        {
+            self.needs_rebuild = true;
+        }
         if self.needs_rebuild || self.prepared.is_none() {
             self.teardown(false, now);
             self.build()?;
@@ -1640,5 +1648,18 @@ mod tests {
                 "Abed's Podcast Mic".to_owned(),
             )]
         );
+    }
+
+    #[test]
+    fn start_rebuilds_when_prepared_input_has_pending_fault() {
+        let mut h = Harness::new(DeviceSelection::SystemDefault);
+        h.start().expect("first start");
+        h.stop();
+        assert!(h.engine.prepared.as_ref().is_some_and(|p| p.running));
+
+        h.world.borrow_mut().fault = Some(StreamFault::DeviceLost);
+        let second = h.start().expect("rebuilt start");
+        assert!(!second.warm, "faulted warm input must rebuild before start");
+        assert_eq!(h.world.borrow().builds.len(), 2);
     }
 }

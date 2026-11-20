@@ -1,6 +1,7 @@
 //! The public capture handle: a worker thread that owns the engine and the
 //! stream, driven by commands over a channel.
 
+use std::sync::Mutex;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
@@ -32,7 +33,7 @@ pub(crate) enum Command {
 /// Dropping the handle closes the microphone and joins the worker.
 pub struct AudioCapture {
     commands: Sender<Command>,
-    worker: Option<JoinHandle<()>>,
+    worker: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl AudioCapture {
@@ -48,7 +49,7 @@ impl AudioCapture {
             .map_err(|err| AudioError::StartFailed(err.to_string()))?;
         let capture = Self {
             commands,
-            worker: Some(worker),
+            worker: Mutex::new(Some(worker)),
         };
         Ok((capture, events))
     }
@@ -100,6 +101,21 @@ impl AudioCapture {
         DeviceChangeSink::new(self.commands.clone())
     }
 
+    /// Closes the microphone and joins the capture worker. Idempotent.
+    pub fn shutdown(&self) {
+        let worker = self
+            .worker
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        if let Some(worker) = worker {
+            let _ = self.commands.send(Command::Shutdown);
+            if worker.join().is_err() {
+                warn!("audio worker panicked");
+            }
+        }
+    }
+
     fn send(&self, command: Command) {
         if self.commands.send(command).is_err() {
             warn!("audio worker is gone");
@@ -115,12 +131,7 @@ impl AudioCapture {
 
 impl Drop for AudioCapture {
     fn drop(&mut self) {
-        self.send(Command::Shutdown);
-        if let Some(worker) = self.worker.take()
-            && worker.join().is_err()
-        {
-            warn!("audio worker panicked");
-        }
+        self.shutdown();
     }
 }
 

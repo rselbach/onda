@@ -21,6 +21,11 @@ impl Microphone {
     pub fn capture(&self) -> &AudioCapture {
         &self.0
     }
+
+    /// Closes the microphone and joins the capture worker. Idempotent.
+    pub fn shutdown(&self) {
+        self.0.shutdown();
+    }
 }
 
 impl AudioSource for Microphone {
