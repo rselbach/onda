@@ -54,10 +54,13 @@ build_shell() {
   local configuration="$1"
   local minimum
   local sdk
+  local sdk_path
   minimum="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' \
     "${SHELL_DIR}/Info.plist")"
-  sdk="$(xcrun --show-sdk-version)"
-  swift build --package-path "${SHELL_DIR}" -c "${configuration}" \
+  sdk="$(xcrun --sdk macosx --show-sdk-version)"
+  sdk_path="$(xcrun --sdk macosx --show-sdk-path)"
+  SDKROOT="${sdk_path}" swift build --package-path "${SHELL_DIR}" \
+    -c "${configuration}" \
     --arch arm64 \
     -Xlinker -platform_version -Xlinker macos \
     -Xlinker "${minimum}" -Xlinker "${sdk}"
