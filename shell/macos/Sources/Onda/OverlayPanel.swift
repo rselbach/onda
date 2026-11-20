@@ -80,7 +80,13 @@ final class OverlayPanel<Content: View> {
     /// strands the panel off screen.
     private func reposition() {
         let mouse = NSEvent.mouseLocation
-        let screen = NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main
+        let screen = NSScreen.screens.first { candidate in
+            let frame = candidate.frame
+            return mouse.x >= frame.minX
+                && mouse.x <= frame.maxX
+                && mouse.y >= frame.minY
+                && mouse.y <= frame.maxY
+        } ?? NSScreen.main ?? NSScreen.screens.first
         guard let visible = screen?.visibleFrame else { return }
         let origin = NSPoint(x: visible.midX - size.width / 2, y: visible.minY + bottomMargin)
         panel.setFrame(NSRect(origin: origin, size: size), display: true)

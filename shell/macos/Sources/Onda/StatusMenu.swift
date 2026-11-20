@@ -41,71 +41,234 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     }
 
     private func rebuild() {
-        menu.removeAllItems()
         guard let state else {
-            menu.addItem(quitItem(title: "Quit Onda"))
+            reconcile(menu, with: [
+                .quit(key: "quit", title: "Quit Onda")
+            ])
             return
         }
-        let header = NSMenuItem(title: state.header, action: nil, keyEquivalent: "")
-        header.isEnabled = false
-        menu.addItem(header)
+        var entries: [MenuEntry] = [
+            .header(key: "header", title: state.header)
+        ]
         if let fix = state.fixPermissions {
-            menu.addItem(item(fix.title, enabled: fix.enabled) { $0.fixPermissions() })
+            entries.append(.action(key: "fixPermissions", title: fix.title, enabled: fix.enabled) {
+                $0.fixPermissions()
+            })
         }
-
-        menu.addItem(item(state.dictation.title) { $0.toggleDictationFromMenu() })
-        let last = item(state.lastTranscript.title, enabled: state.lastTranscript.enabled) {
+        entries.append(.action(key: "dictation", title: state.dictation.title) {
+            $0.toggleDictationFromMenu()
+        })
+        entries.append(.action(
+            key: "lastTranscript",
+            title: state.lastTranscript.title,
+            subtitle: state.lastTranscript.subtitle,
+            enabled: state.lastTranscript.enabled
+        ) {
             $0.deliverLastTranscript()
-        }
-        last.subtitle = state.lastTranscript.subtitle
-        menu.addItem(last)
+        })
         if let recent = state.recentTranscripts {
-            menu.addItem(recentTranscripts(recent))
+            var children: [MenuEntry] = recent.items.enumerated().map { idx, entry in
+                let text = entry.text
+                return .action(
+                    key: "recent-\(idx)",
+                    title: entry.title,
+                    subtitle: Self.recentSubtitle(entry),
+                    enabled: recent.itemsEnabled
+                ) {
+                    $0.deliverTranscript(text: text)
+                }
+            }
+            children.append(.separator(key: "recent-sep"))
+            children.append(.action(key: "recent-showAll", title: recent.showAllTitle) {
+                $0.showAllHistory()
+            })
+            entries.append(.submenu(key: "recentTranscripts", title: recent.title, subtitle: nil, items: children))
         }
         if let retry = state.retryFailedDictation {
-            menu.addItem(item(retry.title, enabled: retry.enabled) { $0.retryFailedDictation() })
+            entries.append(.action(key: "retryFailedDictation", title: retry.title, enabled: retry.enabled) {
+                $0.retryFailedDictation()
+            })
         }
         if let discard = state.discardFailedRecording {
-            menu.addItem(item(discard.title, enabled: discard.enabled) { $0.discardFailedDictation() })
+            entries.append(.action(key: "discardFailedRecording", title: discard.title, enabled: discard.enabled) {
+                $0.discardFailedDictation()
+            })
         }
         if let reload = state.retryModelLoad {
-            menu.addItem(item(reload.title, enabled: reload.enabled) { $0.retryModelLoad() })
+            entries.append(.action(key: "retryModelLoad", title: reload.title, enabled: reload.enabled) {
+                $0.retryModelLoad()
+            })
         }
         if let redownload = state.redownloadModel {
-            menu.addItem(item(redownload.title, enabled: redownload.enabled) { $0.redownloadModel() })
+            entries.append(.action(key: "redownloadModel", title: redownload.title, enabled: redownload.enabled) {
+                $0.redownloadModel()
+            })
         }
 
-        menu.addItem(.separator())
-        menu.addItem(language(state.language))
+        entries.append(.separator(key: "sep-lang"))
+        var langChildren: [MenuEntry] = state.language.items.map { entry in
+            let code = entry.code
+            return .action(
+                key: "lang-\(code)",
+                title: entry.name,
+                enabled: state.language.itemsEnabled,
+                checked: entry.checked
+            ) {
+                $0.selectLanguageFromMenu(code: code)
+            }
+        }
+        langChildren.append(.separator(key: "lang-sep"))
+        langChildren.append(.action(key: "lang-other", title: state.language.otherTitle) {
+            $0.chooseOtherLanguage()
+        })
+        entries.append(.submenu(
+            key: "language",
+            title: state.language.title,
+            subtitle: state.language.subtitle,
+            items: langChildren
+        ))
 
-        menu.addItem(.separator())
-        menu.addItem(item(state.openApp.title, enabled: state.openApp.enabled) { $0.openApp() })
-        let settings = item(state.settings.title, enabled: state.settings.enabled) { $0.openSettings() }
-        settings.keyEquivalent = ","
-        menu.addItem(settings)
+        entries.append(.separator(key: "sep-app"))
+        entries.append(.action(key: "openApp", title: state.openApp.title, enabled: state.openApp.enabled) {
+            $0.openApp()
+        })
+        entries.append(.action(
+            key: "settings",
+            title: state.settings.title,
+            enabled: state.settings.enabled,
+            keyEquivalent: ","
+        ) {
+            $0.openSettings()
+        })
 
-        menu.addItem(.separator())
+        entries.append(.separator(key: "sep-update"))
         let update = state.update
-        menu.addItem(item(update.title, enabled: update.enabled) { $0.updateAction(action: update.action) })
+        entries.append(.action(key: "update", title: update.title, enabled: update.enabled) {
+            $0.updateAction(action: update.action)
+        })
 
-        menu.addItem(.separator())
-        menu.addItem(quitItem(title: state.quit.title))
+        entries.append(.separator(key: "sep-quit"))
+        entries.append(.quit(key: "quit", title: state.quit.title))
+
+        reconcile(menu, with: entries)
     }
 
-    private func recentTranscripts(_ recent: RecentTranscriptsSubmenu) -> NSMenuItem {
-        let parent = NSMenuItem(title: recent.title, action: nil, keyEquivalent: "")
-        let submenu = NSMenu()
-        submenu.autoenablesItems = false
-        for entry in recent.items {
-            let text = entry.text
-            let child = item(entry.title, enabled: recent.itemsEnabled) { $0.deliverTranscript(text: text) }
-            child.subtitle = Self.recentSubtitle(entry)
-            submenu.addItem(child)
+    private func reconcile(_ targetMenu: NSMenu, with entries: [MenuEntry]) {
+        let wantedKeys = Set(entries.map(\.key))
+        var existingByKey: [String: NSMenuItem] = [:]
+        for existing in targetMenu.items {
+            if let key = existing.representedObject as? String, wantedKeys.contains(key) {
+                existingByKey[key] = existing
+            } else {
+                targetMenu.removeItem(existing)
+            }
         }
-        submenu.addItem(.separator())
-        submenu.addItem(item(recent.showAllTitle) { $0.showAllHistory() })
-        parent.submenu = submenu
-        return parent
+        for (index, entry) in entries.enumerated() {
+            if let existing = existingByKey[entry.key] {
+                let currentIndex = targetMenu.index(of: existing)
+                if currentIndex != index {
+                    targetMenu.removeItem(existing)
+                    targetMenu.insertItem(existing, at: index)
+                }
+                apply(entry, to: existing)
+            } else {
+                let created = makeItem(for: entry)
+                targetMenu.insertItem(created, at: index)
+            }
+        }
+        while targetMenu.numberOfItems > entries.count {
+            targetMenu.removeItem(at: targetMenu.numberOfItems - 1)
+        }
+    }
+
+    private func makeItem(for entry: MenuEntry) -> NSMenuItem {
+        let item: NSMenuItem
+        switch entry {
+        case .separator:
+            item = NSMenuItem.separator()
+        case let .header(_, title):
+            item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            item.isEnabled = false
+        case let .action(_, title, subtitle, enabled, checked, keyEquivalent, action):
+            let core = core
+            let actionItem = ActionMenuItem(title: title) { action(core) }
+            actionItem.subtitle = subtitle
+            actionItem.isEnabled = enabled
+            actionItem.state = checked ? .on : .off
+            actionItem.keyEquivalent = keyEquivalent
+            item = actionItem
+        case let .submenu(_, title, subtitle, children):
+            let parent = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            parent.subtitle = subtitle
+            let submenu = NSMenu()
+            submenu.autoenablesItems = false
+            reconcile(submenu, with: children)
+            parent.submenu = submenu
+            item = parent
+        case let .quit(_, title):
+            item = quitItem(title: title)
+        }
+        item.representedObject = entry.key
+        return item
+    }
+
+    private func apply(_ entry: MenuEntry, to item: NSMenuItem) {
+        switch entry {
+        case .separator:
+            break
+        case let .header(_, title):
+            item.title = title
+            item.isEnabled = false
+        case let .action(_, title, subtitle, enabled, checked, keyEquivalent, action):
+            item.title = title
+            item.subtitle = subtitle
+            item.isEnabled = enabled
+            item.state = checked ? .on : .off
+            item.keyEquivalent = keyEquivalent
+            if let actionItem = item as? ActionMenuItem {
+                let core = core
+                actionItem.handler = { action(core) }
+            }
+        case let .submenu(_, title, subtitle, children):
+            item.title = title
+            item.subtitle = subtitle
+            let submenu = item.submenu ?? {
+                let created = NSMenu()
+                created.autoenablesItems = false
+                item.submenu = created
+                return created
+            }()
+            reconcile(submenu, with: children)
+        case let .quit(_, title):
+            item.title = title
+        }
+    }
+
+    private enum MenuEntry {
+        case separator(key: String)
+        case header(key: String, title: String)
+        case action(
+            key: String,
+            title: String,
+            subtitle: String? = nil,
+            enabled: Bool = true,
+            checked: Bool = false,
+            keyEquivalent: String = "",
+            action: @MainActor (OndaCore) -> Void
+        )
+        case submenu(key: String, title: String, subtitle: String?, items: [MenuEntry])
+        case quit(key: String, title: String)
+
+        var key: String {
+            switch self {
+            case let .separator(key),
+                 let .header(key, _),
+                 let .action(key, _, _, _, _, _, _),
+                 let .submenu(key, _, _, _),
+                 let .quit(key, _):
+                key
+            }
+        }
     }
 
     /// "<abbreviated date and short time> · <app>" in the user's locale, the
@@ -116,36 +279,6 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         return "\(date) · \(app)"
     }
 
-    private func language(_ language: LanguageSubmenu) -> NSMenuItem {
-        let parent = NSMenuItem(title: language.title, action: nil, keyEquivalent: "")
-        parent.subtitle = language.subtitle
-        let submenu = NSMenu()
-        submenu.autoenablesItems = false
-        for entry in language.items {
-            let code = entry.code
-            let child = item(entry.name, enabled: language.itemsEnabled) {
-                $0.selectLanguageFromMenu(code: code)
-            }
-            child.state = entry.checked ? .on : .off
-            submenu.addItem(child)
-        }
-        submenu.addItem(.separator())
-        submenu.addItem(item(language.otherTitle) { $0.chooseOtherLanguage() })
-        parent.submenu = submenu
-        return parent
-    }
-
-    private func item(
-        _ title: String,
-        enabled: Bool = true,
-        action: @escaping @MainActor (OndaCore) -> Void
-    ) -> NSMenuItem {
-        let core = core
-        let item = ActionMenuItem(title: title) { action(core) }
-        item.isEnabled = enabled
-        return item
-    }
-
     private func quitItem(title: String) -> NSMenuItem {
         NSMenuItem(title: title, action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
     }
@@ -154,7 +287,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
 /// A menu item that runs a closure.
 @MainActor
 final class ActionMenuItem: NSMenuItem {
-    private let handler: @MainActor () -> Void
+    var handler: @MainActor () -> Void
 
     init(title: String, handler: @escaping @MainActor () -> Void) {
         self.handler = handler

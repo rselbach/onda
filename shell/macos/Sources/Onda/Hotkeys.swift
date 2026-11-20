@@ -72,6 +72,7 @@ final class GlobalHotkeys {
         guard let tap else { return }
         CGEvent.tapEnable(tap: tap, enable: true)
         if !CGEvent.tapIsEnabled(tap: tap) {
+            closeTap()
             Log.hotkey.error("Could not re-enable the event tap")
             core?.hotkeyRegistrationFailed(status: Self.tapFailure)
         }
@@ -242,20 +243,23 @@ final class GlobalHotkeys {
                 nil,
                 &id
             )
-            guard read == noErr else { return OSStatus(eventNotHandledErr) }
+            guard read == noErr, id.signature == GlobalHotkeys.signature else {
+                return OSStatus(eventNotHandledErr)
+            }
             let pressed = GetEventKind(event) == UInt32(kEventHotKeyPressed)
             let hotkeyID = id.id
-            MainActor.assumeIsolated {
+            let handled = MainActor.assumeIsolated {
                 let hotkeys = Unmanaged<GlobalHotkeys>.fromOpaque(context).takeUnretainedValue()
-                hotkeys.deliver(id: hotkeyID, pressed: pressed)
+                return hotkeys.deliver(id: hotkeyID, pressed: pressed)
             }
-            return noErr
+            return handled ? noErr : OSStatus(eventNotHandledErr)
         }, types.count, &types, context, &handler)
     }
 
-    private func deliver(id: UInt32, pressed: Bool) {
-        guard let input = routeGlobalHotkey(id: id, pressed: pressed) else { return }
+    private func deliver(id: UInt32, pressed: Bool) -> Bool {
+        guard let input = routeGlobalHotkey(id: id, pressed: pressed) else { return false }
         core?.onHotkeyEvent(event: input)
+        return true
     }
 }
 

@@ -12,6 +12,7 @@ import SwiftUI
 final class RecorderKeyMonitor {
     private let core: OndaCore
     private var monitor: Any?
+    private var resignObserver: NSObjectProtocol?
 
     init(core: OndaCore) {
         self.core = core
@@ -43,12 +44,27 @@ final class RecorderKeyMonitor {
             }
             return swallow ? nil : event
         }
-        guard monitor == nil else { return }
-        Log.hotkey.error("Could not start listening for the shortcut recorder")
-        core.hotkeyCaptureFailed()
+        guard monitor != nil else {
+            Log.hotkey.error("Could not start listening for the shortcut recorder")
+            core.hotkeyCaptureFailed()
+            return
+        }
+        resignObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.core.endHotkeyCapture()
+            }
+        }
     }
 
     private func remove() {
+        if let resignObserver {
+            NotificationCenter.default.removeObserver(resignObserver)
+            self.resignObserver = nil
+        }
         guard let monitor else { return }
         NSEvent.removeMonitor(monitor)
         self.monitor = nil

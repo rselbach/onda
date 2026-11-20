@@ -41,26 +41,24 @@ final class Permissions: PermissionsPort, Sendable {
         }
         let specific = "x-apple.systempreferences:com.apple.preference.security?\(anchor)"
         let general = "x-apple.systempreferences:com.apple.preference.security?Privacy"
-        if !SystemSettings.open(specific) {
-            SystemSettings.open(general)
-        }
+        SystemSettings.open(specific, fallback: general)
     }
 }
 
-/// Opens System Settings deep links.
+/// Opens System Settings deep links without blocking the main thread.
 enum SystemSettings {
-    @discardableResult
-    static func open(_ link: String) -> Bool {
-        guard let url = URL(string: link) else { return false }
-        return onMainSync { NSWorkspace.shared.open(url) }
-    }
-
-    static func onMainSync<T: Sendable>(_ work: @MainActor @Sendable () -> T) -> T {
-        if Thread.isMainThread {
-            return MainActor.assumeIsolated { work() }
+    static func open(_ link: String, fallback: String? = nil) {
+        guard let url = URL(string: link) else {
+            if let fallback {
+                open(fallback)
+            }
+            return
         }
-        return DispatchQueue.main.sync {
-            MainActor.assumeIsolated { work() }
+        let fallbackURL = fallback.flatMap(URL.init(string:))
+        DispatchQueue.main.async {
+            if !NSWorkspace.shared.open(url), let fallbackURL {
+                _ = NSWorkspace.shared.open(fallbackURL)
+            }
         }
     }
 }
@@ -244,9 +242,14 @@ final class Files: FilesPort, Sendable {
     }
 
     func openFile(path: String) throws {
+        guard FileManager.default.fileExists(atPath: path) else {
+            throw ShellError.Failed(message: "File not found: \(path)")
+        }
         let url = URL(fileURLWithPath: path)
-        guard SystemSettings.onMainSync({ NSWorkspace.shared.open(url) }) else {
-            throw ShellError.Failed(message: "Could not open \(path)")
+        NSWorkspace.shared.open(url, configuration: NSWorkspace.OpenConfiguration()) { _, error in
+            if let error {
+                Log.system.error("Could not open \(path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            }
         }
     }
 }
