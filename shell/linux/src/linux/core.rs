@@ -28,8 +28,15 @@ pub struct Core {
     /// the core does not own, and the real-GUI tests read it back.
     pub settings: Arc<Settings>,
     pub output: Arc<Output>,
+    hotkeys: Arc<Hotkeys>,
     pub runtime: tokio::runtime::Runtime,
     _devices: PollingDeviceEvents,
+}
+
+impl Drop for Core {
+    fn drop(&mut self) {
+        self.hotkeys.shutdown();
+    }
 }
 
 pub fn data_dir() -> anyhow::Result<PathBuf> {
@@ -103,6 +110,7 @@ impl Core {
         let desktop = Arc::new(Desktop {
             events: events.clone(),
         });
+        let hotkeys = Arc::new(Hotkeys::new(runtime.handle(), events.clone(), held));
         let updater = super::updates::Updates::new(paths.root(), events.clone(), runtime.handle())?;
         let app = App::start_on(
             runtime.handle(),
@@ -112,7 +120,7 @@ impl Core {
                 media: Some(super::media::start(paths.root())),
                 sounds: Arc::new(super::sounds::start()),
                 power: desktop.clone(),
-                hotkeys: Arc::new(Hotkeys::new(runtime.handle(), events.clone(), held)),
+                hotkeys: hotkeys.clone(),
                 notifier: desktop.clone(),
                 login_item: desktop.clone(),
                 updater: Arc::new(updater),
@@ -146,6 +154,7 @@ impl Core {
             app,
             settings,
             output,
+            hotkeys,
             runtime,
             _devices: devices,
         })

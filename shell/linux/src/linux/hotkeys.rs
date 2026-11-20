@@ -76,8 +76,8 @@ impl std::fmt::Display for Taken {
 impl std::error::Error for Taken {}
 
 pub struct Hotkeys {
-    sender: Option<watch::Sender<Option<Shortcut>>>,
-    worker: Option<std::thread::JoinHandle<()>>,
+    sender: Mutex<Option<watch::Sender<Option<Shortcut>>>>,
+    worker: Mutex<Option<std::thread::JoinHandle<()>>>,
     events: async_channel::Sender<Message>,
     // held from a session's start to its end, on X11 only
     escape: Mutex<Option<escape::Claim>>,
@@ -89,66 +89,103 @@ impl Hotkeys {
         events: async_channel::Sender<Message>,
         held: Arc<HeldKeys>,
     ) -> Self {
-        let (sender, mut changes) = watch::channel(None);
-        let runtime = runtime.clone();
-        let hotkey_events = events.clone();
+        let (sender, changes) = watch::channel(None);
+        let worker_runtime = runtime.clone();
+        let worker_events = events.clone();
         let worker = std::thread::spawn(move || {
-            let events = hotkey_events;
-            loop {
-                let current = changes.borrow_and_update().clone();
-                if let Some(shortcut) = current {
-                    let result = if super::process::wayland() {
-                        runtime.block_on(portal(&shortcut, &mut changes, &events, &held))
+            run_worker(
+                &worker_runtime,
+                changes,
+                &worker_events,
+                &held,
+                |shortcut, changes| {
+                    if super::process::wayland() {
+                        worker_runtime.block_on(portal(shortcut, changes, &worker_events, &held))
                     } else {
-                        x11(&shortcut, &mut changes, &events, &held)
-                    };
-                    held.update(false);
-                    match result {
-                        Ok(()) => changes.mark_changed(),
-                        // the core already asked for another shortcut, and
-                        // would read this failure as that one's
-                        Err(error) if changes.has_changed().unwrap_or(true) => {
-                            tracing::debug!(%error, "a replaced global shortcut failed");
-                        }
-                        Err(error) => {
-                            tracing::warn!(%error, "the global shortcut is unavailable");
-                            send(
-                                &events,
-                                Message::ShortcutUnavailable(
-                                    format!(
-                                        "Global shortcut unavailable: {error}. Bind onda --toggle in your desktop keyboard settings."
-                                    ),
-                                    match error.is::<Taken>() {
-                                        true => NO_STATUS,
-                                        false => STATUS_NOT_GRANTED,
-                                    },
-                                ),
-                            );
-                        }
+                        x11(shortcut, changes, &worker_events, &held)
                     }
-                }
-                if runtime.block_on(changes.changed()).is_err() {
-                    break;
-                }
-            }
+                },
+            );
         });
         Self {
-            sender: Some(sender),
-            worker: Some(worker),
+            sender: Mutex::new(Some(sender)),
+            worker: Mutex::new(Some(worker)),
             events,
             escape: Mutex::default(),
+        }
+    }
+
+    /// Closes the hotkey channel, releases any Escape claim, and waits for the
+    /// worker thread to finish. Idempotent.
+    pub fn shutdown(&self) {
+        let sender = self.sender.lock().unwrap_or_else(|e| e.into_inner()).take();
+        drop(sender);
+        let escape = self.escape.lock().unwrap_or_else(|e| e.into_inner()).take();
+        drop(escape);
+        let worker = self.worker.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(worker) = worker
+            && worker.thread().id() != std::thread::current().id()
+        {
+            let _ = worker.join();
+        }
+    }
+}
+
+fn run_worker(
+    runtime: &tokio::runtime::Handle,
+    mut changes: watch::Receiver<Option<Shortcut>>,
+    events: &async_channel::Sender<Message>,
+    held: &HeldKeys,
+    mut run_shortcut: impl FnMut(
+        &Shortcut,
+        &mut watch::Receiver<Option<Shortcut>>,
+    ) -> anyhow::Result<()>,
+) {
+    loop {
+        if changes.is_closed() {
+            break;
+        }
+        let current = changes.borrow_and_update().clone();
+        if let Some(shortcut) = current {
+            let result = run_shortcut(&shortcut, &mut changes);
+            held.update(false);
+            if changes.is_closed() {
+                break;
+            }
+            match result {
+                Ok(()) => continue,
+                // the core already asked for another shortcut, and
+                // would read this failure as that one's
+                Err(error) if changes.has_changed().unwrap_or(true) => {
+                    tracing::debug!(%error, "a replaced global shortcut failed");
+                    continue;
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "the global shortcut is unavailable");
+                    send(
+                        events,
+                        Message::ShortcutUnavailable(
+                            format!(
+                                "Global shortcut unavailable: {error}. Bind onda --toggle in your desktop keyboard settings."
+                            ),
+                            match error.is::<Taken>() {
+                                true => NO_STATUS,
+                                false => STATUS_NOT_GRANTED,
+                            },
+                        ),
+                    );
+                }
+            }
+        }
+        if runtime.block_on(changes.changed()).is_err() {
+            break;
         }
     }
 }
 
 impl Drop for Hotkeys {
     fn drop(&mut self) {
-        self.sender.take();
-        if let Some(worker) = self.worker.take()
-            && worker.thread().id() != std::thread::current().id()
-        {
-            let _ = worker.join();
-        }
+        self.shutdown();
     }
 }
 
@@ -158,13 +195,20 @@ impl HotkeySource for Hotkeys {
     // the core later as `Message::ShortcutUnavailable`.
     fn register(&self, shortcut: &Shortcut) -> Result<(), i32> {
         self.sender
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .as_ref()
             .ok_or(NO_STATUS)?
             .send(Some(shortcut.clone()))
             .map_err(|_| NO_STATUS)
     }
     fn unregister(&self) {
-        if let Some(sender) = &self.sender {
+        if let Some(sender) = self
+            .sender
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
             sender.send_replace(None);
         }
     }
@@ -542,7 +586,7 @@ mod tests {
     use onda_domain::hotkey::{KeyCode, Modifier, ModifierSet, Shortcut};
     use onda_domain::platform::Platform;
 
-    use super::{HeldKeys, keys, trigger, xkb_key_name};
+    use super::{HeldKeys, keys, run_worker, trigger, xkb_key_name};
 
     #[test]
     fn every_preset_linux_offers_has_a_trigger() {
@@ -604,5 +648,86 @@ mod tests {
         held.settle().expect("stale held state should clear");
         let guard = held.0.lock().unwrap_or_else(|e| e.into_inner());
         assert!(matches!(*guard, Some((false, _))));
+    }
+
+    #[test]
+    fn worker_exits_instead_of_looping_when_channel_closes() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+            mpsc,
+        };
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let presets = Platform::linux().hotkey_presets;
+        let first = presets[0].shortcut();
+        let second = presets[1].shortcut();
+
+        for portal_style in [false, true] {
+            let (sender, changes) = tokio::sync::watch::channel(None);
+            let (events, _rx) = async_channel::unbounded();
+            let held = HeldKeys::default();
+            let (entered_tx, entered_rx) = mpsc::channel();
+            let (done_tx, done_rx) = mpsc::channel();
+            let invocations = Arc::new(AtomicUsize::new(0));
+            let worker_invocations = invocations.clone();
+            let worker_runtime = runtime.handle().clone();
+            let worker = std::thread::spawn(move || {
+                run_worker(
+                    &worker_runtime,
+                    changes,
+                    &events,
+                    &held,
+                    |shortcut, changes| {
+                        worker_invocations.fetch_add(1, Ordering::SeqCst);
+                        entered_tx
+                            .send(shortcut.clone())
+                            .expect("report entered shortcut");
+                        if portal_style {
+                            worker_runtime.block_on(async {
+                                let _ = changes.changed().await;
+                            });
+                        } else {
+                            while !changes.has_changed().unwrap_or(true) {
+                                std::thread::sleep(Duration::from_millis(5));
+                            }
+                        }
+                        Ok(())
+                    },
+                );
+                let _ = done_tx.send(());
+            });
+
+            sender.send(Some(first.clone())).expect("send first");
+            assert_eq!(
+                entered_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("worker entered first"),
+                first
+            );
+
+            sender.send(Some(second.clone())).expect("send second");
+            assert_eq!(
+                entered_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("worker entered second"),
+                second
+            );
+
+            drop(sender);
+            done_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("worker should exit promptly when channel closes");
+            worker.join().expect("worker should not panic");
+            assert_eq!(
+                invocations.load(Ordering::SeqCst),
+                2,
+                "portal_style={portal_style}"
+            );
+        }
     }
 }
