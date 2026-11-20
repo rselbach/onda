@@ -916,8 +916,11 @@ mod tests {
             ..Default::default()
         };
 
-        let mut state = xkb::GetStateReply::default();
-        state.group = xkb::Group::M3; // index 2, out of range for 2-group key
+        let state = xkb::GetStateReply {
+            // index 2, out of range for 2-group key
+            group: xkb::Group::M3,
+            ..Default::default()
+        };
 
         // WrapIntoRange (0x00): 2 % 2 = 0 -> 'v' (0x76)
         let wrap_map = make_map(0x02, vec![0x76, 0x06d7]);

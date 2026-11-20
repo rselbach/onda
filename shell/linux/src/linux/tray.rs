@@ -218,7 +218,7 @@ impl ksni::Tray for Tray {
 
 enum TrayUpdate {
     View(TrayView),
-    Menu(StatusMenu),
+    Menu(Box<StatusMenu>),
     Shutdown,
 }
 
@@ -236,7 +236,7 @@ impl TrayHandle {
     }
 
     pub fn set_menu(&self, menu: StatusMenu) {
-        let _ = self.tx.send(TrayUpdate::Menu(menu));
+        let _ = self.tx.send(TrayUpdate::Menu(Box::new(menu)));
     }
 }
 
@@ -294,7 +294,7 @@ pub fn start(events: async_channel::Sender<Message>) -> Option<TrayHandle> {
                             tray.view = view;
                         }
                         if let Some(menu) = latest_menu {
-                            tray.menu = Some(menu);
+                            tray.menu = Some(*menu);
                         }
                     });
                 }
