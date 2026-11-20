@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import Carbon
 import CoreGraphics
 @testable import Onda
 import OndaCore
@@ -269,20 +270,235 @@ struct PasteboardSnapshotTests {
         let pasteboard = Self.privatePasteboard()
         defer { pasteboard.releaseGlobally() }
 
-        #expect(TextOutput.writeTranscript("Annie Edison", to: pasteboard, transient: true))
+        let transientCount = TextOutput.writeTranscript("Annie Edison", to: pasteboard, transient: true)
+        #expect(transientCount == pasteboard.changeCount)
         let transientItem = pasteboard.pasteboardItems?.first
         #expect(transientItem?.types.contains(TextOutput.transientType) == true)
         #expect(pasteboard.string(forType: .string) == "Annie Edison")
 
-        #expect(TextOutput.writeTranscript("Britta Perry", to: pasteboard, transient: false))
+        let explicitCount = TextOutput.writeTranscript("Britta Perry", to: pasteboard, transient: false)
+        #expect(explicitCount == pasteboard.changeCount)
         let explicitItem = pasteboard.pasteboardItems?.first
         #expect(explicitItem?.types.contains(TextOutput.transientType) == false)
         #expect(pasteboard.string(forType: .string) == "Britta Perry")
     }
 
     @Test
+    func `preserves UTI preference order on restore`() throws {
+        let pasteboard = Self.privatePasteboard()
+        defer { pasteboard.releaseGlobally() }
+        let orderedTypes = [
+            NSPasteboard.PasteboardType("edu.greendale.first"),
+            NSPasteboard.PasteboardType("edu.greendale.second"),
+            NSPasteboard.PasteboardType("edu.greendale.third"),
+            NSPasteboard.PasteboardType("edu.greendale.fourth"),
+            .string
+        ]
+        let item = NSPasteboardItem()
+        for (index, type) in orderedTypes.enumerated() {
+            #expect(item.setData(Data("item-\(index)".utf8), forType: type))
+        }
+        pasteboard.clearContents()
+        #expect(pasteboard.writeObjects([item]))
+        let originalOrder = try #require(pasteboard.pasteboardItems?.first?.types)
+        #expect(originalOrder == orderedTypes)
+
+        let snapshot = PasteboardSnapshot.capture(from: pasteboard)
+        pasteboard.clearContents()
+        #expect(pasteboard.setString("transcript", forType: .string))
+
+        #expect(snapshot.restore(to: pasteboard, ifChangeCountIs: pasteboard.changeCount) == .restored)
+        let restoredTypes = try #require(pasteboard.pasteboardItems?.first?.types)
+        #expect(restoredTypes == originalOrder)
+    }
+
+    @Test
+    func `omits unmaterialized promised types instead of restoring zero-byte payloads`() throws {
+        final class PartialProvider: NSObject, NSPasteboardItemDataProvider {
+            func pasteboard(
+                _ pasteboard: NSPasteboard?,
+                item: NSPasteboardItem,
+                provideDataForType type: NSPasteboard.PasteboardType
+            ) {
+                if type == .string {
+                    item.setString("Jeff Winger", forType: .string)
+                }
+                // Deliberately leave .png unfulfilled so AppKit returns nil for it.
+            }
+        }
+
+        let pasteboard = Self.privatePasteboard()
+        defer { pasteboard.releaseGlobally() }
+        let provider = PartialProvider()
+        let item = NSPasteboardItem()
+        #expect(item.setDataProvider(provider, forTypes: [.png, .string]))
+        pasteboard.clearContents()
+        #expect(pasteboard.writeObjects([item]))
+        #expect(pasteboard.pasteboardItems?.first?.types == [.png, .string])
+
+        let snapshot = PasteboardSnapshot.capture(from: pasteboard)
+        pasteboard.clearContents()
+        #expect(pasteboard.setString("transcript", forType: .string))
+
+        #expect(snapshot.restore(to: pasteboard, ifChangeCountIs: pasteboard.changeCount) == .restored)
+        let restored = try #require(pasteboard.pasteboardItems?.first)
+        #expect(restored.types == [.string])
+        #expect(pasteboard.data(forType: .png) == nil)
+        #expect(pasteboard.string(forType: .string) == "Jeff Winger")
+    }
+
+    @Test
+    func `keeps non-nil empty data for regular types`() throws {
+        let pasteboard = Self.privatePasteboard()
+        defer { pasteboard.releaseGlobally() }
+        let item = NSPasteboardItem()
+        #expect(item.setData(Data(), forType: Self.custom))
+        #expect(item.setString("Shirley Bennett", forType: .string))
+        pasteboard.clearContents()
+        #expect(pasteboard.writeObjects([item]))
+
+        let snapshot = PasteboardSnapshot.capture(from: pasteboard)
+        pasteboard.clearContents()
+        #expect(pasteboard.setString("transcript", forType: .string))
+
+        #expect(snapshot.restore(to: pasteboard, ifChangeCountIs: pasteboard.changeCount) == .restored)
+        let restored = try #require(pasteboard.pasteboardItems?.first)
+        #expect(restored.types == [Self.custom, .string])
+        #expect(pasteboard.data(forType: Self.custom) == Data())
+        #expect(pasteboard.string(forType: .string) == "Shirley Bennett")
+    }
+
+    @Test
+    func `pasteWithRestore skips paste and preserves clipboard when clipboard changes before paste`() {
+        let pasteboard = Self.privatePasteboard()
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.clearContents()
+        #expect(pasteboard.setString("Original Greendale note", forType: .string))
+
+        var pasted = false
+        let result = TextOutput.pasteWithRestore(
+            "Dictated transcript",
+            on: pasteboard,
+            lock: NSLock(),
+            pasteDelay: 0,
+            restoreDelay: 0,
+            afterWrite: {
+                pasteboard.clearContents()
+                _ = pasteboard.setString("User copied something else", forType: .string)
+            },
+            preparePaste: { { pasted = true } }
+        )
+
+        #expect(result == .pasteInterrupted)
+        #expect(!pasted)
+        #expect(pasteboard.string(forType: .string) == "User copied something else")
+    }
+
+    @Test
+    func `pasteWithRestore posts paste and restores clipboard when unchanged`() {
+        let pasteboard = Self.privatePasteboard()
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.clearContents()
+        #expect(pasteboard.setString("Original Greendale note", forType: .string))
+
+        var pastedText: String?
+        let result = TextOutput.pasteWithRestore(
+            "Dictated transcript",
+            on: pasteboard,
+            lock: NSLock(),
+            pasteDelay: 0,
+            restoreDelay: 0,
+            preparePaste: {
+                { pastedText = pasteboard.string(forType: .string) }
+            }
+        )
+
+        #expect(result == .inserted)
+        #expect(pastedText == "Dictated transcript")
+        #expect(pasteboard.string(forType: .string) == "Original Greendale note")
+    }
+
+    @Test
+    func `pasteWithRestore leaves newer clipboard alone when changed after paste`() {
+        let pasteboard = Self.privatePasteboard()
+        defer { pasteboard.releaseGlobally() }
+        pasteboard.clearContents()
+        #expect(pasteboard.setString("Original Greendale note", forType: .string))
+
+        var pasted = false
+        let result = TextOutput.pasteWithRestore(
+            "Dictated transcript",
+            on: pasteboard,
+            lock: NSLock(),
+            pasteDelay: 0,
+            restoreDelay: 0,
+            afterPaste: {
+                pasteboard.clearContents()
+                _ = pasteboard.setString("Copied right after paste", forType: .string)
+            },
+            preparePaste: { { pasted = true } }
+        )
+
+        #expect(result == .inserted)
+        #expect(pasted)
+        #expect(pasteboard.string(forType: .string) == "Copied right after paste")
+    }
+
+    @Test
     func `virtualKeyForV resolves a valid macOS keycode`() {
         #expect(TextOutput.virtualKeyForV() < 128)
+    }
+
+    @Test
+    func `resolveVirtualKeyOnQueue returns ANSI V on timeout without racing late writer`() {
+        let gate = DispatchSemaphore(value: 0)
+        let finished = DispatchSemaphore(value: 0)
+
+        let timedOut = TextOutput.resolveVirtualKeyOnQueue(
+            timeout: .milliseconds(5),
+            schedule: { work in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    gate.wait()
+                    work()
+                    finished.signal()
+                }
+            },
+            lookup: { 0x2F }
+        )
+
+        #expect(timedOut == CGKeyCode(kVK_ANSI_V))
+        gate.signal()
+        #expect(finished.wait(timeout: .now() + .seconds(2)) == .success)
+
+        let immediate = TextOutput.resolveVirtualKeyOnQueue(
+            timeout: .seconds(1),
+            schedule: { work in
+                DispatchQueue.global(qos: .userInitiated).async(execute: work)
+            },
+            lookup: { 0x2F }
+        )
+        #expect(immediate == 0x2F)
+    }
+
+    @Test
+    @MainActor
+    func `virtualKeyForV uses Command modifier table for Dvorak-QWERTY Cmd layout`() throws {
+        let layouts: [(id: String, want: CGKeyCode)] = [
+            ("com.apple.keylayout.DVORAK-QWERTYCMD", CGKeyCode(kVK_ANSI_V)),
+            ("com.apple.keylayout.Dvorak", CGKeyCode(kVK_ANSI_Period)),
+            ("com.apple.keylayout.US", CGKeyCode(kVK_ANSI_V))
+        ]
+        for layout in layouts {
+            let filter = [kTISPropertyInputSourceID as String: layout.id] as CFDictionary
+            guard let list = TISCreateInputSourceList(filter, true)?.takeRetainedValue() as? [TISInputSource],
+                  let source = list.first
+            else {
+                Issue.record("Expected system keyboard layout \(layout.id) to be available")
+                continue
+            }
+            let code = try #require(TextOutput.virtualKeyForV(in: source))
+            #expect(code == layout.want, "Layout \(layout.id) resolved \(code) instead of \(layout.want)")
+        }
     }
 
     private static func privatePasteboard() -> NSPasteboard {
