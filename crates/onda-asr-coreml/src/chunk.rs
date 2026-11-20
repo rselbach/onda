@@ -856,26 +856,27 @@ where
 
             // cold-start at the gap first, then centred on it
             let center = (gap_start_sample + gap_end_sample) / 2;
-            let mut placements: Vec<WindowRequest> = [gap_start_sample, center - window_samples / 2]
-                .into_iter()
-                .filter_map(|placement| {
-                    let start = placement.min(total - window_samples).max(0) / frame * frame;
-                    let end = (start + window_samples).min(total);
-                    (end > start).then(|| {
-                        let (start, end) = (start as usize, end as usize);
-                        WindowRequest {
-                            start,
-                            end,
-                            audio_length: end - start,
-                            audio_frames: (end - start).div_ceil(FRAME_SAMPLES),
-                            start_frame: 0,
-                            frame_offset: (start / FRAME_SAMPLES) as i64,
-                            is_last: end == samples.len(),
-                            emit_after_frame: None,
-                        }
+            let mut placements: Vec<WindowRequest> =
+                [gap_start_sample, center - window_samples / 2]
+                    .into_iter()
+                    .filter_map(|placement| {
+                        let start = placement.min(total - window_samples).max(0) / frame * frame;
+                        let end = (start + window_samples).min(total);
+                        (end > start).then(|| {
+                            let (start, end) = (start as usize, end as usize);
+                            WindowRequest {
+                                start,
+                                end,
+                                audio_length: end - start,
+                                audio_frames: (end - start).div_ceil(FRAME_SAMPLES),
+                                start_frame: 0,
+                                frame_offset: (start / FRAME_SAMPLES) as i64,
+                                is_last: end == samples.len(),
+                                emit_after_frame: None,
+                            }
+                        })
                     })
-                })
-                .collect();
+                    .collect();
             placements.dedup();
             pass.push(Probe {
                 gap_start,

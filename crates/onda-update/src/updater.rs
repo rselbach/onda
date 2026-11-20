@@ -650,9 +650,9 @@ impl Worker {
                 tracing::error!(%error, "update download failed");
                 match error {
                     TransferError::Mismatch(_) => UpdateFailure::Verify,
-                    TransferError::Network(_)
-                    | TransferError::Http(_)
-                    | TransferError::Io(_) => UpdateFailure::Download,
+                    TransferError::Network(_) | TransferError::Http(_) | TransferError::Io(_) => {
+                        UpdateFailure::Download
+                    }
                 }
             })?;
         let installer = self.installer.clone().ok_or(UpdateFailure::Install)?;
@@ -1294,8 +1294,7 @@ mod tests {
             })
             .count();
         assert_eq!(
-            remaining_archives,
-            0,
+            remaining_archives, 0,
             "the archive goes once the update is installed"
         );
     }

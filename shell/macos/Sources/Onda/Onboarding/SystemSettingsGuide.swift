@@ -32,9 +32,8 @@ final class SystemSettingsGuide {
             let frame = GuideLayout.frame(for: window.frame.size, beside: settingsFrame, in: visible)
             window.setFrame(frame, display: true, animate: true)
         }
-        guard !Task.isCancelled, current == session else { return }
-
-        guard dropsApp,
+        guard !Task.isCancelled, current == session,
+              dropsApp,
               let icon = window.contentView?.firstSubview(of: AppIconDragSourceView.self),
               let iconFrame = icon.window?.convertToScreen(icon.convert(icon.bounds, to: nil))
         else { return }

@@ -490,10 +490,7 @@ impl Runtime {
             self.full_mel_length.write_i32(&[frames]).map_err(failed)?;
             let mel_length = self.full_mel_length.as_ref();
             self.encoder
-                .predict_borrowed(&[
-                    (self.spec.mel, &features),
-                    ("mel_length", &mel_length),
-                ])
+                .predict_borrowed(&[(self.spec.mel, &features), ("mel_length", &mel_length)])
                 .map_err(failed)?
         } else {
             self.encoder.predict(&mel).map_err(failed)?

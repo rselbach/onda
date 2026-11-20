@@ -1844,11 +1844,7 @@ impl Actor {
 
     fn switch_model(&mut self, model: ModelId, explicit: bool) {
         let available = self.available_downloaded();
-        match select_model(
-            model,
-            self.settings.selected_model.as_str(),
-            &available,
-        ) {
+        match select_model(model, self.settings.selected_model.as_str(), &available) {
             SelectOutcome::NotDownloaded => {
                 tracing::warn!(
                     model = model.as_str(),

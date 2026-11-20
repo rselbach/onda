@@ -314,7 +314,7 @@ private final class DeviceReconnectWatcher: @unchecked Sendable {
                 mElement: kAudioObjectPropertyElementMain
             )
             let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-                guard let self, let url = self.lock.withLock({ self.record }) else { return }
+                guard let self, let url = lock.withLock({ self.record }) else { return }
                 OutputMute.restore(record: url)
             }
             let status = AudioObjectAddPropertyListenerBlock(

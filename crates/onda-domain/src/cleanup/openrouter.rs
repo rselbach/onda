@@ -1152,10 +1152,10 @@ mod tests {
     fn redacts_secret_before_truncating_http_error_message() {
         let prefix = "x".repeat(MAX_ERROR_MESSAGE_CHARS - 6);
         let secret = "sk-greendale-secret-key-99999";
-        let body = json!({ "error": { "message": format!("{prefix}{secret} trailing") } })
-            .to_string();
-        let err = parse_response_redacting(401, body.as_bytes(), Some(secret))
-            .expect_err("must fail");
+        let body =
+            json!({ "error": { "message": format!("{prefix}{secret} trailing") } }).to_string();
+        let err =
+            parse_response_redacting(401, body.as_bytes(), Some(secret)).expect_err("must fail");
         let CleanupError::Http {
             status: 401,
             message: Some(msg),
@@ -1164,6 +1164,9 @@ mod tests {
             panic!("unexpected error: {err:?}");
         };
         assert!(!msg.contains("sk-greendale"), "key prefix leaked: {msg}");
-        assert!(msg.ends_with("<redac") || msg.contains("<redacted>"), "{msg}");
+        assert!(
+            msg.ends_with("<redac") || msg.contains("<redacted>"),
+            "{msg}"
+        );
     }
 }

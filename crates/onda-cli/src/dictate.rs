@@ -197,8 +197,8 @@ pub fn run(args: &Args, paths: &DataPaths, models_dir: &Path) -> Result<()> {
         paths.root().display(),
         snapshot.selected_model
     ));
-    let ready = wait_for_label(&trays, &console, READY_LABEL, LOAD_TIMEOUT)
-        .context("loading the model");
+    let ready =
+        wait_for_label(&trays, &console, READY_LABEL, LOAD_TIMEOUT).context("loading the model");
     drop(trays);
     let result = ready.and_then(|()| {
         let mode = snapshot.activation_mode;

@@ -53,9 +53,8 @@ impl Prefs {
         let _lock = lock_prefs(file);
         let mut merged = if file.exists() {
             let mut on_disk = Self::load(file, in_memory.automatic_checks);
-            on_disk.highest_build_seen = on_disk
-                .highest_build_seen
-                .max(in_memory.highest_build_seen);
+            on_disk.highest_build_seen =
+                on_disk.highest_build_seen.max(in_memory.highest_build_seen);
             on_disk.last_check = match (on_disk.last_check, in_memory.last_check) {
                 (Some(a), Some(b)) => Some(a.max(b)),
                 (a, b) => a.or(b),

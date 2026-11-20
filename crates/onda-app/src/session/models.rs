@@ -366,7 +366,8 @@ impl Actor {
         if self.deleting.contains(&settings.selected_model)
             && !available.iter().any(|candidate| *candidate != model)
         {
-            let message = delete_failed_message(&name, &ModelError::CannotDeleteActiveModel.to_string());
+            let message =
+                delete_failed_message(&name, &ModelError::CannotDeleteActiveModel.to_string());
             self.push_speech_alert(DOWNLOAD_ALERT_TITLE, message, None);
             return;
         }

@@ -712,24 +712,25 @@ impl Job<'_> {
             tokio::fs::create_dir_all(parent)
                 .await
                 .map_err(|e| Error::Io(format!("Could not create {}: {e}", parent.display())))?;
-            crate::validate::check_no_symlinks(folder, file.path).map_err(|_| {
-                Error::UnsafePath(dest.clone())
-            })?;
+            crate::validate::check_no_symlinks(folder, file.path)
+                .map_err(|_| Error::UnsafePath(dest.clone()))?;
         }
         // If a previous run left a full-sized `.part` file, verify it before
         // entering the retry loop; if it is corrupt, remove it and download
         // fresh from byte 0 instead of failing immediately.
         if file_len(&part).await == Some(file.size) {
             let valid = match file.sha256 {
-                Some(want) => match verify_sha256(model, &part, file.path, want, self.token).await {
-                    Ok(()) => true,
-                    Err(Error::Cancelled) => return Err(Error::Cancelled),
-                    Err(error) => {
-                        tracing::warn!(%model, path = file.path, %error, "discarding corrupt partial file and restarting");
-                        let _ = discard(&part, error).await;
-                        false
+                Some(want) => {
+                    match verify_sha256(model, &part, file.path, want, self.token).await {
+                        Ok(()) => true,
+                        Err(Error::Cancelled) => return Err(Error::Cancelled),
+                        Err(error) => {
+                            tracing::warn!(%model, path = file.path, %error, "discarding corrupt partial file and restarting");
+                            let _ = discard(&part, error).await;
+                            false
+                        }
                     }
-                },
+                }
                 None => true,
             };
             if valid {

@@ -549,10 +549,7 @@ fn validate_zip(zip: &Path) -> Result<(), InstallError> {
 
     let reject = |why: &str| InstallError::Rejected(format!("invalid update archive: {why}"));
     let mut file = fs::File::open(zip).map_err(|e| failed("open", zip, &e))?;
-    let file_len = file
-        .metadata()
-        .map_err(|e| failed("read", zip, &e))?
-        .len();
+    let file_len = file.metadata().map_err(|e| failed("read", zip, &e))?.len();
     if file_len < 22 {
         return Err(reject("truncated ZIP archive"));
     }
@@ -596,7 +593,10 @@ fn validate_zip(zip: &Path) -> Result<(), InstallError> {
     if entries > MAX_ZIP_ENTRIES {
         return Err(reject("too many archive entries"));
     }
-    if cd_offset.checked_add(cd_size).is_none_or(|end| end > file_len) {
+    if cd_offset
+        .checked_add(cd_size)
+        .is_none_or(|end| end > file_len)
+    {
         return Err(reject("central directory exceeds archive size"));
     }
     let cd_len = usize::try_from(cd_size).map_err(|_| reject("central directory too large"))?;
@@ -613,17 +613,29 @@ fn validate_zip(zip: &Path) -> Result<(), InstallError> {
             return Err(reject("malformed central directory header"));
         }
         let method = u16::from_le_bytes([cd[pos + 10], cd[pos + 11]]);
-        let mut comp_size =
-            u64::from(u32::from_le_bytes([cd[pos + 20], cd[pos + 21], cd[pos + 22], cd[pos + 23]]));
-        let mut uncomp_size =
-            u64::from(u32::from_le_bytes([cd[pos + 24], cd[pos + 25], cd[pos + 26], cd[pos + 27]]));
+        let mut comp_size = u64::from(u32::from_le_bytes([
+            cd[pos + 20],
+            cd[pos + 21],
+            cd[pos + 22],
+            cd[pos + 23],
+        ]));
+        let mut uncomp_size = u64::from(u32::from_le_bytes([
+            cd[pos + 24],
+            cd[pos + 25],
+            cd[pos + 26],
+            cd[pos + 27],
+        ]));
         let name_len = usize::from(u16::from_le_bytes([cd[pos + 28], cd[pos + 29]]));
         let extra_len = usize::from(u16::from_le_bytes([cd[pos + 30], cd[pos + 31]]));
         let comment_len = usize::from(u16::from_le_bytes([cd[pos + 32], cd[pos + 33]]));
         let ext_attrs =
             u32::from_le_bytes([cd[pos + 38], cd[pos + 39], cd[pos + 40], cd[pos + 41]]);
-        let mut local_offset =
-            u64::from(u32::from_le_bytes([cd[pos + 42], cd[pos + 43], cd[pos + 44], cd[pos + 45]]));
+        let mut local_offset = u64::from(u32::from_le_bytes([
+            cd[pos + 42],
+            cd[pos + 43],
+            cd[pos + 44],
+            cd[pos + 45],
+        ]));
 
         let name_start = pos + 46;
         let extra_start = name_start + name_len;
@@ -648,15 +660,18 @@ fn validate_zip(zip: &Path) -> Result<(), InstallError> {
                 if id == 0x0001 {
                     let mut p = ep;
                     if uncomp_size == 0xFFFF_FFFF && p + 8 <= ep + sz {
-                        uncomp_size = u64::from_le_bytes(extra[p..p + 8].try_into().unwrap_or([0; 8]));
+                        uncomp_size =
+                            u64::from_le_bytes(extra[p..p + 8].try_into().unwrap_or([0; 8]));
                         p += 8;
                     }
                     if comp_size == 0xFFFF_FFFF && p + 8 <= ep + sz {
-                        comp_size = u64::from_le_bytes(extra[p..p + 8].try_into().unwrap_or([0; 8]));
+                        comp_size =
+                            u64::from_le_bytes(extra[p..p + 8].try_into().unwrap_or([0; 8]));
                         p += 8;
                     }
                     if local_offset == 0xFFFF_FFFF && p + 8 <= ep + sz {
-                        local_offset = u64::from_le_bytes(extra[p..p + 8].try_into().unwrap_or([0; 8]));
+                        local_offset =
+                            u64::from_le_bytes(extra[p..p + 8].try_into().unwrap_or([0; 8]));
                     }
                     break;
                 }
