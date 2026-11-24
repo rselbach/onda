@@ -4,10 +4,10 @@ import CoreGraphics
 import OndaCore
 
 /// The dictation shortcut and the session-only Escape (HOT-13, HOT-14,
-/// HOT-34). Combos register through Carbon; lone modifiers through a session
-/// event tap. Every raw event goes straight into the core's ordered queue
-/// (HOT-20a); the core runs the gesture, the re-enable bound, the retry
-/// episode, and HOT-18's pending key-up (ARCH-3).
+/// HOT-34). Combos register through Carbon; lone modifiers through an
+/// annotated session event tap. Every raw event goes straight into the core's
+/// ordered queue (HOT-20a); the core runs the gesture, the re-enable bound,
+/// the retry episode, and HOT-18's pending key-up (ARCH-3).
 @MainActor
 final class GlobalHotkeys {
     private static let signature: OSType = 0x4F4E_4441 // "ONDA"
@@ -137,8 +137,8 @@ final class GlobalHotkeys {
         let mask = CGEventMask((1 << CGEventType.flagsChanged.rawValue) | (1 << CGEventType.keyDown.rawValue))
         let context = Unmanaged.passUnretained(self).toOpaque()
         guard let tap = CGEvent.tapCreate(
-            tap: .cgSessionEventTap,
-            place: .headInsertEventTap,
+            tap: .cgAnnotatedSessionEventTap,
+            place: .tailAppendEventTap,
             options: .defaultTap,
             eventsOfInterest: mask,
             callback: Self.tapCallback,
