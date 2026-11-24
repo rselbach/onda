@@ -53,6 +53,151 @@ struct EventTapTests {
     }
 }
 
+@MainActor
+struct UniversalControlFilterTests {
+    struct Case: Sendable, CustomTestStringConvertible {
+        let name: String
+        let event: HotkeyInput
+        let targetedAtUniversalControl: Bool
+        let want: Bool
+        var testDescription: String {
+            name
+        }
+    }
+
+    @Test(
+        arguments: [
+            Case(
+                name: "normal target forwards combo down",
+                event: .comboDown,
+                targetedAtUniversalControl: false,
+                want: true
+            ),
+            Case(
+                name: "normal target forwards combo up",
+                event: .comboUp,
+                targetedAtUniversalControl: false,
+                want: true
+            ),
+            Case(
+                name: "normal target forwards cancel",
+                event: .cancel,
+                targetedAtUniversalControl: false,
+                want: true
+            ),
+            Case(
+                name: "normal target forwards modifier press with side bit",
+                event: .modifierFlags(key: "AltRight", familyFlagSet: true, sideFlagSet: true),
+                targetedAtUniversalControl: false,
+                want: true
+            ),
+            Case(
+                name: "normal target forwards modifier change without side bit",
+                event: .modifierFlags(key: "AltRight", familyFlagSet: true, sideFlagSet: false),
+                targetedAtUniversalControl: false,
+                want: true
+            ),
+            Case(
+                name: "normal target forwards Fn press",
+                event: .modifierFlags(key: "Fn", familyFlagSet: true, sideFlagSet: true),
+                targetedAtUniversalControl: false,
+                want: true
+            ),
+            Case(
+                name: "normal target forwards modifier release",
+                event: .modifierFlags(key: "AltRight", familyFlagSet: false, sideFlagSet: false),
+                targetedAtUniversalControl: false,
+                want: true
+            ),
+            Case(
+                name: "normal target forwards key down",
+                event: .keyDown(key: "KeyA"),
+                targetedAtUniversalControl: false,
+                want: true
+            ),
+            Case(
+                name: "normal target forwards stream disabled",
+                event: .streamDisabled(status: -1),
+                targetedAtUniversalControl: false,
+                want: true
+            ),
+            Case(
+                name: "Universal Control suppresses modifier press with side bit",
+                event: .modifierFlags(key: "AltRight", familyFlagSet: true, sideFlagSet: true),
+                targetedAtUniversalControl: true,
+                want: false
+            ),
+            Case(
+                name: "Universal Control suppresses modifier change with sibling family bit held",
+                event: .modifierFlags(key: "AltRight", familyFlagSet: true, sideFlagSet: false),
+                targetedAtUniversalControl: true,
+                want: false
+            ),
+            Case(
+                name: "Universal Control suppresses Fn press",
+                event: .modifierFlags(key: "Fn", familyFlagSet: true, sideFlagSet: true),
+                targetedAtUniversalControl: true,
+                want: false
+            ),
+            Case(
+                name: "Universal Control suppresses Fn press even with sideFlagSet false",
+                event: .modifierFlags(key: "Fn", familyFlagSet: true, sideFlagSet: false),
+                targetedAtUniversalControl: true,
+                want: false
+            ),
+            Case(
+                name: "Universal Control forwards modifier release",
+                event: .modifierFlags(key: "AltRight", familyFlagSet: false, sideFlagSet: false),
+                targetedAtUniversalControl: true,
+                want: true
+            ),
+            Case(
+                name: "Universal Control forwards Fn release",
+                event: .modifierFlags(key: "Fn", familyFlagSet: false, sideFlagSet: false),
+                targetedAtUniversalControl: true,
+                want: true
+            ),
+            Case(
+                name: "Universal Control suppresses key down",
+                event: .keyDown(key: "KeyA"),
+                targetedAtUniversalControl: true,
+                want: false
+            ),
+            Case(
+                name: "Universal Control suppresses combo down",
+                event: .comboDown,
+                targetedAtUniversalControl: true,
+                want: false
+            ),
+            Case(
+                name: "Universal Control suppresses cancel",
+                event: .cancel,
+                targetedAtUniversalControl: true,
+                want: false
+            ),
+            Case(
+                name: "Universal Control forwards combo up",
+                event: .comboUp,
+                targetedAtUniversalControl: true,
+                want: true
+            ),
+            Case(
+                name: "Universal Control forwards stream disabled",
+                event: .streamDisabled(status: -1),
+                targetedAtUniversalControl: true,
+                want: true
+            )
+        ]
+    )
+    func `Universal Control suppresses activations while allowing releases and stream health`(tc: Case) {
+        let got = GlobalHotkeys.shouldForwardToCore(
+            event: tc.event,
+            targetedAtUniversalControl: tc.targetedAtUniversalControl
+        )
+        #expect(got == tc.want)
+    }
+}
+
 struct KeyCodeTableTests {
     struct Mapping: Sendable, CustomTestStringConvertible {
         let code: String

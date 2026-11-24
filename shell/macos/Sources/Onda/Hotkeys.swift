@@ -1,3 +1,4 @@
+import AppKit
 @preconcurrency import ApplicationServices
 import Carbon
 import CoreGraphics
@@ -13,6 +14,7 @@ final class GlobalHotkeys {
     private static let signature: OSType = 0x4F4E_4441 // "ONDA"
     /// The status for a tap that cannot be created or was given up on.
     private static let tapFailure = OSStatus(eventNotHandledErr)
+    private static let universalControlBundleID = "com.apple.universalcontrol"
 
     weak var core: OndaCore?
     private var handler: EventHandlerRef?
@@ -20,6 +22,7 @@ final class GlobalHotkeys {
     private var cancels: [EventHotKeyRef] = []
     private var tap: CFMachPort?
     private var tapSource: CFRunLoopSource?
+    private var lastTarget: (pid: pid_t, app: NSRunningApplication?, isUniversalControl: Bool)?
 
     init(core: OndaCore? = nil) {
         self.core = core
@@ -166,18 +169,34 @@ final class GlobalHotkeys {
     nonisolated static let tapCallback: CGEventTapCallBack = { _, type, event, context in
         let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
         let flags = event.flags.rawValue
+        let targetPID = pid_t(event.getIntegerValueField(.eventTargetUnixProcessID))
         if let context {
             // the tap runs on the main run loop, where `GlobalHotkeys` lives
             nonisolated(unsafe) let context = context
             MainActor.assumeIsolated {
                 let hotkeys = Unmanaged<GlobalHotkeys>.fromOpaque(context).takeUnretainedValue()
-                hotkeys.observe(type: type, keyCode: keyCode, flags: flags)
+                hotkeys.observe(type: type, keyCode: keyCode, flags: flags, targetPID: targetPID)
             }
         }
         return Unmanaged.passUnretained(event)
     }
 
+    /// Releases still reach the core while Universal Control holds focus so a
+    /// press started locally before the cursor crossed over does not stick.
+    static func shouldForwardToCore(event: HotkeyInput, targetedAtUniversalControl: Bool) -> Bool {
+        guard targetedAtUniversalControl else { return true }
+        switch event {
+        case .streamDisabled, .comboUp:
+            return true
+        case let .modifierFlags(_, familyFlagSet, _):
+            return !familyFlagSet
+        case .comboDown, .cancel, .keyDown:
+            return false
+        }
+    }
+
     private func closeTap() {
+        lastTarget = nil
         guard let tap else { return }
         CGEvent.tapEnable(tap: tap, enable: false)
         // invalidating stops callbacks still queued for this tap
@@ -191,21 +210,44 @@ final class GlobalHotkeys {
 
     /// Forwards one tap event as raw facts; direction comes from the
     /// event's own flags (HOT-16).
-    private func observe(type: CGEventType, keyCode: Int64, flags: UInt64) {
+    private func observe(type: CGEventType, keyCode: Int64, flags: UInt64, targetPID: pid_t) {
+        let input: HotkeyInput
         switch type {
         case .tapDisabledByTimeout, .tapDisabledByUserInput:
-            core?.onHotkeyEvent(event: .streamDisabled(status: Self.tapFailure))
+            input = .streamDisabled(status: Self.tapFailure)
         case .flagsChanged:
             guard let change = KeyCodes.flagsChange(virtualKey: keyCode, flags: CGEventFlags(rawValue: flags)) else {
                 return
             }
-            core?.onHotkeyEvent(event: change)
+            input = change
         case .keyDown:
             let key = KeyCodes.code(forVirtualKey: keyCode) ?? KeyCodes.unidentified
-            core?.onHotkeyEvent(event: .keyDown(key: key))
+            input = .keyDown(key: key)
         default:
-            break
+            return
         }
+        let targetedAtUniversalControl = switch input {
+        case .streamDisabled:
+            false
+        default:
+            isUniversalControlTarget(targetPID)
+        }
+        if Self.shouldForwardToCore(event: input, targetedAtUniversalControl: targetedAtUniversalControl) {
+            core?.onHotkeyEvent(event: input)
+        }
+    }
+
+    private func isUniversalControlTarget(_ targetPID: pid_t) -> Bool {
+        if targetPID <= 0 {
+            return NSWorkspace.shared.frontmostApplication?.bundleIdentifier == Self.universalControlBundleID
+        }
+        if let lastTarget, lastTarget.pid == targetPID, lastTarget.app?.isTerminated != true {
+            return lastTarget.isUniversalControl
+        }
+        let app = NSRunningApplication(processIdentifier: targetPID)
+        let isUniversalControl = app?.bundleIdentifier == Self.universalControlBundleID
+        lastTarget = (targetPID, app, isUniversalControl)
+        return isUniversalControl
     }
 
     private static func carbonModifiers(_ modifiers: HotkeyModifiers) -> UInt32 {
@@ -258,6 +300,10 @@ final class GlobalHotkeys {
 
     private func deliver(id: UInt32, pressed: Bool) -> Bool {
         guard let input = routeGlobalHotkey(id: id, pressed: pressed) else { return false }
+        let targetedAtUniversalControl = NSWorkspace.shared.frontmostApplication?.bundleIdentifier == Self.universalControlBundleID
+        guard Self.shouldForwardToCore(event: input, targetedAtUniversalControl: targetedAtUniversalControl) else {
+            return false
+        }
         core?.onHotkeyEvent(event: input)
         return true
     }
