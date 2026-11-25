@@ -200,7 +200,7 @@ async fn grant(
     let mut grant = portal.clone().lock_owned().await;
     let fresh = grant.is_none();
     if fresh {
-        *grant = Some(tokio::time::timeout(Duration::from_secs(120), open_grant(&token)).await??);
+        *grant = Some(open_grant(&token).await?);
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(15)).await;
@@ -228,7 +228,7 @@ async fn grant(
 async fn open_grant(path: &Path) -> anyhow::Result<Grant> {
     let portal = RemoteDesktop::with_connection(super::portal::connection().await?).await?;
     let session = portal.create_session(Default::default()).await?;
-    let start = async {
+    let start = tokio::time::timeout(Duration::from_secs(120), async {
         let token = std::fs::read_to_string(path).ok();
         let mut options =
             SelectDevicesOptions::default().set_devices(Some(DeviceType::Keyboard.into()));
@@ -268,8 +268,10 @@ async fn open_grant(path: &Path) -> anyhow::Result<Grant> {
             }
         }
         Ok::<_, anyhow::Error>(restorable)
-    }
-    .await;
+    })
+    .await
+    .map_err(anyhow::Error::from)
+    .and_then(|res| res);
     match start {
         Ok(restorable) => Ok(Grant {
             portal,

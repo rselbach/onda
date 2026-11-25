@@ -33,6 +33,14 @@ type Paint = dyn Fn(&cairo::Context) -> Result<(), cairo::Error>;
 
 pub struct Panel(Backend);
 
+impl Drop for Panel {
+    fn drop(&mut self) {
+        if let Backend::Layer { window, .. } = &self.0 {
+            window.destroy();
+        }
+    }
+}
+
 enum Backend {
     Layer {
         window: gtk::Window,
@@ -286,33 +294,36 @@ impl X11 {
     }
 
     fn show(self: &Rc<Self>, button: Option<cairo::RectangleInt>) -> anyhow::Result<()> {
-        let pressable: Vec<Rectangle> = button
-            .iter()
-            .map(|button| Rectangle {
-                x: button.x() as i16,
-                y: button.y() as i16,
-                width: button.width() as u16,
-                height: button.height() as u16,
-            })
-            .collect();
-        self.connection.shape_rectangles(
-            shape::SO::SET,
-            shape::SK::INPUT,
-            ClipOrdering::UNSORTED,
-            self.window,
-            0,
-            0,
-            &pressable,
-        )?;
-        self.button.set(button);
-        let (x, y) = panel_position(&self.connection, &self.screen, self.size);
-        let mut configure = ConfigureWindowAux::new().x(x).y(y);
-        if self.events.borrow().is_none() {
-            // a window created at startup sits below every window opened since
-            configure = configure.stack_mode(StackMode::ABOVE);
+        let mapping = self.events.borrow().is_none();
+        if mapping || button != self.button.get() {
+            let pressable: Vec<Rectangle> = button
+                .iter()
+                .map(|button| Rectangle {
+                    x: button.x() as i16,
+                    y: button.y() as i16,
+                    width: button.width() as u16,
+                    height: button.height() as u16,
+                })
+                .collect();
+            self.connection.shape_rectangles(
+                shape::SO::SET,
+                shape::SK::INPUT,
+                ClipOrdering::UNSORTED,
+                self.window,
+                0,
+                0,
+                &pressable,
+            )?;
+            self.button.set(button);
         }
-        self.connection.configure_window(self.window, &configure)?;
-        if self.events.borrow().is_none() {
+        if mapping {
+            let (x, y) = panel_position(&self.connection, &self.screen, self.size);
+            // a window created at startup sits below every window opened since
+            let configure = ConfigureWindowAux::new()
+                .x(x)
+                .y(y)
+                .stack_mode(StackMode::ABOVE);
+            self.connection.configure_window(self.window, &configure)?;
             self.connection.map_window(self.window)?;
             let this = Rc::downgrade(self);
             let events = glib::timeout_add_local(X11_EVENTS, move || {

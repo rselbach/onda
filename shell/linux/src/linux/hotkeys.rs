@@ -389,10 +389,14 @@ async fn portal(
         result = portal.create_session(Default::default()) => result?,
         _ = changes.changed() => return Ok(()),
     };
+    let session_path: Option<String> = serde_json::to_value(&session)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned));
+    let shortcut_id = format!("dictation-{trigger}");
     let result = async {
         let mut signals = portal.receive_all_signals().await?;
         let mut closed = session.receive_closed().await?;
-        let shortcuts = [NewShortcut::new(format!("dictation-{trigger}"), "Dictate with Onda").preferred_trigger(trigger.as_str())];
+        let shortcuts = [NewShortcut::new(shortcut_id.clone(), "Dictate with Onda").preferred_trigger(trigger.as_str())];
         let parent = DialogParent::ask(events).await;
         let bound = tokio::select! {
             result = portal.bind_shortcuts(&session, &shortcuts, parent.as_ref().map(|parent| &parent.window), Default::default()) => result?.response()?,
@@ -400,7 +404,11 @@ async fn portal(
         };
         drop(parent);
         let describe = |shortcuts: &[ashpd::desktop::global_shortcuts::Shortcut]| {
-            let description = shortcuts.first().map(|shortcut| shortcut.trigger_description()).filter(|value| !value.is_empty())
+            let description = shortcuts
+                .iter()
+                .find(|shortcut| shortcut.id() == shortcut_id)
+                .map(|shortcut| shortcut.trigger_description())
+                .filter(|value| !value.is_empty())
                 .unwrap_or("Assign Onda’s shortcut in desktop keyboard settings");
             send(events, Message::ShortcutStatus(description.into()));
         };
@@ -414,20 +422,26 @@ async fn portal(
                     };
                     match message.header().member().map(|member| member.as_str()) {
                         Some("Activated") => {
-                            if message
+                            if let Ok(event) = message
                                 .body()
                                 .deserialize::<ashpd::desktop::global_shortcuts::Activated>()
-                                .is_ok()
+                                && session_path
+                                    .as_deref()
+                                    .is_none_or(|path| path == event.session_handle().as_str())
+                                && event.shortcut_id() == shortcut_id
                             {
                                 held.update(true);
                                 send(events, Message::Hotkey(HotkeyEvent::ComboDown));
                             }
                         }
                         Some("Deactivated") => {
-                            if message
+                            if let Ok(event) = message
                                 .body()
                                 .deserialize::<ashpd::desktop::global_shortcuts::Deactivated>()
-                                .is_ok()
+                                && session_path
+                                    .as_deref()
+                                    .is_none_or(|path| path == event.session_handle().as_str())
+                                && event.shortcut_id() == shortcut_id
                             {
                                 held.update(false);
                                 send(events, Message::Hotkey(HotkeyEvent::ComboUp));
@@ -437,6 +451,9 @@ async fn portal(
                             if let Ok(event) = message
                                 .body()
                                 .deserialize::<ashpd::desktop::global_shortcuts::ShortcutsChanged>()
+                                && session_path
+                                    .as_deref()
+                                    .is_none_or(|path| path == event.session_handle().as_str())
                             {
                                 describe(event.shortcuts());
                             }

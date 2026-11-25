@@ -144,7 +144,8 @@ impl LoginItem for Desktop {
                 Err(e) => Err(e.to_string()),
             };
         }
-        let executable = std::env::current_exe().map_err(|e| e.to_string())?;
+        let executable =
+            resolve_executable_path(std::env::current_exe().map_err(|e| e.to_string())?);
         let executable = escape_desktop_exec_arg(&executable)?;
         let parent = path.parent().ok_or("No autostart directory")?;
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -220,6 +221,19 @@ impl SecretSource for Secrets {
     }
 }
 
+fn resolve_executable_path(exe: std::path::PathBuf) -> std::path::PathBuf {
+    if !exe.exists()
+        && let Some(raw) = exe.to_str()
+        && let Some(stripped) = raw.strip_suffix(" (deleted)")
+    {
+        let candidate = std::path::PathBuf::from(stripped);
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    exe
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,5 +247,14 @@ mod tests {
         assert!(escape_desktop_exec_arg(Path::new("/opt/onda\nExec=evil")).is_err());
         assert!(escape_desktop_exec_arg(Path::new("/opt/onda\r")).is_err());
         assert!(escape_desktop_exec_arg(Path::new("/opt/onda\0")).is_err());
+    }
+
+    #[test]
+    fn resolve_executable_path_strips_deleted_suffix_when_replacement_exists() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let bin = temp.path().join("onda");
+        std::fs::write(&bin, b"elf").expect("write bin");
+        let deleted = std::path::PathBuf::from(format!("{} (deleted)", bin.display()));
+        assert_eq!(resolve_executable_path(deleted), bin);
     }
 }
