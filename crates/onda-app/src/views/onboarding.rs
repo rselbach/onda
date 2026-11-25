@@ -4,6 +4,7 @@
 use onda_domain::hotkey::{
     GlobeKeyAction, HotkeyPreset, OPEN_KEYBOARD_SETTINGS_TITLE, Shortcut, fn_key_warning,
 };
+use onda_domain::models::Catalog;
 use onda_domain::onboarding::{
     CustomHotkeyLabel, HOTKEY_TITLE, HotkeyPresetChoice, LANGUAGE_SEARCH_PLACEHOLDER,
     LANGUAGE_TITLE, MODEL_TITLE, ModelAction, ModelCard, ModelChoice, Onboarding, OnboardingEnv,
@@ -263,6 +264,8 @@ pub struct OnboardingView {
 pub struct OnboardingInputs<'a> {
     /// The wizard.
     pub wizard: &'a Onboarding,
+    /// Model catalog for filtering offered onboarding languages.
+    pub catalog: &'a Catalog,
     /// What it reads from the app.
     pub env: &'a OnboardingEnv<'a>,
     /// The system the shell runs on: it lists the hotkey presets and says
@@ -324,6 +327,7 @@ fn content(inputs: &OnboardingInputs<'_>) -> OnboardingContent {
         },
         OnboardingStep::Language => {
             let step = language_step(
+                inputs.catalog,
                 inputs.language_query,
                 inputs.show_all_languages,
                 inputs.wizard.language(),

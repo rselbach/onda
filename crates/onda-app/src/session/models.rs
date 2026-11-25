@@ -228,6 +228,7 @@ impl Actor {
     pub(super) fn download_then_load(&mut self, model: ModelId) {
         // the tray and overlay follow the download's progress (OVL-19)
         self.loads.wait_for_download(model);
+        self.loading_target = Some(model);
         self.model_state = ModelState::Loading {
             status: PREPARING_STATUS.to_owned(),
             progress: None,
@@ -279,6 +280,7 @@ impl Actor {
                 self.downloads.ended(model.as_str());
                 self.pending.download_stopped(model);
                 if self.loads.download_ended(model) {
+                    self.loading_target = None;
                     // a cancelled load reports not_ready (ASR-7)
                     self.model_state = ModelState::NotReady;
                 }
@@ -298,6 +300,7 @@ impl Actor {
                     _ => status_text(&name, DownloadStatus::Failed),
                 };
                 if self.loads.download_ended(model) {
+                    self.loading_target = None;
                     // the load failed: error state and ASR-6
                     self.model_state = ModelState::Error {
                         message: shown.clone(),
@@ -389,7 +392,7 @@ impl Actor {
             model == self.desired_model() || self.service.loaded_model() == Some(model);
         let unload = if deleting_active {
             self.cancel();
-            Some(self.service.prepare_unload())
+            Some(self.service.prepare_unload_model(model))
         } else {
             None
         };
@@ -467,6 +470,7 @@ impl Actor {
         self.downloaded_gen += 1;
         self.downloaded.retain(|m| *m != model);
         self.loads.wait_for_download(model);
+        self.loading_target = Some(model);
         self.model_state = ModelState::Loading {
             status: PREPARING_STATUS.to_owned(),
             progress: None,

@@ -156,8 +156,17 @@ async fn first_run() -> Harness {
         })
     };
     for _ in 0..OnboardingStep::ALL.len() {
-        if step(&h) == Some(OnboardingStep::Ready) {
+        let Some(current) = step(&h) else {
             break;
+        };
+        if current == OnboardingStep::Ready {
+            break;
+        }
+        if current == OnboardingStep::Language {
+            h.app.onboarding_select_language(
+                onda_domain::languages::LanguageSetting::parse("en").unwrap(),
+            );
+            sleep(10).await;
         }
         h.app.onboarding_continue();
         sleep(10).await;

@@ -35,9 +35,11 @@ pub(super) struct Hotkeys {
     // the shortcut last handed to the shell; `None` while unregistered for a
     // capture (HOT-8)
     registered: Option<Shortcut>,
+    last_attempted: Option<Shortcut>,
     // bumped on every register and unregister, so a late result for a
     // superseded registration is dropped
     generation: u64,
+    trust_gen: u64,
     // a combo press is down; HOT-18 releases it on unregister
     combo_down: bool,
     capturing: bool,
@@ -56,7 +58,9 @@ impl Hotkeys {
             held_trust: false,
             poll: None,
             registered: None,
+            last_attempted: None,
             generation: 0,
+            trust_gen: 0,
             combo_down: false,
             capturing: false,
             globe: GlobeKeyAction::Unknown,
@@ -170,6 +174,7 @@ impl Actor {
         let shortcut = self.settings.hotkey.clone();
         self.hotkeys.generation += 1;
         self.hotkeys.registered = Some(shortcut.clone());
+        self.hotkeys.last_attempted = Some(shortcut.clone());
         self.hotkeys.stream = StreamReenablePolicy::new();
         let generation = self.hotkeys.generation;
         let (done, outcome) = oneshot::channel();
@@ -314,17 +319,26 @@ impl Actor {
         self.check_trust();
     }
 
-    fn check_trust(&self) {
+    fn check_trust(&mut self) {
         if !self.hotkeys.retry.is_pending() {
             return;
         }
+        self.hotkeys.trust_gen += 1;
+        let generation = self.hotkeys.trust_gen;
         let permissions = self.ports.permissions.clone();
         tokio::spawn(blocking_send(self.messages.clone(), move || {
-            Msg::TrustChecked(permissions.accessibility_trusted())
+            Msg::TrustChecked {
+                generation,
+                trusted: permissions.accessibility_trusted(),
+            }
         }));
     }
 
-    pub(super) fn trust_checked(&mut self, trusted: bool) {
+    pub(super) fn trust_checked(&mut self, generation: u64, trusted: bool) {
+        if generation != self.hotkeys.trust_gen {
+            return;
+        }
+        self.permissions_gen += 1;
         self.permissions.accessibility = trusted;
         // retry only when trust went from untrusted to trusted
         if self.hotkeys.retry.record_trust(trusted) {
@@ -342,7 +356,10 @@ impl Actor {
     // SET-5: a changed shortcut re-registers at once
     pub(super) fn hotkey_settings_changed(&mut self) {
         self.refresh_settings();
-        if self.hotkeys.capturing || self.hotkeys.registered.as_ref() == Some(&self.settings.hotkey)
+        if self.hotkeys.capturing
+            || self.hotkeys.registered.as_ref() == Some(&self.settings.hotkey)
+            || (self.hotkeys.retry.waiting_for_trust()
+                && self.hotkeys.last_attempted.as_ref() == Some(&self.settings.hotkey))
         {
             return;
         }
@@ -396,10 +413,16 @@ impl Actor {
     }
 
     pub(super) fn set_hotkey(&mut self, shortcut: &Shortcut) {
-        self.save_hotkey(shortcut);
-        if !self.hotkeys.capturing {
-            self.register_hotkey(true);
+        if self.hotkeys.capturing {
+            self.hotkeys
+                .recorder
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .stop();
+            self.hotkeys.capturing = false;
         }
+        self.save_hotkey(shortcut);
+        self.register_hotkey(true);
     }
 
     fn save_hotkey(&mut self, shortcut: &Shortcut) {

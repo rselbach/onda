@@ -27,6 +27,7 @@ fn key(code: &str) -> KeyCode {
 async fn everything_shown(platform: Platform) -> String {
     let h = Harness::on_platform(platform, |s| {
         s.onboarding = OnboardingFlags::default();
+        s.language = onda_domain::languages::LanguageSetting::parse("en").expect("en");
         s.output_mode = OutputMode::Clipboard;
         s.hotkey = Shortcut::new(key("Enter"), all_modifiers()).expect("a valid shortcut");
     })

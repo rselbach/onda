@@ -217,6 +217,8 @@ impl Actor {
             false => {
                 self.close_providers_dialog();
                 self.cancel_prompt_editor();
+                self.cancel_cleanup_test();
+                self.ui.cleanup.test_error = None;
             }
         }
     }
@@ -312,12 +314,15 @@ impl Actor {
         self.show_provider(self.settings.cleanup_provider.unwrap_or_default());
     }
 
-    /// "Done", or anything that hides the sheet: saves the key field
-    /// (CLN-25) and abandons a load in flight.
     pub(super) fn close_providers_dialog(&mut self) {
         if self.ui.cleanup.dialog.take().is_some() {
             self.save_api_key();
             self.cancel_key_load();
+            let page = &mut self.ui.cleanup;
+            page.key_provider = None;
+            page.text.clear();
+            page.baseline = KeyBaseline::Loading;
+            page.error = None;
         }
     }
 
@@ -391,6 +396,9 @@ impl Actor {
     }
 
     pub(super) fn api_key_edited(&mut self, text: String) {
+        if self.ui.cleanup.dialog.is_none() || self.ui.cleanup.key_provider.is_none() {
+            return;
+        }
         self.cancel_key_load();
         let page = &mut self.ui.cleanup;
         page.baseline =
@@ -473,22 +481,30 @@ impl Actor {
     /// queued now, behind every call already issued; the returned closure
     /// blocks until it is done.
     pub(super) fn pending_key_save(&mut self) -> Option<Box<dyn FnOnce() + Send>> {
-        let (provider, value) = {
+        let pending = {
             let page = &mut self.ui.cleanup;
-            let provider = page.key_provider?;
-            let value = written_value(key_write(&page.baseline, &page.text)?);
-            page.baseline = KeyBaseline::Known(value.clone());
-            page.save_seq += 1;
-            (provider, value)
+            page.key_provider.and_then(|provider| {
+                let value = written_value(key_write(&page.baseline, &page.text)?);
+                page.baseline = KeyBaseline::Known(value.clone());
+                page.save_seq += 1;
+                Some((provider, value))
+            })
         };
-        let secrets = self.ports.secrets.clone();
-        let saved = self
-            .key_queue()
-            .run(move || secrets.save_api_key(provider, &value));
+        if let Some((provider, value)) = pending {
+            let secrets = self.ports.secrets.clone();
+            let saved = self
+                .key_queue()
+                .run(move || secrets.save_api_key(provider, &value));
+            return Some(Box::new(move || {
+                if let Err(error) = saved.blocking_recv().unwrap_or_else(lost) {
+                    tracing::error!(%error, provider = provider.id(), "could not save a cleanup API key at quit");
+                }
+            }));
+        }
+        let queue = self.ui.cleanup.key_queue.as_ref()?;
+        let drained = queue.run(|| ());
         Some(Box::new(move || {
-            if let Err(error) = saved.blocking_recv().unwrap_or_else(lost) {
-                tracing::error!(%error, provider = provider.id(), "could not save a cleanup API key at quit");
-            }
+            let _ = drained.blocking_recv();
         }))
     }
 

@@ -38,7 +38,7 @@ struct EnvParts {
     hotkey_display: String,
     hotkey_needs_accessibility: bool,
     privacy_naming: PrivacyNaming,
-    selected: Option<(String, ModelStatus)>,
+    selected: Option<(String, ModelStatus, bool)>,
     recommended: ModelStatus,
 }
 
@@ -50,9 +50,12 @@ impl EnvParts {
             hotkey_display: &self.hotkey_display,
             hotkey_needs_accessibility: self.hotkey_needs_accessibility,
             privacy_naming: self.privacy_naming,
-            selected_model: self.selected.as_ref().map(|(name, status)| SelectedModel {
-                name,
-                status: *status,
+            selected_model: self.selected.as_ref().map(|(name, status, compatible)| {
+                SelectedModel {
+                    name,
+                    status: *status,
+                    compatible: *compatible,
+                }
             }),
             recommended_model: self.recommended,
         }
@@ -100,6 +103,7 @@ impl Actor {
             flags,
             Some(self.settings.language.code().to_owned()),
             self.ports.platform,
+            &self.catalog,
         );
         self.ui.onboarding = Some(OnboardingState {
             wizard,
@@ -145,7 +149,11 @@ impl Actor {
 
     fn env_parts(&self) -> EnvParts {
         let selected = self.settings.selected_model;
-        let recommended = recommended_model(&self.catalog, self.onboarding_language());
+        let language = self.onboarding_language();
+        let recommended = recommended_model(&self.catalog, language);
+        let compatible = routes(&self.catalog, language)
+            .iter()
+            .any(|route| route.model == selected);
         EnvParts {
             microphone: self.permissions.microphone,
             accessibility: self.permissions.accessibility,
@@ -155,10 +163,13 @@ impl Actor {
                 .hotkey
                 .needs_accessibility(self.ports.platform),
             privacy_naming: self.ports.platform.privacy_naming(),
-            selected: self
-                .catalog
-                .model(selected)
-                .map(|info| (info.name.to_owned(), self.model_status(selected))),
+            selected: self.catalog.model(selected).map(|info| {
+                (
+                    info.name.to_owned(),
+                    self.model_status(selected),
+                    compatible,
+                )
+            }),
             // no model transcribes the language: nothing to download
             recommended: recommended.map_or(
                 ModelStatus {
@@ -190,7 +201,7 @@ impl Actor {
             }
             Some(OnboardingEffect::ReachedReady) => {
                 // load the chosen model so the try-it box works (ONB-9)
-                if !self.load_in_flight() {
+                if !self.in_flight_for(self.desired_model()) {
                     self.override_model = None;
                     self.start_load(false);
                 }
@@ -217,7 +228,7 @@ impl Actor {
             self.settings.onboarding.finished(),
         ));
         self.events.emit(Event::CloseOnboarding);
-        if !self.load_in_flight() {
+        if !self.in_flight_for(self.desired_model()) {
             self.override_model = None;
             self.start_load(false);
         }
@@ -247,7 +258,7 @@ impl Actor {
             self.settings.onboarding,
             self.downloaded.contains(&selected),
             self.service.loaded_model() == Some(selected),
-            self.load_in_flight(),
+            self.in_flight_for(selected),
         );
         if outcome.flags != self.settings.onboarding {
             self.apply_setting(SettingChange::Onboarding(outcome.flags));
@@ -265,8 +276,9 @@ impl Actor {
     // ONB-4: picking saves the language and its recommended model;
     // re-picking the current one changes nothing
     pub(super) fn onboarding_select_language(&mut self, language: LanguageSetting) {
-        let recommended =
-            recommended_model(&self.catalog, language).unwrap_or(self.settings.selected_model);
+        let Some(recommended) = recommended_model(&self.catalog, language) else {
+            return;
+        };
         let Some(state) = &mut self.ui.onboarding else {
             return;
         };
@@ -311,6 +323,15 @@ impl Actor {
     // ONB-8 "Use This Model"
     pub(super) fn onboarding_choose_model(&mut self, model: ModelId) {
         if self.available_downloaded().contains(&model) {
+            self.pending.clear();
+            if self
+                .loads
+                .waiting_for()
+                .is_some_and(|waiting| waiting != model)
+            {
+                self.loads.clear_wait();
+                self.loading_target = None;
+            }
             self.override_model = None;
             self.end_declined();
             self.apply_setting(SettingChange::SelectedModel(model));
@@ -319,6 +340,7 @@ impl Actor {
 
     // ONB-8 "Download": selects and starts the download
     pub(super) fn onboarding_download_model(&mut self, model: ModelId) {
+        self.pending.clear();
         self.override_model = None;
         self.apply_setting(SettingChange::SelectedModel(model));
         if let Some(state) = &mut self.ui.onboarding {
@@ -351,6 +373,7 @@ impl Actor {
             .collect();
         Some(onboarding_view(OnboardingInputs {
             wizard: &state.wizard,
+            catalog: &self.catalog,
             env: &env,
             platform: self.ports.platform,
             language_query: &state.query,
