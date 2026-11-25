@@ -139,7 +139,10 @@ pub(crate) enum Msg {
         status: i32,
         trusted: bool,
     },
-    TrustChecked(bool),
+    TrustChecked {
+        generation: u64,
+        trusted: bool,
+    },
     GlobeKey(GlobeKeyAction),
     StartChecked {
         id: SessionId,
@@ -405,6 +408,7 @@ pub(crate) struct Actor {
     notice_timer: Option<Task>,
     model_state: ModelState,
     loads: ModelLoads,
+    loading_target: Option<ModelId>,
     downloaded: Vec<ModelId>,
     downloaded_gen: u64,
     deleting: HashSet<ModelId>,
@@ -484,6 +488,7 @@ impl Actor {
             notice_timer: None,
             model_state: ModelState::NotReady,
             loads: ModelLoads::new(),
+            loading_target: None,
             downloaded: Vec::new(),
             downloaded_gen: 0,
             deleting: HashSet::new(),
@@ -621,7 +626,12 @@ impl Actor {
                 self.hotkey_app_became_active();
                 self.windows_app_became_active();
             }
-            Msg::SettingsChanged => self.hotkey_settings_changed(),
+            Msg::SettingsChanged => {
+                self.hotkey_settings_changed();
+                if !self.settings.history_enabled {
+                    self.ui.history.cancel_retention_dialog();
+                }
+            }
             Msg::Audio(signal) => self.on_audio(signal),
             Msg::Ui(msg) => self.on_ui(msg),
             Msg::Shutdown(done) => {
@@ -643,7 +653,10 @@ impl Actor {
                 status,
                 trusted,
             } => self.hotkey_failure(generation, status, trusted),
-            Msg::TrustChecked(trusted) => self.trust_checked(trusted),
+            Msg::TrustChecked {
+                generation,
+                trusted,
+            } => self.trust_checked(generation, trusted),
             Msg::GlobeKey(action) => self.hotkeys.globe = action,
             Msg::StartChecked { id, report } => self.start_checked(id, report),
             Msg::CaptureOpened { id, result } => self.capture_opened(id, result),
@@ -907,6 +920,7 @@ impl Actor {
         {
             return;
         }
+        self.permissions_gen += 1;
         self.permissions = PermissionSnapshot {
             microphone: report.microphone,
             accessibility: report.accessibility,
@@ -1122,8 +1136,6 @@ impl Actor {
             }
             AudioSignal::Interrupted { capture_id, notice } => {
                 if self.capturing(capture_id) {
-                    // DICT-11, DICT-12: stop with what was captured and report
-                    self.notify(notice);
                     match &self.phase {
                         Phase::Recording(_) => self.stop_without_tail(),
                         Phase::Transcribing(t) => {
@@ -1132,6 +1144,7 @@ impl Actor {
                         }
                         Phase::Idle | Phase::Starting(_) | Phase::Aborting(_) => {}
                     }
+                    self.notify(notice);
                 }
             }
             AudioSignal::ConversionFailed { capture_id, notice } => {
@@ -1809,9 +1822,14 @@ impl Actor {
         ));
     }
 
+    fn in_flight_for(&self, model: ModelId) -> bool {
+        self.load_in_flight() && self.loading_target == Some(model)
+    }
+
     fn start_load(&mut self, unload_first: bool) {
         let model = self.desired_model();
         self.service.set_desired(model);
+        self.loading_target = Some(model);
         // loading downloads the model first when it is missing (ASR-2)
         if !self.downloaded.contains(&model) && !self.catalog.is_built_in(model) {
             self.download_then_load(model);
@@ -1829,6 +1847,12 @@ impl Actor {
 
     fn load_finished(&mut self, result: Result<(), LoadError>) {
         self.loads.finished();
+        if !self.load_in_flight() {
+            self.loading_target = None;
+            if result.is_ok() && self.service.loaded_model() == Some(self.desired_model()) {
+                self.model_state = ModelState::Ready;
+            }
+        }
         if let Err(LoadError::Failed(error)) = result {
             // built-in engines have no files on disk (ASR-6)
             let on_disk: Vec<ModelId> = self
@@ -1844,7 +1868,7 @@ impl Actor {
 
     fn switch_model(&mut self, model: ModelId, explicit: bool) {
         let available = self.available_downloaded();
-        match select_model(model, self.settings.selected_model.as_str(), &available) {
+        match select_model(model, &self.settings.stored_model, &available) {
             SelectOutcome::NotDownloaded => {
                 tracing::warn!(
                     model = model.as_str(),

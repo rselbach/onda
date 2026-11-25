@@ -84,7 +84,7 @@ impl HistoryState {
         self.entries_read == Some((self.generation, self.page_read))
     }
 
-    fn cancel_retention_dialog(&mut self) {
+    pub(super) fn cancel_retention_dialog(&mut self) {
         if matches!(self.dialog, Some(HistoryDialog::Retention(..))) {
             self.dialog = None;
         }
@@ -107,6 +107,7 @@ impl Actor {
         self.apply_setting(SettingChange::HistoryEnabled(enabled));
         if !self.settings.history_enabled {
             self.recent.clear();
+            self.ui.history.cancel_retention_dialog();
         }
         self.refresh_recent();
     }
@@ -285,7 +286,10 @@ impl Actor {
     pub(super) fn confirm_history_dialog(&mut self) {
         match self.ui.history.dialog.take() {
             Some(HistoryDialog::Retention(retention, _)) => {
-                if self.ui.history.entries_current() {
+                if self.settings.history_enabled
+                    && self.ui.history.entries_current()
+                    && retention != self.settings.history_retention
+                {
                     self.apply_retention_setting(retention);
                 }
             }

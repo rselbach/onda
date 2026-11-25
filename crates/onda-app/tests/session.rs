@@ -1088,6 +1088,24 @@ async fn dict_11_interruption_during_the_tail_ends_it_early() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn app_10_interrupted_provisional_hold_recording_preserves_notice() {
+    let h = Harness::with(|s| s.activation_mode = ActivationMode::Hold).await;
+    h.press();
+    sleep(100).await;
+    assert!(h.audio.is_open());
+
+    h.app.audio_signals().send(AudioSignal::Interrupted {
+        capture_id: h.audio.capture_id(),
+        notice: UserMessage::MicrophoneUnavailable {
+            error: "gone".to_owned(),
+        },
+    });
+    sleep(500).await;
+    assert_eq!(h.typed(), vec!["hello world"]);
+    assert_eq!(h.notices(), vec!["Microphone Unavailable"]);
+}
+
+#[tokio::test(start_paused = true)]
 async fn conversion_failures_while_recording_are_rate_limited() {
     let h = Harness::with(|s| s.activation_mode = ActivationMode::Toggle).await;
     h.tap();

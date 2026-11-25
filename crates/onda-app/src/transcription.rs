@@ -71,6 +71,11 @@ pub(crate) struct TranscriptionService {
     inner: Arc<Inner>,
 }
 
+enum UnloadScope {
+    LatestOp,
+    Model(ModelId),
+}
+
 impl TranscriptionService {
     pub(crate) fn new(store: Arc<dyn ModelStore>, publish: StatePublisher) -> Self {
         Self {
@@ -131,7 +136,9 @@ impl TranscriptionService {
         let service = self.clone();
         async move {
             if unload_first {
-                service.finish_unload(start_generation, start_seq).await;
+                service
+                    .finish_unload(start_generation, start_seq, UnloadScope::LatestOp)
+                    .await;
             }
             service.ensure_loaded_at(start_generation, wait_model).await
         }
@@ -310,16 +317,33 @@ impl TranscriptionService {
     /// loads are cancelled at once, returning the future that releases the
     /// engine after any in-flight call.
     pub(crate) fn prepare_unload(&self) -> impl Future<Output = ()> + Send + 'static {
-        let (unload_generation, unload_seq) = {
-            let _pub = lock(&self.inner.publish_lock);
-            let generation = self.inner.generation.fetch_add(1, Ordering::SeqCst) + 1;
-            let seq = self.inner.op_seq.fetch_add(1, Ordering::SeqCst) + 1;
-            (generation, seq)
-        };
+        let (unload_generation, unload_seq) = self.reserve_unload();
         let service = self.clone();
         async move {
-            service.finish_unload(unload_generation, unload_seq).await;
+            service
+                .finish_unload(unload_generation, unload_seq, UnloadScope::LatestOp)
+                .await;
         }
+    }
+
+    pub(crate) fn prepare_unload_model(
+        &self,
+        model: ModelId,
+    ) -> impl Future<Output = ()> + Send + 'static {
+        let (unload_generation, unload_seq) = self.reserve_unload();
+        let service = self.clone();
+        async move {
+            service
+                .finish_unload(unload_generation, unload_seq, UnloadScope::Model(model))
+                .await;
+        }
+    }
+
+    fn reserve_unload(&self) -> (u64, u64) {
+        let _pub = lock(&self.inner.publish_lock);
+        let generation = self.inner.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let seq = self.inner.op_seq.fetch_add(1, Ordering::SeqCst) + 1;
+        (generation, seq)
     }
 
     /// Unloads the model after any in-flight engine call and cancels any
@@ -329,13 +353,15 @@ impl TranscriptionService {
         self.prepare_unload().await;
     }
 
-    async fn finish_unload(&self, unload_generation: u64, unload_seq: u64) {
+    async fn finish_unload(&self, unload_generation: u64, unload_seq: u64, scope: UnloadScope) {
         let mut slot = self.inner.gate.clone().lock_owned().await;
         let service = self.clone();
         blocking(move || {
+            let force_for_model =
+                matches!(scope, UnloadScope::Model(model) if slot.model == Some(model));
             {
                 let _pub = lock(&service.inner.publish_lock);
-                if service.inner.op_seq.load(Ordering::SeqCst) != unload_seq {
+                if !force_for_model && service.inner.op_seq.load(Ordering::SeqCst) != unload_seq {
                     return;
                 }
             }
@@ -1075,5 +1101,20 @@ mod tests {
         );
         let _ = release.send(());
         assert_eq!(first.await.ok(), Some(Err(LoadError::Stale)));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn prepare_unload_model_still_unloads_when_newer_load_is_queued() {
+        let store = Arc::new(Store::with(&[V2, UNIFIED]));
+        let (service, _states) = service(store.clone());
+        service.set_desired(V2);
+        assert_eq!(service.ensure_loaded().await, Ok(()));
+        assert_eq!(service.loaded_model(), Some(V2));
+
+        let unload = service.prepare_unload_model(V2);
+        service.set_desired(V2);
+        let _reloaded = service.prepare_load(false);
+        unload.await;
+        assert_eq!(store.total(V2, |c| &c.unloads), 1);
     }
 }

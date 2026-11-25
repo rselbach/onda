@@ -964,3 +964,38 @@ async fn hot_17_give_up_clears_registration_for_reregister_and_ignores_stray_eve
         "SettingsChanged re-registers the same shortcut after GiveUp"
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn app_7_reset_hotkey_during_capture_stops_recorder_and_registers() {
+    let h = Harness::new().await;
+    h.app.set_hotkey(Shortcut::CONTROL_ALT_SPACE);
+    sleep(10).await;
+    let unregisters_before = h.log.count("hotkey:unregister");
+
+    h.app.begin_hotkey_capture();
+    sleep(1).await;
+    assert!(h.hotkey_view().recording);
+    assert_eq!(h.log.count("hotkey:unregister"), unregisters_before + 1);
+
+    h.app.reset_hotkey();
+    sleep(10).await;
+    let view = h.hotkey_view();
+    assert!(!view.recording);
+    assert_eq!(view.display, "⌥ Space");
+    assert_eq!(
+        hotkey_calls(&h).last().map(String::as_str),
+        Some("hotkey:register ⌥ Space")
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn app_8_unrelated_settings_changed_does_not_repeat_typing_access_episode() {
+    let h = failing_lone(1, false).await;
+    assert_eq!(wizard_opened(&h), 1);
+    let registers_before = registrations(&h);
+
+    h.app.settings_changed();
+    sleep(10).await;
+    assert_eq!(registrations(&h), registers_before);
+    assert_eq!(wizard_opened(&h), 1);
+}

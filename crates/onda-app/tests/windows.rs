@@ -101,6 +101,7 @@ fn opened_sections(h: &Harness) -> Vec<MainWindowSection> {
 
 fn first_run(s: &mut onda_app::seams::Settings) {
     s.onboarding = OnboardingFlags::default();
+    s.language = en();
 }
 
 fn settings_log(h: &Harness, prefix: &str) -> Vec<String> {
@@ -195,7 +196,16 @@ async fn onb_1_to_10_first_run_from_welcome_to_start_dictating() {
     else {
         panic!("the language step");
     };
-    assert_eq!(cards.len(), Language::popular().count());
+    let supported_popular = Language::popular()
+        .filter(|language| {
+            !onda_domain::routing::routes(
+                &onda_domain::models::Catalog::new(None),
+                LanguageSetting::Specific(*language),
+            )
+            .is_empty()
+        })
+        .count();
+    assert_eq!(cards.len(), supported_popular);
     assert_eq!(toggle_title.as_deref(), Some("Show All"));
 
     h.app.onboarding_search_languages("ger");
@@ -3876,4 +3886,182 @@ async fn cleanup_disabled_mid_session_skips_keychain_and_refining() {
     );
     assert_eq!(h.cleanup.calls(), 0);
     assert!(!h.processing_labels().contains(&"Refining..."));
+}
+
+#[tokio::test(start_paused = true)]
+async fn app_1_onboarding_switch_during_download_wait_loads_chosen_model() {
+    let h = Harness::unstarted(first_run);
+    *lock(&h.models.downloaded) = vec![UNIFIED];
+    h.app.ui_ready();
+    sleep(800).await;
+
+    h.app.onboarding_continue();
+    sleep(1).await;
+    h.app.onboarding_select_language(en());
+    sleep(1).await;
+    h.app.onboarding_continue();
+    h.app
+        .download_event(download(V2, DownloadUpdateKind::Started));
+    sleep(1).await;
+    for _ in 0..3 {
+        h.app.onboarding_continue();
+        sleep(1).await;
+    }
+    assert_eq!(onboarding(&h).step, OnboardingStep::Ready);
+    assert_eq!(h.tray().icon, TrayIcon::ProgressRing { progress: 0.0 });
+
+    for _ in 0..3 {
+        h.app.onboarding_back();
+        sleep(1).await;
+    }
+    assert_eq!(onboarding(&h).step, OnboardingStep::SpeechModel);
+    h.app.onboarding_choose_model(UNIFIED);
+    sleep(1).await;
+    for _ in 0..3 {
+        h.app.onboarding_continue();
+        sleep(1).await;
+    }
+    assert_eq!(onboarding(&h).step, OnboardingStep::Ready);
+    h.app.onboarding_continue();
+    sleep(10).await;
+
+    lock(&h.models.downloaded).push(V2);
+    h.app
+        .download_event(download(V2, DownloadUpdateKind::Finished));
+    sleep(10).await;
+    assert_eq!(h.tray().icon, TrayIcon::Ready);
+    assert!(h.script.calls().contains(&EngineCall::Load(UNIFIED)));
+}
+
+#[tokio::test(start_paused = true)]
+async fn app_2_switching_back_to_resident_model_after_failed_download_restores_ready() {
+    let h = Harness::new().await;
+    assert_eq!(h.tray().icon, TrayIcon::Ready);
+    assert_eq!(h.script.calls(), vec![EngineCall::Load(V2)]);
+
+    h.app.run_setup_again();
+    sleep(1).await;
+    h.app.onboarding_continue();
+    sleep(1).await;
+    h.app.onboarding_select_language(language("es"));
+    sleep(1).await;
+    h.app.onboarding_continue();
+    h.app
+        .download_event(download(ULTRA, DownloadUpdateKind::Started));
+    sleep(1).await;
+    for _ in 0..3 {
+        h.app.onboarding_continue();
+        sleep(1).await;
+    }
+    assert_eq!(onboarding(&h).step, OnboardingStep::Ready);
+
+    h.app.download_event(download(
+        ULTRA,
+        DownloadUpdateKind::Failed {
+            error: "network error".to_owned(),
+        },
+    ));
+    sleep(1).await;
+    assert_eq!(h.tray().icon, TrayIcon::Warning);
+
+    for _ in 0..4 {
+        h.app.onboarding_back();
+        sleep(1).await;
+    }
+    assert_eq!(onboarding(&h).step, OnboardingStep::Language);
+    h.app.onboarding_select_language(en());
+    sleep(1).await;
+    h.app.onboarding_continue();
+    sleep(1).await;
+    assert_eq!(onboarding(&h).step, OnboardingStep::SpeechModel);
+    h.app.onboarding_choose_model(V2);
+    sleep(1).await;
+    for _ in 0..3 {
+        h.app.onboarding_continue();
+        sleep(1).await;
+    }
+    h.app.onboarding_continue();
+    sleep(10).await;
+    assert_eq!(h.tray().icon, TrayIcon::Ready);
+}
+
+#[tokio::test(start_paused = true)]
+async fn app_4_shutdown_flushes_already_queued_api_key_save() {
+    let h = Harness::with(|s| s.cleanup_enabled = true).await;
+    h.app.page_appeared(MainWindowSection::PostProcessing);
+    h.app.open_providers_dialog();
+    sleep(10).await;
+
+    let hold = common::Hold::new();
+    *lock(&h.secrets.hold) = Some(hold.clone());
+    h.app.api_key_edited("sk-or-troy-barnes");
+    h.app.close_providers_dialog();
+    eventually("save queued and blocked", || hold.started()).await;
+
+    let shutdown = h.app.shutdown_async();
+    tokio::pin!(shutdown);
+    let wait_real_time = async {
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    };
+    tokio::select! {
+        _ = &mut shutdown => panic!("shutdown must wait for queued key_queue save"),
+        _ = wait_real_time => {}
+    }
+    hold.release();
+    shutdown.await;
+    assert_eq!(h.secrets.stored().as_deref(), Some("sk-or-troy-barnes"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn app_5_and_app_6_dialog_close_clears_secret_and_disable_cancels_test() {
+    let h = Harness::with(|s| s.cleanup_enabled = true).await;
+    h.app.page_appeared(MainWindowSection::PostProcessing);
+    h.app.open_providers_dialog();
+    sleep(10).await;
+    h.app.close_providers_dialog();
+    h.app.api_key_edited("");
+    h.app.page_disappeared(MainWindowSection::PostProcessing);
+    sleep(10).await;
+    assert_eq!(h.secrets.stored().as_deref(), Some("sk-or-greendale"));
+
+    h.app.page_appeared(MainWindowSection::PostProcessing);
+    let hold = Arc::new(tokio::sync::Notify::new());
+    *lock(&h.cleanup.hold) = Some(hold.clone());
+    h.cleanup.respond(vec![Ok("clean".to_owned())]);
+    h.app.test_cleanup();
+    sleep(1).await;
+    h.app.set_cleanup_enabled(false);
+    hold.notify_one();
+    sleep(10).await;
+    h.app.set_cleanup_enabled(true);
+    sleep(1).await;
+    assert_eq!(
+        post_processing(&h).details.expect("details").test_error,
+        None
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn app_11_disabling_history_cancels_pending_retention_dialog() {
+    let h = Harness::new().await;
+    *lock(&h.history.stored) = vec![entry("Troy Barnes", None, None, 240.hours())];
+    h.app.page_appeared(MainWindowSection::History);
+    sleep(10).await;
+
+    h.app.set_history_retention(HistoryRetention::Week);
+    sleep(1).await;
+    assert!(history(&h).dialog.is_some());
+
+    h.app.set_history_enabled(false);
+    sleep(1).await;
+    assert!(history(&h).dialog.is_none());
+    h.app.confirm_history_dialog();
+    sleep(10).await;
+    assert_eq!(
+        lock(&h.settings.settings).history_retention,
+        HistoryRetention::Month
+    );
 }
