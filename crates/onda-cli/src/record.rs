@@ -60,9 +60,12 @@ pub fn devices() -> Result<()> {
 }
 
 pub fn run(args: &Args) -> Result<()> {
+    let wanted = Duration::try_from_secs_f64(args.seconds).ok();
     if !args.seconds.is_finite()
         || args.seconds <= 0.0
-        || Duration::try_from_secs_f64(args.seconds).is_err()
+        || wanted
+            .and_then(|duration| Instant::now().checked_add(duration))
+            .is_none()
     {
         return Err(anyhow!(
             "--seconds must be a positive finite duration (got {})",
@@ -179,5 +182,19 @@ mod tests {
             assert!(parse_seconds(bad).is_err(), "{bad}");
         }
         assert_eq!(parse_seconds("2.5").unwrap(), 2.5);
+    }
+
+    #[test]
+    fn overflow_seconds_fails_checked_add() {
+        for seconds in [1e19, 1e20] {
+            let args = Args {
+                out: "out".to_owned(),
+                seconds,
+                sessions: 1,
+                gap_ms: 0,
+                device: None,
+            };
+            assert!(run(&args).is_err(), "{seconds}");
+        }
     }
 }

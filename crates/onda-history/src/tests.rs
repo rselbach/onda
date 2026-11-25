@@ -875,13 +875,39 @@ fn symlinked_entry_folders_are_refused_arch_12() {
 }
 
 #[test]
-fn symlinked_history_folder_is_not_cleared_arch_12() {
+fn symlinked_history_folder_is_not_cleared_or_loaded_arch_12() {
     let f = Fixture::new();
     std::fs::create_dir_all(f.history.parent().expect("parent")).expect("data dir");
+    std::fs::create_dir_all(f.outside.join("stray-subfolder")).expect("stray");
     symlink(&f.outside, &f.history).expect("symlink");
     let got = f.store.delete_all();
     assert_eq!(got, Err(HistoryError::UnsafePath(f.history.clone())));
     assert_eq!(f.changes(), 0, "refused clear changes nothing");
+    let load_got = f.store.entries();
+    assert_eq!(load_got, Err(HistoryError::UnsafePath(f.history.clone())));
+    assert!(
+        f.outside.join("stray-subfolder").exists(),
+        "symlinked history folder must not prune outside subfolders"
+    );
+    f.assert_outside_intact();
+}
+
+#[test]
+fn symlinked_entry_without_audio_refused_during_retention_arch_12() {
+    let f = Fixture::new();
+    f.save(1, DAY, true, HistoryRetention::Month);
+    f.store.entries().expect("loaded");
+    let folder = entry_folder(&f.history, 1, DAY);
+    std::fs::remove_dir_all(&folder).expect("remove folder");
+    symlink(&f.outside, &folder).expect("symlink");
+
+    for n in 2..=MAX_AUDIO_RECORDINGS as u128 + 1 {
+        f.save(n, 0, true, HistoryRetention::Month);
+    }
+    assert!(
+        !f.outside.join(METADATA_FILENAME).exists(),
+        "must not write metadata outside history"
+    );
     f.assert_outside_intact();
 }
 

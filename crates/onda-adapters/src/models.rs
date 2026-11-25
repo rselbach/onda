@@ -67,7 +67,7 @@ impl Models {
         let listener = self.listener.clone();
         self.runtime.spawn(async move {
             let result = match redownload {
-                true => manager.redownload(model).await.map(DownloadOutcome::Downloaded),
+                true => manager.redownload_or_complete(model).await,
                 false => manager.download_or_complete(model).await,
             };
             match result {

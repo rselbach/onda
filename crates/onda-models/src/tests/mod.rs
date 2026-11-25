@@ -733,3 +733,51 @@ async fn delete_cross_process_lock_blocks_and_reports_downloading() {
     manager.delete(MODEL).expect("delete after lock released");
     assert!(!folder.exists());
 }
+
+#[tokio::test]
+async fn redownload_or_complete_does_not_emit_failed_while_local_download_runs() {
+    let mut f = Fixture::new().await;
+    f.server.set_behavior(WEIGHTS, Some(Behavior::Slow));
+    let dl = tokio::spawn({
+        let manager = f.manager.clone();
+        async move { manager.download(MODEL).await }
+    });
+    while let Some(event) = f.events.recv().await {
+        if matches!(event.kind, DownloadEventKind::Started) {
+            break;
+        }
+    }
+    let err = f
+        .manager
+        .redownload_or_complete(MODEL)
+        .await
+        .expect_err("busy with local download");
+    assert_eq!(err, Error::Downloading(MODEL));
+    dl.await.unwrap().expect("original download succeeds");
+
+    let mut f2 = Fixture::new().await;
+    let dir = f2.model_dir();
+    std::fs::create_dir_all(&dir).expect("create model dir");
+    let lock_path = f2.models_dir.join(format!(".{}.lock", MODEL.as_str()));
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .expect("open lock");
+    lock.lock().expect("hold external lock");
+    let err = f2
+        .manager
+        .redownload_or_complete(MODEL)
+        .await
+        .expect_err("busy with external lock");
+    assert_eq!(err, Error::Downloading(MODEL));
+    let events = f2.drain();
+    assert!(
+        events
+            .iter()
+            .any(|kind| matches!(kind, DownloadEventKind::Failed { .. })),
+        "external busy still emits Failed: {events:?}"
+    );
+}

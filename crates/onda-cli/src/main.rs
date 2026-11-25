@@ -98,9 +98,41 @@ fn default_data_dir() -> Result<PathBuf> {
 
 // the OS locale's language code from the POSIX locale variables (LANG-2)
 pub(crate) fn os_language() -> Option<String> {
-    ["LC_ALL", "LC_MESSAGES", "LANG"]
-        .into_iter()
-        .filter_map(|name| std::env::var(name).ok())
-        .find(|value| !value.is_empty() && value != "C" && value != "POSIX")
-        .and_then(|value| value.split(['_', '.', '-']).next().map(str::to_lowercase))
+    parse_os_language(
+        ["LC_ALL", "LC_MESSAGES", "LANG"]
+            .into_iter()
+            .map(|name| std::env::var(name).ok()),
+    )
+}
+
+fn parse_os_language(vars: impl IntoIterator<Item = Option<String>>) -> Option<String> {
+    vars.into_iter().flatten().find_map(|value| {
+        let code = value.split(['_', '.', '-']).next()?.to_lowercase();
+        (!code.is_empty() && code != "c" && code != "posix").then_some(code)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_os_language;
+
+    #[test]
+    fn c_and_posix_utf8_do_not_mask_lang() {
+        assert_eq!(
+            parse_os_language([Some("C.UTF-8".into()), None, Some("es_ES.UTF-8".into())]),
+            Some("es".to_owned())
+        );
+        assert_eq!(
+            parse_os_language([
+                Some("POSIX.UTF-8".into()),
+                Some(".UTF-8".into()),
+                Some("fr".into())
+            ]),
+            Some("fr".to_owned())
+        );
+        assert_eq!(
+            parse_os_language([Some("C.UTF-8".into()), None, None]),
+            None
+        );
+    }
 }

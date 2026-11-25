@@ -105,11 +105,23 @@ pub(crate) fn verify_folder(
 
     // a file rewritten while it was hashed must not be marked as verified
     match marker_text(folder, manifest) {
-        Ok(after) if after == before => write_marker(folder, &after),
-        Ok(_) => tracing::warn!("model files changed during verification; not marking verified"),
-        Err(error) => tracing::warn!(%error, "could not read model folder after verification"),
+        Ok(after) if after == before => {
+            write_marker(folder, &after);
+            Ok(())
+        }
+        Ok(_) => {
+            tracing::warn!("model files changed during verification; not marking verified");
+            let _ = std::fs::remove_file(folder.join(VERIFIED_MARKER));
+            Err("model files changed during verification".to_owned())
+        }
+        Err(error) => {
+            tracing::warn!(%error, "could not read model folder after verification");
+            let _ = std::fs::remove_file(folder.join(VERIFIED_MARKER));
+            Err(format!(
+                "could not read model folder after verification: {error}"
+            ))
+        }
     }
-    Ok(())
 }
 
 /// Records `folder` as verified at its current file sizes and modification
