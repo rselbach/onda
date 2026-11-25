@@ -345,32 +345,33 @@ impl Page {
         drop(rows);
         self.updating.set(false);
 
-        if let Some(alert) = page.alert
-            && self.alert.get() != Some(alert.id)
-        {
-            self.alert.set(Some(alert.id));
-            let dialog = adw::AlertDialog::builder()
-                .heading(&alert.title)
-                .body(&alert.message)
-                .build();
-            dialog.add_response("cancel", &alert.dismiss);
-            dialog.set_close_response("cancel");
-            if let Some(confirm) = alert.confirm {
-                dialog.add_response("confirm", &confirm);
-                dialog.set_response_appearance("confirm", adw::ResponseAppearance::Destructive);
-            }
-            let weak = Rc::downgrade(owner);
-            dialog.connect_response(None, move |_, response| {
-                if let Some(owner) = weak.upgrade() {
-                    owner.speech.alert.set(None);
-                    if response == "confirm" {
-                        owner.core.app.confirm_speech_alert(alert.id);
-                    } else {
-                        owner.core.app.dismiss_speech_alert(alert.id);
-                    }
+        if let Some(alert) = page.alert {
+            if self.alert.get() != Some(alert.id) {
+                self.alert.set(Some(alert.id));
+                let dialog = adw::AlertDialog::builder()
+                    .heading(&alert.title)
+                    .body(&alert.message)
+                    .build();
+                dialog.add_response("cancel", &alert.dismiss);
+                dialog.set_close_response("cancel");
+                if let Some(confirm) = alert.confirm {
+                    dialog.add_response("confirm", &confirm);
+                    dialog.set_response_appearance("confirm", adw::ResponseAppearance::Destructive);
                 }
-            });
-            dialog.present(Some(&owner.window));
+                let weak = Rc::downgrade(owner);
+                dialog.connect_response(None, move |_, response| {
+                    if let Some(owner) = weak.upgrade() {
+                        if response == "confirm" {
+                            owner.core.app.confirm_speech_alert(alert.id);
+                        } else {
+                            owner.core.app.dismiss_speech_alert(alert.id);
+                        }
+                    }
+                });
+                dialog.present(Some(&owner.window));
+            }
+        } else {
+            self.alert.set(None);
         }
     }
 }

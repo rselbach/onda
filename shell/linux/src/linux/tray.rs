@@ -227,7 +227,7 @@ enum TrayUpdate {
 /// shuts the tray down cleanly.
 pub struct TrayHandle {
     tx: std::sync::mpsc::Sender<TrayUpdate>,
-    worker: Option<std::thread::JoinHandle<()>>,
+    done: std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
 }
 
 impl TrayHandle {
@@ -243,34 +243,72 @@ impl TrayHandle {
 impl Drop for TrayHandle {
     fn drop(&mut self) {
         let _ = self.tx.send(TrayUpdate::Shutdown);
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
+        let (lock, cv) = &*self.done;
+        let mut finished = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !*finished {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            let (guard, timeout) = cv
+                .wait_timeout(finished, remaining)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            finished = guard;
+            if timeout.timed_out() {
+                break;
+            }
         }
     }
 }
 
 pub fn start(events: async_channel::Sender<Message>) -> Option<TrayHandle> {
-    let handle = match (Tray {
-        events,
-        view: TrayView {
-            icon: TrayIcon::Preparing,
-            red_tint: false,
-            accessibility_label: "Onda".into(),
-        },
-        menu: None,
-    })
-    .spawn()
-    {
-        Ok(handle) => handle,
-        Err(error) => {
-            tracing::debug!(%error, "tray unavailable");
-            return None;
-        }
-    };
     let (tx, rx) = std::sync::mpsc::channel();
-    let worker = std::thread::Builder::new()
+    let done = std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+    let worker_done = std::sync::Arc::clone(&done);
+    std::thread::Builder::new()
         .name("onda-tray".into())
         .spawn(move || {
+            struct DoneGuard(std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>);
+            impl Drop for DoneGuard {
+                fn drop(&mut self) {
+                    let (lock, cv) = &*self.0;
+                    *lock
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+                    cv.notify_all();
+                }
+            }
+            let _done_guard = DoneGuard(worker_done);
+            let mut tray = Tray {
+                events,
+                view: TrayView {
+                    icon: TrayIcon::Preparing,
+                    red_tint: false,
+                    accessibility_label: "Onda".into(),
+                },
+                menu: None,
+            };
+            let mut shutdown = false;
+            while let Ok(msg) = rx.try_recv() {
+                match msg {
+                    TrayUpdate::View(view) => tray.view = view,
+                    TrayUpdate::Menu(menu) => tray.menu = Some(*menu),
+                    TrayUpdate::Shutdown => shutdown = true,
+                }
+            }
+            if shutdown {
+                return;
+            }
+            let handle = match tray.assume_sni_available(true).spawn() {
+                Ok(handle) => handle,
+                Err(error) => {
+                    tracing::debug!(%error, "tray unavailable");
+                    return;
+                }
+            };
             while let Ok(first) = rx.recv() {
                 let mut latest_view = None;
                 let mut latest_menu = None;
@@ -302,10 +340,7 @@ pub fn start(events: async_channel::Sender<Message>) -> Option<TrayHandle> {
             handle.shutdown();
         })
         .ok()?;
-    Some(TrayHandle {
-        tx,
-        worker: Some(worker),
-    })
+    Some(TrayHandle { tx, done })
 }
 
 #[cfg(test)]

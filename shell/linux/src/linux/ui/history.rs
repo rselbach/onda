@@ -279,46 +279,48 @@ impl Page {
                 );
             }
         }
-        if let Some(confirmation) = view.dialog
-            && !self.confirming.replace(true)
-        {
-            let dialog = adw::AlertDialog::builder()
-                .heading(&confirmation.title)
-                .body(&confirmation.message)
-                .build();
-            dialog.add_response("cancel", &confirmation.cancel_title);
-            dialog.add_response("confirm", &confirmation.confirm_title);
-            dialog.set_close_response("cancel");
-            dialog.set_response_appearance("confirm", adw::ResponseAppearance::Destructive);
-            let weak = Rc::downgrade(owner);
-            dialog.connect_response(None, move |_, response| {
-                if let Some(owner) = weak.upgrade() {
-                    owner.history.confirming.set(false);
-                    if response == "confirm" {
-                        owner.core.app.confirm_history_dialog();
-                    } else {
-                        owner.core.app.cancel_history_dialog();
+        if let Some(confirmation) = view.dialog {
+            if !self.confirming.replace(true) {
+                let dialog = adw::AlertDialog::builder()
+                    .heading(&confirmation.title)
+                    .body(&confirmation.message)
+                    .build();
+                dialog.add_response("cancel", &confirmation.cancel_title);
+                dialog.add_response("confirm", &confirmation.confirm_title);
+                dialog.set_close_response("cancel");
+                dialog.set_response_appearance("confirm", adw::ResponseAppearance::Destructive);
+                let weak = Rc::downgrade(owner);
+                dialog.connect_response(None, move |_, response| {
+                    if let Some(owner) = weak.upgrade() {
+                        if response == "confirm" {
+                            owner.core.app.confirm_history_dialog();
+                        } else {
+                            owner.core.app.cancel_history_dialog();
+                        }
                     }
-                }
-            });
-            dialog.present(Some(&owner.window));
+                });
+                dialog.present(Some(&owner.window));
+            }
+        } else {
+            self.confirming.set(false);
         }
-        if let Some(error) = view.error
-            && !self.showing_error.replace(true)
-        {
-            let dialog = adw::AlertDialog::builder()
-                .heading(&error.title)
-                .body(&error.message)
-                .build();
-            dialog.add_response("close", "OK");
-            let weak = Rc::downgrade(owner);
-            dialog.connect_response(None, move |_, _| {
-                if let Some(owner) = weak.upgrade() {
-                    owner.history.showing_error.set(false);
-                    owner.core.app.dismiss_history_error();
-                }
-            });
-            dialog.present(Some(&owner.window));
+        if let Some(error) = view.error {
+            if !self.showing_error.replace(true) {
+                let dialog = adw::AlertDialog::builder()
+                    .heading(&error.title)
+                    .body(&error.message)
+                    .build();
+                dialog.add_response("close", "OK");
+                let weak = Rc::downgrade(owner);
+                dialog.connect_response(None, move |_, _| {
+                    if let Some(owner) = weak.upgrade() {
+                        owner.core.app.dismiss_history_error();
+                    }
+                });
+                dialog.present(Some(&owner.window));
+            }
+        } else {
+            self.showing_error.set(false);
         }
     }
 }

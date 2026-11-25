@@ -483,11 +483,22 @@ impl<'a> Paste<'a> {
 
     pub fn copy_for_paste(&mut self) -> anyhow::Result<()> {
         if let Some(Selection::Wayland(marker)) = &self.selection {
+            let marker = marker.clone();
             match offer_wayland(vec![
                 (WAYLAND_TEXT_TYPE.into(), self.text.as_bytes().to_vec()),
-                (marker.clone(), Vec::new()),
+                (marker, Vec::new()),
             ]) {
-                Ok(()) => return Ok(()),
+                Ok(()) => {
+                    if let Some(selection) = &self.selection {
+                        for _ in 0..25 {
+                            if matches!(selection.still_ours(), Ok(true)) {
+                                break;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                        }
+                    }
+                    return Ok(());
+                }
                 Err(error) => {
                     tracing::debug!(%error, "copying without a Wayland restoration marker");
                     self.selection = None;

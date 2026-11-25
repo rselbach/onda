@@ -75,7 +75,7 @@ fn forward(
 /// [`Controls`] shares it.
 #[derive(Default)]
 pub(super) struct KeyMonitor {
-    listening: RefCell<Vec<(gtk::Widget, gtk::EventControllerKey)>>,
+    listening: RefCell<Vec<(glib::WeakRef<gtk::Widget>, gtk::EventControllerKey)>>,
 }
 
 impl KeyMonitor {
@@ -86,7 +86,11 @@ impl KeyMonitor {
             (true, false) => self.install(owner),
             (false, true) => {
                 for (window, keys) in self.listening.take() {
-                    window.remove_controller(&keys);
+                    if let Some(window) = window.upgrade()
+                        && keys.widget().as_ref() == Some(&window)
+                    {
+                        window.remove_controller(&keys);
+                    }
                 }
             }
             _ => {}
@@ -114,7 +118,7 @@ impl KeyMonitor {
                 forward(&weak, false, keycode, state);
             });
             window.add_controller(keys.clone());
-            (window, keys)
+            (window.downgrade(), keys)
         });
         self.listening.replace(listening.collect());
     }
