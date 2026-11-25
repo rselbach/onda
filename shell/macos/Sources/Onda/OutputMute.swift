@@ -7,6 +7,7 @@ import Darwin
 /// aimed at any other app unless the sender holds an Apple-only entitlement.
 enum OutputMute {
     private static let system = AudioObjectID(kAudioObjectSystemObject)
+    private static let stateLock = NSLock()
     private static let tokens = MutedTokens()
     private static let watcher = DeviceReconnectWatcher()
 
@@ -15,21 +16,35 @@ enum OutputMute {
     /// next launch.
     static let recordName = "muted-output"
 
-    /// Unmutes the devices an earlier run muted and never unmuted. A device
-    /// stays listed until it is seen unmuted, so one that is unplugged now
-    /// is unmuted when it reconnects or at a later launch.
     static func restore(record: URL) {
-        let pending = recorded(record).filter { uid in !restored(uid) }
+        stateLock.withLock {
+            restoreLocked(record: record)
+        }
+    }
+
+    private static func restoreLocked(record: URL) {
+        let active = tokens.activeUIDs()
+        let pending = reconcilePending(record: record, active: active)
+        guard pending.contains(where: { !active.contains($0) }) else {
+            watcher.stop()
+            return
+        }
+        if case .newlyArmed = watcher.armIfNeeded(record: record) {
+            let rechecked = reconcilePending(record: record, active: active)
+            if !rechecked.contains(where: { !active.contains($0) }) {
+                watcher.stop()
+            }
+        }
+    }
+
+    private static func reconcilePending(record: URL, active: Set<String>) -> [String] {
+        let pending = recorded(record).filter { uid in active.contains(uid) || !restored(uid) }
         do {
             try remember(pending, in: record)
         } catch {
             Log.media.warning("Could not update the muted-output record: \(error.localizedDescription, privacy: .public)")
         }
-        if pending.isEmpty {
-            watcher.stop()
-        } else {
-            watcher.watch(record: record)
-        }
+        return pending
     }
 
     /// whether the device `uid` is known unmuted now
@@ -54,69 +69,91 @@ enum OutputMute {
     /// token for `unmute`. Nothing is muted while another process records
     /// and plays at once, such as a call, since muting would cut it off.
     static func muteIfAudible(record: URL) -> UInt32? {
-        guard let device = value(kAudioHardwarePropertyDefaultOutputDevice, of: system, AudioObjectID(0)) else {
-            Log.media.warning("No default audio output to mute")
-            return nil
-        }
-        guard let player = playingProcess(on: device) else { return nil }
-        // a device the user muted stays theirs to unmute
-        guard isMuted(on: device) == false else {
-            return nil
-        }
-        // remembered first, so a crash right after the mute is undone too;
-        // a mute that could not be undone later is not made at all
-        guard let uid = uid(of: device) else {
-            Log.media.warning("Audio output \(device, privacy: .public) has no UID; not muting")
-            return nil
-        }
-        let before = recorded(record)
-        do {
-            try remember(before.contains(uid) ? before : before + [uid], in: record)
-        } catch {
-            Log.media.warning("Could not remember the muted output, so not muting: \(error.localizedDescription, privacy: .public)")
-            return nil
-        }
-        guard set(muted: true, on: device) else {
-            Log.media.warning("Could not mute audio output \(device, privacy: .public)")
-            do {
-                try remember(before, in: record)
-            } catch {
-                Log.media.warning("Could not update the muted-output record: \(error.localizedDescription, privacy: .public)")
+        stateLock.withLock {
+            guard let device = value(kAudioHardwarePropertyDefaultOutputDevice, of: system, AudioObjectID(0)) else {
+                Log.media.warning("No default audio output to mute")
+                return nil
             }
-            return nil
+            guard let player = playingProcess(on: device) else { return nil }
+            // a device the user muted stays theirs to unmute
+            guard isMuted(on: device) == false else {
+                return nil
+            }
+            // remembered first, so a crash right after the mute is undone too;
+            // a mute that could not be undone later is not made at all
+            guard let uid = uid(of: device) else {
+                Log.media.warning("Audio output \(device, privacy: .public) has no UID; not muting")
+                return nil
+            }
+            let before = recorded(record)
+            do {
+                try remember(before.contains(uid) ? before : before + [uid], in: record)
+            } catch {
+                Log.media.warning("Could not remember the muted output, so not muting: \(error.localizedDescription, privacy: .public)")
+                return nil
+            }
+            guard set(muted: true, on: device) else {
+                Log.media.warning("Could not mute audio output \(device, privacy: .public)")
+                do {
+                    try remember(before, in: record)
+                } catch {
+                    Log.media.warning("Could not update the muted-output record: \(error.localizedDescription, privacy: .public)")
+                }
+                return nil
+            }
+            let token = tokens.insert(uid: uid)
+            Log.media.info("Muted audio output \(device, privacy: .public): \(player, privacy: .public) is playing")
+            return token
         }
-        let token = tokens.insert(uid: uid)
-        Log.media.info("Muted audio output \(device, privacy: .public): \(player, privacy: .public) is playing")
-        return token
     }
 
     static func unmute(_ token: UInt32, record: URL) -> Bool {
-        guard let uid = tokens.take(token) else {
-            Log.media.warning("Unknown mute token \(token, privacy: .public)")
+        stateLock.withLock {
+            guard let uid = tokens.take(token) else {
+                Log.media.warning("Unknown mute token \(token, privacy: .public)")
+                return false
+            }
+            let active = tokens.activeUIDs()
+            let finishUnmuted = {
+                let remaining = recorded(record).filter { $0 != uid || active.contains($0) }
+                do {
+                    try remember(remaining, in: record)
+                } catch {
+                    Log.media.warning("Could not update the muted-output record: \(error.localizedDescription, privacy: .public)")
+                }
+                if !remaining.contains(where: { !active.contains($0) }) {
+                    watcher.stop()
+                }
+            }
+            if let device = device(uid: uid), set(muted: false, on: device) {
+                finishUnmuted()
+                return true
+            }
+            Log.media.warning("Could not unmute audio output \(uid, privacy: .public); watching for reconnect")
+            if case .newlyArmed = watcher.armIfNeeded(record: record), restored(uid) {
+                finishUnmuted()
+                return true
+            }
             return false
         }
-        guard let device = device(uid: uid) else {
-            Log.media.warning("Audio output \(uid, privacy: .public) is no longer available to unmute")
-            watcher.watch(record: record)
-            return false
+    }
+
+    static func addActiveTokenForTesting(uid: String) -> UInt32 {
+        stateLock.withLock {
+            tokens.insert(uid: uid)
         }
-        let unmuted = set(muted: false, on: device)
-        guard unmuted else {
-            // the record stays, so reconnect or the next launch tries again
-            Log.media.warning("Could not unmute audio output \(device, privacy: .public)")
-            watcher.watch(record: record)
-            return false
+    }
+
+    static func takeTokenForTesting(_ token: UInt32) {
+        stateLock.withLock {
+            _ = tokens.take(token)
         }
-        let remaining = recorded(record).filter { $0 != uid }
-        do {
-            try remember(remaining, in: record)
-        } catch {
-            Log.media.warning("Could not update the muted-output record: \(error.localizedDescription, privacy: .public)")
-        }
-        if remaining.isEmpty {
+    }
+
+    static func stopWatcherForTesting() {
+        stateLock.withLock {
             watcher.stop()
         }
-        return true
     }
 
     private static func recorded(_ record: URL) -> [String] {
@@ -294,20 +331,31 @@ private final class MutedTokens: @unchecked Sendable {
             uids.removeValue(forKey: token)
         }
     }
+
+    func activeUIDs() -> Set<String> {
+        lock.withLock {
+            Set(uids.values)
+        }
+    }
 }
 
-/// Watches CoreAudio device-list changes while muted-output has pending UIDs so
-/// reconnecting a disconnected output device unmutes it without restarting Onda.
+private enum WatchArmResult {
+    case newlyArmed
+    case alreadyArmed
+    case unavailable
+}
+
 private final class DeviceReconnectWatcher: @unchecked Sendable {
     private let lock = NSLock()
     private let queue = DispatchQueue(label: "com.rselbach.onda.output-mute-reconnect")
     private var listener: AudioObjectPropertyListenerBlock?
     private var record: URL?
 
-    func watch(record: URL) {
+    @discardableResult
+    func armIfNeeded(record: URL) -> WatchArmResult {
         lock.withLock {
             self.record = record
-            guard listener == nil else { return }
+            guard listener == nil else { return .alreadyArmed }
             var address = AudioObjectPropertyAddress(
                 mSelector: kAudioHardwarePropertyDevices,
                 mScope: kAudioObjectPropertyScopeGlobal,
@@ -325,9 +373,10 @@ private final class DeviceReconnectWatcher: @unchecked Sendable {
             )
             if status == noErr {
                 listener = block
-            } else {
-                Log.media.warning("Could not install output reconnect listener: \(status, privacy: .public)")
+                return .newlyArmed
             }
+            Log.media.warning("Could not install output reconnect listener: \(status, privacy: .public)")
+            return .unavailable
         }
     }
 
