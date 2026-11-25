@@ -9,9 +9,11 @@
 use std::time::Duration;
 
 use crate::hotkey::KeyNames;
-use crate::languages::Language;
+use crate::languages::{Language, LanguageSetting};
+use crate::models::Catalog;
 use crate::platform::Platform;
 use crate::privacy_naming::PrivacyNaming;
+use crate::routing::routes;
 use crate::setup::{PermissionFix, try_it_placeholder};
 use crate::tray::percent;
 use crate::types::{HistoryRetention, MicrophonePermission, OutputMode};
@@ -147,6 +149,8 @@ pub struct SelectedModel<'a> {
     pub name: &'a str,
     /// Download status.
     pub status: ModelStatus,
+    /// Compatible with the currently selected language in the active catalog.
+    pub compatible: bool,
 }
 
 /// What onboarding reads from the rest of the app (ONB-2).
@@ -242,6 +246,7 @@ impl Onboarding {
         flags: OnboardingFlags,
         stored_language: Option<String>,
         platform: Platform,
+        catalog: &Catalog,
     ) -> Self {
         let previously_completed = match origin {
             OnboardingOrigin::Automatic => false,
@@ -262,7 +267,11 @@ impl Onboarding {
             steps,
             position: 0,
             navigating_forward: true,
-            language: stored_language.filter(|code| !code.is_empty()),
+            language: stored_language.filter(|code| {
+                Language::from_code(code).is_some_and(|lang| {
+                    !routes(catalog, LanguageSetting::Specific(lang)).is_empty()
+                })
+            }),
             skipped_accessibility: false,
             download_error: None,
         }
@@ -331,7 +340,9 @@ impl Onboarding {
             // a running download finishes on the later steps
             OnboardingStep::SpeechModel => match env.selected_model {
                 Some(model)
-                    if model.status.downloaded || model.status.download_progress.is_some() =>
+                    if model.compatible
+                        && (model.status.downloaded
+                            || model.status.download_progress.is_some()) =>
                 {
                     None
                 }
@@ -654,16 +665,23 @@ pub struct LanguageStepView {
 }
 
 /// Builds the Language step grid (ONB-4). A non-empty `query` searches all
-/// languages; otherwise `show_all` picks all or popular.
-pub fn language_step(query: &str, show_all: bool, selected: Option<&str>) -> LanguageStepView {
+/// languages supported by `catalog`; otherwise `show_all` picks all or popular.
+pub fn language_step(
+    catalog: &Catalog,
+    query: &str,
+    show_all: bool,
+    selected: Option<&str>,
+) -> LanguageStepView {
     let query = query.trim();
     let searching = !query.is_empty();
+    let supported =
+        |language: &Language| !routes(catalog, LanguageSetting::Specific(*language)).is_empty();
     let shown: Vec<Language> = match (searching, show_all) {
         (true, _) => Language::all()
-            .filter(|language| language.matches_search(query))
+            .filter(|language| supported(language) && language.matches_search(query))
             .collect(),
-        (false, true) => Language::all().collect(),
-        (false, false) => Language::popular().collect(),
+        (false, true) => Language::all().filter(supported).collect(),
+        (false, false) => Language::popular().filter(supported).collect(),
     };
     LanguageStepView {
         toggle_title: match (searching, show_all) {
@@ -988,6 +1006,16 @@ mod tests {
         }
     }
 
+    fn macos_catalog() -> Catalog {
+        Catalog::new(Some(crate::models::SystemSpeechInfo {
+            description: "Built-in macOS speech recognition".to_owned(),
+            languages: Language::all().map(|l| l.code().to_owned()).collect(),
+            license_name: "Apple".to_owned(),
+            license_url: "https://example.com".to_owned(),
+            attribution: "Apple".to_owned(),
+        }))
+    }
+
     fn env() -> OnboardingEnv<'static> {
         OnboardingEnv {
             microphone: MicrophonePermission::Granted,
@@ -998,6 +1026,7 @@ mod tests {
             selected_model: Some(SelectedModel {
                 name: "Parakeet TDT v2",
                 status: DOWNLOADED,
+                compatible: true,
             }),
             recommended_model: DOWNLOADED,
         }
@@ -1017,6 +1046,7 @@ mod tests {
             OnboardingFlags::default(),
             Some("en".to_owned()),
             platform,
+            &macos_catalog(),
         );
         while onboarding.step() != step {
             onboarding.advance(&env());
@@ -1087,6 +1117,7 @@ mod tests {
             OnboardingFlags::default(),
             Some("en".to_owned()),
             Platform::linux(),
+            &Catalog::gguf(),
         );
         let mut forward = vec![(onboarding.step(), None)];
         let finish = loop {
@@ -1132,6 +1163,7 @@ mod tests {
             completed,
             Some("en".to_owned()),
             macos(),
+            &macos_catalog(),
         );
         let env = OnboardingEnv {
             accessibility_granted: false,
@@ -1419,6 +1451,7 @@ mod tests {
                 selected_model: tc.selected.map(|status| SelectedModel {
                     name: "Parakeet TDT v2",
                     status,
+                    compatible: true,
                 }),
                 ..env()
             };
@@ -1560,6 +1593,7 @@ mod tests {
                     selected_model: Some(SelectedModel {
                         name: "Parakeet TDT v2",
                         status: downloading(0.37),
+                        compatible: true,
                     }),
                     ..env()
                 },
@@ -1573,6 +1607,21 @@ mod tests {
                     selected_model: Some(SelectedModel {
                         name: "Parakeet TDT v2",
                         status: MISSING,
+                        compatible: true,
+                    }),
+                    ..env()
+                },
+                skip_accessibility: false,
+                want_hint: Some("Download or choose a speech model to continue"),
+            },
+            Case {
+                name: "ONB-8 incompatible downloaded model disables continue",
+                step: OnboardingStep::SpeechModel,
+                env: OnboardingEnv {
+                    selected_model: Some(SelectedModel {
+                        name: "Parakeet TDT v2",
+                        status: DOWNLOADED,
+                        compatible: false,
                     }),
                     ..env()
                 },
@@ -1657,6 +1706,7 @@ mod tests {
             OnboardingFlags::default(),
             None,
             macos(),
+            &macos_catalog(),
         );
         onboarding.advance(&env());
         assert_eq!(
@@ -1667,6 +1717,23 @@ mod tests {
         assert_eq!(onboarding.step(), OnboardingStep::Language);
         onboarding.select_language("es", "parakeet-ultra");
         assert!(onboarding.can_continue(&env()));
+
+        let auto_opened = Onboarding::open(
+            OnboardingOrigin::Automatic,
+            OnboardingFlags::default(),
+            Some("auto".to_owned()),
+            Platform::linux(),
+            &Catalog::gguf(),
+        );
+        assert_eq!(auto_opened.language(), None);
+        let unsupported_opened = Onboarding::open(
+            OnboardingOrigin::Automatic,
+            OnboardingFlags::default(),
+            Some("ko".to_owned()),
+            Platform::linux(),
+            &Catalog::gguf(),
+        );
+        assert_eq!(unsupported_opened.language(), None);
     }
 
     #[test]
@@ -1718,6 +1785,7 @@ mod tests {
                 OnboardingFlags::default(),
                 tc.stored.map(str::to_owned),
                 macos(),
+                &macos_catalog(),
             );
             assert_eq!(
                 onboarding.select_language(tc.pick, "parakeet-ultra"),
@@ -2000,8 +2068,13 @@ mod tests {
             },
         ];
         for tc in cases {
-            let onboarding =
-                Onboarding::open(tc.origin, tc.flags_at_open, Some("en".to_owned()), macos());
+            let onboarding = Onboarding::open(
+                tc.origin,
+                tc.flags_at_open,
+                Some("en".to_owned()),
+                macos(),
+                &macos_catalog(),
+            );
             let got = onboarding.close(tc.flags_at_close, tc.downloaded, tc.loaded, tc.in_flight);
             assert_eq!(got, tc.want, "{}", tc.name);
         }
@@ -2194,16 +2267,24 @@ mod tests {
             },
         ];
         for tc in cases {
-            let got = language_step(tc.query, tc.show_all, Some("es"));
+            let got = language_step(&macos_catalog(), tc.query, tc.show_all, Some("es"));
             assert_eq!(got.toggle_title, tc.want_toggle, "{}", tc.name);
             let codes: Vec<&str> = got.cards.iter().map(|c| c.code.as_str()).collect();
             assert_eq!(codes, tc.want_codes, "{}", tc.name);
+        }
+        let gguf_popular = language_step(&Catalog::gguf(), "", false, None);
+        let gguf_codes: Vec<&str> = gguf_popular.cards.iter().map(|c| c.code.as_str()).collect();
+        for unsupported in ["ko", "zh", "hi", "ar"] {
+            assert!(
+                !gguf_codes.contains(&unsupported),
+                "gguf catalog should not offer {unsupported}"
+            );
         }
     }
 
     #[test]
     fn onb_4_language_card() {
-        let got = language_step("", false, Some("es"));
+        let got = language_step(&macos_catalog(), "", false, Some("es"));
         assert_eq!(
             got.cards.first(),
             Some(&LanguageCard {
@@ -2224,7 +2305,7 @@ mod tests {
                 selected: true,
             })
         );
-        let maltese = language_step("maltese", false, Some("es"));
+        let maltese = language_step(&macos_catalog(), "maltese", false, Some("es"));
         assert_eq!(
             maltese.cards,
             [LanguageCard {

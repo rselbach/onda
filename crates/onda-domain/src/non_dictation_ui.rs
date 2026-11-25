@@ -213,14 +213,15 @@ impl DownloadOverlay {
         session_active: bool,
         notice_up: bool,
     ) -> DownloadOverlayView {
+        if matches!(state, NonDictationState::Ready | NonDictationState::Error) {
+            self.dismissed = false;
+            return DownloadOverlayView::Hidden;
+        }
         if session_active {
             return DownloadOverlayView::Hidden;
         }
         let (status, progress) = match state {
-            NonDictationState::Ready | NonDictationState::Error => {
-                self.dismissed = false;
-                return DownloadOverlayView::Hidden;
-            }
+            NonDictationState::Ready | NonDictationState::Error => unreachable!(),
             NonDictationState::Downloading(download) => (
                 download.status.clone(),
                 OverlayProgress::Determinate(download.progress),
@@ -564,6 +565,11 @@ mod tests {
                 name: "a session does not clear the hide",
                 after_dismiss: vec![(downloading(), true), (downloading(), false)],
                 want_last_shown: false,
+            },
+            Case {
+                name: "ready during a session ends the hide for the next download",
+                after_dismiss: vec![(NonDictationState::Ready, true), (downloading(), false)],
+                want_last_shown: true,
             },
             Case {
                 name: "ready ends it, next download shows",

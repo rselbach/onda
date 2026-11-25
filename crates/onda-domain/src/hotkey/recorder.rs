@@ -123,6 +123,9 @@ impl ShortcutRecorder {
         let was_recording = self.recording;
         self.recording = false;
         self.armed = None;
+        if was_recording {
+            self.message = None;
+        }
         was_recording
     }
 
@@ -640,11 +643,26 @@ mod tests {
         recorder.start();
         assert_eq!(recorder.message(), None, "start clears the message");
 
+        recorder.handle(down("KeyA", &[]));
+        assert!(recorder.message().is_some());
+        assert!(recorder.stop());
+        assert_eq!(
+            recorder.message(),
+            None,
+            "stop clears an active validation error"
+        );
+
         recorder.start_failed();
         assert!(!recorder.is_recording());
         assert_eq!(
             recorder.message().map(|m| m.text(&KeyNames::MACOS)),
             Some("Could not start shortcut recording.")
+        );
+        assert!(!recorder.stop());
+        assert_eq!(
+            recorder.message().map(|m| m.text(&KeyNames::MACOS)),
+            Some("Could not start shortcut recording."),
+            "idle stop preserves start_failed message"
         );
     }
 }

@@ -162,14 +162,18 @@ impl Stabilizer {
     /// so a shorter decode still shows them.
     pub fn stabilize(&mut self, text: &str) -> String {
         let words = split_words(text);
-        let agreed = agreement_len(&self.previous, &words);
-        if agreed > self.committed.len() {
-            let newly_agreed = &self.previous[self.committed.len()..agreed];
-            self.committed.extend_from_slice(newly_agreed);
-        }
-        let tail = words
+        let prev_tail = self
+            .previous
+            .get(tail_start(&self.committed, &self.previous)..)
+            .unwrap_or_default();
+        let cur_tail = words
             .get(tail_start(&self.committed, &words)..)
             .unwrap_or_default();
+        let newly_agreed = agreement_len(prev_tail, cur_tail);
+        if newly_agreed > 0 {
+            self.committed.extend_from_slice(&prev_tail[..newly_agreed]);
+        }
+        let tail = &cur_tail[newly_agreed..];
         let shown = [self.committed.as_slice(), tail].concat().concat();
         self.previous = words;
         shown.trim_start().to_owned()
@@ -512,6 +516,16 @@ mod tests {
                 want_last: "yeah films the study group at greendale community",
             },
             Case {
+                name: "later agreement after an inserted prefix word does not re-freeze the tail",
+                decodes: vec![
+                    "yeah films the study group at green",
+                    "yeah films the study group at greendale",
+                    "yeah nadir films the study group at greendale community",
+                    "yeah nadir films the study group at greendale community college",
+                ],
+                want_last: "yeah films the study group at greendale community college",
+            },
+            Case {
                 name: "a word dropped from the frozen run does not swallow the tail",
                 decodes: vec![
                     "troy and abed in the",
@@ -519,6 +533,17 @@ mod tests {
                     "troy abed in the morning",
                 ],
                 want_last: "troy and abed in the morning",
+            },
+            Case {
+                name: "later agreement after a dropped prefix word preserves the tail",
+                decodes: vec![
+                    "troy and abed in the",
+                    "troy and abed in the mor",
+                    "troy abed in the morning",
+                    "troy abed in the morning nights",
+                    "troy abed in the morning nights show",
+                ],
+                want_last: "troy and abed in the morning nights show",
             },
             Case {
                 name: "no anchor falls back to the frozen length",

@@ -72,7 +72,8 @@ pub(super) fn models_url(page_token: Option<&str>) -> String {
 pub(super) fn parse_models(
     json: &Value,
 ) -> Result<(Vec<CleanupModel>, Option<String>), CleanupError> {
-    let entries = match json.get("models") {
+    let object = json.as_object().ok_or(CleanupError::Malformed)?;
+    let entries = match object.get("models") {
         // an account with nothing to list may omit the field
         None => &Vec::new(),
         Some(models) => models.as_array().ok_or(CleanupError::Malformed)?,
@@ -101,7 +102,7 @@ pub(super) fn parse_models(
             Some(CleanupModel::listed(id, name))
         })
         .collect();
-    let next = json
+    let next = object
         .get("nextPageToken")
         .and_then(Value::as_str)
         .filter(|token| !token.is_empty())
@@ -243,5 +244,8 @@ mod tests {
             parse_models(&json!({"models": "nope"})),
             Err(CleanupError::Malformed)
         );
+        for bad in [json!(null), json!([]), json!(42), json!("error")] {
+            assert_eq!(parse_models(&bad), Err(CleanupError::Malformed));
+        }
     }
 }
