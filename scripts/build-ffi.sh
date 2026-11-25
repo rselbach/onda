@@ -42,10 +42,13 @@ main() {
       ;;
   esac
 
-  local lib_dir="${ROOT}/target/${profile}"
-  if [[ "$(uname -m)" != "arm64" ]]; then
+  local target_root="${CARGO_TARGET_DIR:-${ROOT}/target}"
+  local lib_dir="${target_root}/${profile}"
+  if [[ -n "${CARGO_BUILD_TARGET:-}" ]]; then
+    lib_dir="${target_root}/${CARGO_BUILD_TARGET}/${profile}"
+  elif [[ "$(uname -m)" != "arm64" ]]; then
     cargo_flags+=(--target "${TARGET}")
-    lib_dir="${ROOT}/target/${TARGET}/${profile}"
+    lib_dir="${target_root}/${TARGET}/${profile}"
   fi
   STAGING="$(mktemp -d)"
   trap cleanup EXIT

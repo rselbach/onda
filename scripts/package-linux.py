@@ -7,6 +7,7 @@ import json
 import os
 import platform
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -122,22 +123,40 @@ def dependencies(binary, library):
         re.findall(r"\bGLIBC_(\d+(?:\.\d+)+)", symbols),
         key=lambda v: tuple(map(int, v.split("."))),
     )
-    compiler = os.environ.get("CXX", "c++")
-    compiler_version = output(compiler, "--version").lower()
+    compiler = shlex.split(os.environ.get("CXX") or "c++")
+    compiler_version = output(*compiler, "--version").lower()
     is_gcc = (
         any(tok in compiler_version for tok in ("gcc", "g++", "free software foundation"))
         and "clang" not in compiler_version
     )
-    cxx = output(compiler, "-dumpfullversion", "-dumpversion") if is_gcc else None
+    cxx = output(*compiler, "-dumpfullversion", "-dumpversion") if is_gcc else None
+    needed_sonames = []
+    for path in (binary, library):
+        needed_sonames.extend(
+            re.findall(
+                r"\(NEEDED\).*?\[(.*?)\]", output("readelf", "-d", str(path))
+            )
+        )
+    needs_libstdcxx = "libstdc++.so.6" in needed_sonames
     common = [
         "wl-clipboard",
         "wtype",
         "xclip",
         "xdg-desktop-portal",
     ]
+    deb_cxx = (
+        [f"libstdc++6 (>= {cxx})"]
+        if cxx
+        else (["libstdc++6"] if needs_libstdcxx else [])
+    )
+    arch_cxx = (
+        [f"gcc-libs>={cxx}"]
+        if cxx
+        else (["gcc-libs"] if needs_libstdcxx else [])
+    )
     deb = common + [
         f"libc6 (>= {glibc})",
-        *( [f"libstdc++6 (>= {cxx})"] if cxx else [] ),
+        *deb_cxx,
         "libgcc-s1",
         f"libgtk-4-1 (>= {versions['gtk4']})",
         f"libadwaita-1-0 (>= {versions['libadwaita-1']})",
@@ -155,7 +174,7 @@ def dependencies(binary, library):
     ]
     archlinux = common + [
         f"glibc>={glibc}",
-        *( [f"gcc-libs>={cxx}"] if cxx else [] ),
+        *arch_cxx,
         f"gtk4>={versions['gtk4']}",
         f"libadwaita>={versions['libadwaita-1']}",
         f"glib2>={versions['glib-2.0']}",
@@ -167,12 +186,9 @@ def dependencies(binary, library):
         "wayland",
     ]
     # nFPM does not automatically generate ELF dependency requirements.
-    for path in (binary, library):
-        for soname in re.findall(
-            r"\(NEEDED\).*?\[(.*?)\]", output("readelf", "-d", str(path))
-        ):
-            if soname != "libgtk4-layer-shell.so.0":
-                rpm.append(f"{soname}()(64bit)")
+    for soname in needed_sonames:
+        if soname != "libgtk4-layer-shell.so.0":
+            rpm.append(f"{soname}()(64bit)")
     for symbol in sorted(set(re.findall(r"\b(?:GLIBCXX|CXXABI)_[\d.]+", symbols))):
         rpm.append(f"libstdc++.so.6({symbol})(64bit)")
     return deb, sorted(set(rpm)), archlinux, versions, glibc

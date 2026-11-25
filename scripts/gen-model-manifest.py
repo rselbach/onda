@@ -198,6 +198,7 @@ def main():
         ) as handle:
             tmp_path = handle.name
             handle.write(rendered)
+        os.chmod(tmp_path, 0o644)
         os.replace(tmp_path, OUTPUT)
         tmp_path = None
     finally:

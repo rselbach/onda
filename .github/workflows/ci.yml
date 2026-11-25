@@ -57,7 +57,10 @@ jobs:
           run_linux=false
           run_linux_packages=false
 
+          changed="$(git diff --name-only "${BASE_SHA}...HEAD")"
+
           while IFS= read -r path; do
+            [[ -n "${path}" ]] || continue
             case "${path}" in
               shell/macos/* | .swiftformat | scripts/build-ffi.sh | scripts/bundle-app.sh | scripts/release.sh | .github/workflows/release.yml)
                 run_macos=true
@@ -82,7 +85,7 @@ jobs:
                 run_linux=true
                 ;;
             esac
-          done < <(git diff --name-only "${BASE_SHA}...HEAD")
+          done <<< "${changed}"
 
           {
             echo "run_macos=${run_macos}"

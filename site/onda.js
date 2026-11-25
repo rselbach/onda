@@ -141,7 +141,7 @@
     } else if (/Macintosh|Mac OS X/.test(ua)) {
       // iPadOS asks for desktop sites with a Mac user agent
       os = navigator.maxTouchPoints > 1 ? "other" : "macos";
-    } else if (/Linux|X11/.test(ua)) {
+    } else if (/Linux/.test(ua)) {
       os = "linux";
     } else if (/Windows/.test(ua)) {
       os = "windows";
