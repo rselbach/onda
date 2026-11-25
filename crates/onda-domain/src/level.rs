@@ -36,11 +36,16 @@ pub const MIN_BAR_HEIGHT: f64 = 3.0;
 /// Jabber measures channel 0 of the device-format buffer before resampling;
 /// [`SILENT_MIC_THRESHOLD`] is tuned to that.
 pub fn rms_level(samples: &[f32]) -> f32 {
-    if samples.is_empty() {
+    if samples.is_empty() || samples.iter().any(|s| !s.is_finite()) {
         return 0.0;
     }
-    let sum: f32 = samples.iter().map(|s| s * s).sum();
-    (sum / samples.len() as f32).sqrt().min(1.0)
+    let sum: f64 = samples.iter().map(|&s| f64::from(s) * f64::from(s)).sum();
+    let rms = (sum / samples.len() as f64).sqrt();
+    if rms.is_finite() {
+        (rms as f32).min(1.0)
+    } else {
+        0.0
+    }
 }
 
 /// Rate-limits level reports to [`LEVEL_REPORT_INTERVAL`] (AUD-8).
@@ -162,7 +167,14 @@ pub fn display_levels(levels: &[f32], width: f64) -> Vec<f32> {
 /// `min + clamp(level × 10, 0, 1) × (available − min)` (OVL-8). Never below
 /// [`MIN_BAR_HEIGHT`].
 pub fn bar_height(level: f32, available: f64) -> f64 {
-    let normalized = (f64::from(level) * 10.0).clamp(0.0, 1.0);
+    if !available.is_finite() {
+        return MIN_BAR_HEIGHT;
+    }
+    let normalized = if level.is_finite() {
+        (f64::from(level) * 10.0).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
     MIN_BAR_HEIGHT + normalized * (available - MIN_BAR_HEIGHT).max(0.0)
 }
 
@@ -468,5 +480,13 @@ mod tests {
                 assert!((got - want).abs() < 1e-6, "{name}: got {got}, want {want}");
             }
         }
+    }
+
+    #[test]
+    fn non_finite_levels_and_heights_stay_finite() {
+        assert_eq!(rms_level(&[f32::NAN, 0.5]), 0.0);
+        assert_eq!(rms_level(&[f32::INFINITY, 0.5]), 0.0);
+        assert_eq!(bar_height(f32::NAN, 24.0), MIN_BAR_HEIGHT);
+        assert_eq!(bar_height(0.0, f64::INFINITY), MIN_BAR_HEIGHT);
     }
 }

@@ -159,6 +159,11 @@ impl RegistrationRetry {
         self.last_trust.is_some()
     }
 
+    /// Whether the pending episode is waiting on missing Typing Access.
+    pub fn waiting_for_trust(&self) -> bool {
+        self.last_trust == Some(false)
+    }
+
     /// Records that registering `shortcut` failed with `status` while
     /// Accessibility trust was `trusted`. Returns what to tell the user, if
     /// anything: always for a combo (which also ends any lone-modifier
@@ -172,7 +177,7 @@ impl RegistrationRetry {
         trusted: bool,
         platform: Platform,
     ) -> Option<FailureReport> {
-        if !self.record(shortcut.is_lone_modifier(), trusted) {
+        if !self.record(shortcut.needs_accessibility(platform), trusted) {
             return None;
         }
         Some(match shortcut.needs_accessibility(platform) && !trusted {
@@ -891,5 +896,16 @@ mod tests {
         for (name, id, pressed, want) in cases {
             assert_eq!(HotkeyRoute::route(id, pressed), want, "{name}");
         }
+    }
+
+    #[test]
+    fn linux_lone_modifier_failure_does_not_enter_accessibility_retry() {
+        let mut retry = RegistrationRetry::new();
+        let shortcut = Shortcut::lone(ModifierKey::AltRight);
+        let first = retry.record_failure(&shortcut, 1, true, Platform::linux());
+        assert!(matches!(first, Some(FailureReport::Notice(_))));
+        assert!(!retry.is_pending());
+        let second = retry.record_failure(&shortcut, 1, true, Platform::linux());
+        assert!(matches!(second, Some(FailureReport::Notice(_))));
     }
 }

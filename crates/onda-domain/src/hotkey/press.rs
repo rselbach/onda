@@ -129,7 +129,10 @@ impl PressRouter {
             // a recording already running (e.g. from the menu) makes the
             // start a silent no-op; the key-up stops it (HOT-25).
             ActivationMode::Hold if session.recording() => PressIntent::None,
-            ActivationMode::Hold => PressIntent::Start { provisional: true },
+            ActivationMode::Hold => {
+                press.started_recording = true;
+                PressIntent::Start { provisional: true }
+            }
             ActivationMode::Toggle | ActivationMode::Automatic if session.active_or_pending() => {
                 stop_or_abort(session)
             }
@@ -172,15 +175,16 @@ impl PressRouter {
 
     /// Another key joined the held lone-modifier shortcut after it fired
     /// (HOT-33). Cancels the recording only if this press started it:
-    /// always in Hold, in Automatic only if this key-down started recording,
+    /// in Hold or Automatic only if this key-down started recording,
     /// never in Toggle. The press stays down until its key-up.
     pub fn discard(&mut self, session: SessionSnapshot) -> PressIntent {
         let Some(press) = self.press.as_mut() else {
             return PressIntent::None;
         };
         let started_by_this_press = match press.mode {
-            ActivationMode::Hold => true,
-            ActivationMode::Automatic => std::mem::take(&mut press.started_recording),
+            ActivationMode::Hold | ActivationMode::Automatic => {
+                std::mem::take(&mut press.started_recording)
+            }
             ActivationMode::Toggle => false,
         };
         if !started_by_this_press {
@@ -430,6 +434,13 @@ mod tests {
                     (Down(Automatic, IDLE, 0), Start { provisional: false }),
                     (Discard(PENDING), AbortPendingStart),
                     (Discard(PENDING), PressIntent::None),
+                ],
+            },
+            Case {
+                name: "discard in hold keeps a recording not started by this press",
+                steps: vec![
+                    (Down(Hold, RECORDING, 0), PressIntent::None),
+                    (Discard(RECORDING), PressIntent::None),
                 ],
             },
             Case {

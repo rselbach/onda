@@ -121,7 +121,19 @@ pub fn delete_model(
             model_id: model.as_str().to_string(),
         });
     }
-    if model.as_str() != stored_selected {
+    let resolved_selected = match crate::migration::resolve_selection(
+        catalog,
+        stored_selected,
+        crate::migration::REMOVED_MODEL_IDS,
+        default_language,
+        downloaded,
+    ) {
+        SelectionResolution::Current(id) => Some(id),
+        SelectionResolution::SwitchSilently(m) | SelectionResolution::NeedsDownload(m) => {
+            Some(m.to)
+        }
+    };
+    if model.as_str() != stored_selected && resolved_selected != Some(model) {
         return Ok(DeletePlan { reselect: None });
     }
     let others: Vec<ModelId> = downloaded.iter().copied().filter(|m| *m != model).collect();
@@ -569,6 +581,18 @@ mod tests {
             );
             assert_eq!(got, tc.want, "{}", tc.name);
         }
+        assert_eq!(
+            delete_model(
+                &without_system(),
+                ParakeetTdtV2,
+                "system-speech",
+                &[ParakeetTdtV2],
+                lang("en"),
+                lang("en"),
+            ),
+            Err(ModelError::CannotDeleteActiveModel),
+            "sole downloaded active model is refused even when stored_selected is unmigrated"
+        );
         assert_eq!(
             ModelError::CannotDeleteActiveModel.to_string(),
             "Cannot delete the currently active model. Please select a different model first."

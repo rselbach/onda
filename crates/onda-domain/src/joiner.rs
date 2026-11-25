@@ -104,9 +104,14 @@ fn is_newline(c: char) -> bool {
 }
 
 fn set_initial_case(text: &str, uppercase: bool) -> String {
-    let Some((index, first)) = text.char_indices().find(|(_, c)| c.is_alphabetic()) else {
+    let Some((index, first)) = text.char_indices().find(|(_, c)| {
+        !c.is_whitespace() && !matches!(c, '"' | '\'' | '“' | '‘' | '(' | '[' | '{')
+    }) else {
         return text.to_owned();
     };
+    if !first.is_alphabetic() {
+        return text.to_owned();
+    }
     let rest = &text[index + first.len_utf8()..];
     let replacement: String = match (uppercase, first) {
         (true, c) if c.is_lowercase() => c.to_uppercase().collect(),
@@ -123,7 +128,15 @@ fn starts_with_continuation_word(text: &str) -> bool {
         .char_indices()
         .find(|(_, c)| !c.is_alphabetic() && *c != '\'')
         .map_or(text.len(), |(i, _)| i);
-    let word = text[..end].to_lowercase();
+    let slice = &text[..end];
+    let mut chars = slice.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !first.is_uppercase() || chars.any(|c| c.is_alphabetic() && !c.is_lowercase()) {
+        return false;
+    }
+    let word = slice.to_lowercase();
     CONTINUATION_WORDS.contains(&word.as_str())
 }
 
@@ -320,6 +333,30 @@ mod tests {
                 preceding: "Troy",
                 text: " and Abed",
                 want: " and Abed",
+            },
+            Case {
+                name: "leading digit does not capitalize later word",
+                preceding: "Done.",
+                text: "42 things happened.",
+                want: " 42 things happened.",
+            },
+            Case {
+                name: "leading currency does not capitalize later word",
+                preceding: "Done.",
+                text: "$50 for Troy.",
+                want: " $50 for Troy.",
+            },
+            Case {
+                name: "leading number before period does not lowercase next sentence",
+                preceding: "Count to",
+                text: "5. And then 6.",
+                want: " 5. And then 6.",
+            },
+            Case {
+                name: "all-caps acronym matching continuation word keeps case",
+                preceding: "I live in",
+                text: "OR and WA",
+                want: " OR and WA",
             },
         ];
         for tc in cases {

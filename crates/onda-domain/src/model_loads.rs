@@ -104,8 +104,22 @@ impl ModelLoads {
         }
     }
 
-    /// The load waits for `model` to download (ASR-2), or a redownload
-    /// replaces it (DL-11).
+    /// The model whose download a load or redownload waits on, if any.
+    pub fn waiting_for(&self) -> Option<ModelId> {
+        match self.state {
+            State::WaitingForDownload(model) => Some(model),
+            State::Idle { .. } | State::Loading { .. } => None,
+        }
+    }
+
+    /// Cancels a pending download wait without touching an active load.
+    pub fn clear_wait(&mut self) {
+        if matches!(self.state, State::WaitingForDownload(_)) {
+            self.state = State::Idle { announced: false };
+        }
+    }
+
+    /// The download a load or redownload waits on (ASR-2, DL-11).
     pub fn wait_for_download(&mut self, model: ModelId) {
         self.state = State::WaitingForDownload(model);
     }
