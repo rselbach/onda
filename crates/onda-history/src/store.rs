@@ -14,7 +14,7 @@ use onda_domain::types::HistoryRetention;
 use uuid::Uuid;
 
 use crate::error::{HistoryError, io_error};
-use crate::fs::{remove_descendant, resolve_descendant, write_atomic};
+use crate::fs::{ensure_safe_root, remove_descendant, resolve_descendant, write_atomic};
 
 const STAGING_PREFIX: &str = ".onda-pending-";
 const STAGING_SUFFIX_LEN: usize = 16;
@@ -362,6 +362,7 @@ impl HistoryStore {
     }
 
     fn prepare_directory(&self, state: &mut State) -> Result<(), HistoryError> {
+        ensure_safe_root(&self.directory)?;
         std::fs::create_dir_all(&self.directory)
             .map_err(|err| io_error("create", &self.directory, &err))?;
         if state.directory_prepared {
@@ -410,7 +411,12 @@ impl HistoryStore {
                 remove_descendant(&self.directory, &audio)?;
             }
             let updated = stripped.without_audio();
-            write_metadata(&self.entry_folder(&updated), &updated)?;
+            let entry_dir = self.entry_folder(&updated);
+            let (resolved_dir, is_dir) = resolve_descendant(&self.directory, &entry_dir)?;
+            if !is_dir {
+                return Err(HistoryError::UnsafePath(entry_dir));
+            }
+            write_metadata(&resolved_dir, &updated)?;
             if let Some(slot) = entries.iter_mut().find(|entry| entry.id == stripped.id) {
                 *slot = updated;
             }
@@ -438,6 +444,7 @@ impl HistoryStore {
     // scans the folder once (HIS-8). plain files, symlinks, and hidden
     // entries are not entry folders and are left alone.
     fn load(&self) -> Result<Vec<HistoryEntry>, HistoryError> {
+        ensure_safe_root(&self.directory)?;
         let listing = match std::fs::read_dir(&self.directory) {
             Ok(listing) => listing,
             Err(err) if err.kind() == ErrorKind::NotFound => return Ok(Vec::new()),

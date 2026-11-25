@@ -5,15 +5,31 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{HistoryError, io_error};
 
-/// Removes `target` (a folder and everything under it, or a file) when it is
-/// a strict descendant of `root` (ARCH-12). A missing target is not an error.
-/// The parent is canonicalized before the check and a symlink at `target` is
-/// refused, so no symlink leads the delete out of `root`; `remove_dir_all`
-/// never follows symlinks inside the tree.
+pub(crate) fn ensure_safe_root(root: &Path) -> Result<(), HistoryError> {
+    match std::fs::symlink_metadata(root) {
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(io_error("read", root, &err)),
+        Ok(meta) if meta.file_type().is_symlink() => {
+            tracing::error!(path = %root.display(), "refusing a symlinked history folder");
+            Err(HistoryError::UnsafePath(root.to_path_buf()))
+        }
+        Ok(_) => Ok(()),
+    }
+}
+
 pub(crate) fn remove_descendant(root: &Path, target: &Path) -> Result<(), HistoryError> {
+    ensure_safe_root(root)?;
     match std::fs::symlink_metadata(target) {
         Ok(_) => {}
-        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(err) if err.kind() == ErrorKind::NotFound => {
+            if let Some(parent) = target.parent()
+                && parent != root
+                && std::fs::symlink_metadata(parent).is_ok()
+            {
+                let _ = resolve_descendant(root, parent)?;
+            }
+            return Ok(());
+        }
         Err(err) => return Err(io_error("read", target, &err)),
     }
     let (resolved, is_dir) = resolve_descendant(root, target)?;
@@ -31,6 +47,7 @@ pub(crate) fn resolve_descendant(
     root: &Path,
     target: &Path,
 ) -> Result<(PathBuf, bool), HistoryError> {
+    ensure_safe_root(root)?;
     let unsafe_path = || {
         tracing::error!(path = %target.display(), "refusing a path outside the history folder");
         HistoryError::UnsafePath(target.to_path_buf())

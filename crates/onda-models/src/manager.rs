@@ -87,6 +87,12 @@ struct Active {
     outcome: watch::Receiver<Outcome>,
 }
 
+enum DeleteFailure {
+    BusyLocal,
+    BusyExternal,
+    Other(Error),
+}
+
 impl ModelManager {
     /// Creates a manager for `models_dir` (normally `<data>/Models`) and the
     /// receiver of its download events. `manifests` returns the files of a
@@ -191,7 +197,28 @@ impl ModelManager {
         let Some(manifest) = (self.inner.manifests)(model) else {
             return Ok(());
         };
-        verify_folder(&self.model_dir(model), manifest, use_marker, progress).map_err(|details| {
+        let folder = self.model_dir(model);
+        let _lock = if self.models_dir().exists() {
+            let lock_path = self.inner.lock_path(model);
+            let file = open_lock_file(&lock_path).map_err(|error| {
+                Error::Io(format!(
+                    "Could not lock {}: {}",
+                    lock_path.display(),
+                    describe(&error)
+                ))
+            })?;
+            file.lock_shared().map_err(|error| {
+                Error::Io(format!(
+                    "Could not lock {}: {}",
+                    lock_path.display(),
+                    describe(&error)
+                ))
+            })?;
+            Some(file)
+        } else {
+            None
+        };
+        verify_folder(&folder, manifest, use_marker, progress).map_err(|details| {
             tracing::error!(%model, %details, "model failed verification");
             ModelError::IncompleteInstallation {
                 model_id: model.as_str().to_string(),
@@ -328,6 +355,13 @@ impl ModelManager {
     /// not a strict descendant of the models directory (ARCH-12). Fails with
     /// [`ModelError::NotFound`] when there is no folder.
     pub fn delete(&self, model: ModelId) -> Result<(), Error> {
+        self.delete_inner(model).map_err(|failure| match failure {
+            DeleteFailure::BusyLocal | DeleteFailure::BusyExternal => Error::Downloading(model),
+            DeleteFailure::Other(error) => error,
+        })
+    }
+
+    fn delete_inner(&self, model: ModelId) -> Result<(), DeleteFailure> {
         struct DeleteGuard<'a> {
             inner: &'a Inner,
             model: ModelId,
@@ -354,7 +388,7 @@ impl ModelManager {
             let sync = {
                 let mut active = self.inner.lock_active();
                 match active.get(&model) {
-                    Some(ActiveEntry::Downloading(_)) => return Err(Error::Downloading(model)),
+                    Some(ActiveEntry::Downloading(_)) => return Err(DeleteFailure::BusyLocal),
                     Some(ActiveEntry::Deleting(deleting)) => Arc::clone(&deleting.sync),
                     None => {
                         let (done_tx, _) = watch::channel(false);
@@ -383,38 +417,38 @@ impl ModelManager {
         let check_exists = || match std::fs::symlink_metadata(&folder) {
             Ok(_) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                Err(Error::from(ModelError::NotFound {
+                Err(DeleteFailure::Other(Error::from(ModelError::NotFound {
                     model_id: model.as_str().to_string(),
-                }))
+                })))
             }
-            Err(error) => Err(Error::Io(format!(
+            Err(error) => Err(DeleteFailure::Other(Error::Io(format!(
                 "Could not read {}: {}",
                 folder.display(),
                 describe(&error)
-            ))),
+            )))),
         };
         check_exists()?;
         let lock_path = self.inner.lock_path(model);
         let file = open_lock_file(&lock_path).map_err(|error| {
-            Error::Io(format!(
+            DeleteFailure::Other(Error::Io(format!(
                 "Could not lock {}: {}",
                 lock_path.display(),
                 describe(&error)
-            ))
+            )))
         })?;
         match file.try_lock() {
             Ok(()) => {}
-            Err(TryLockError::WouldBlock) => return Err(Error::Downloading(model)),
+            Err(TryLockError::WouldBlock) => return Err(DeleteFailure::BusyExternal),
             Err(TryLockError::Error(error)) => {
-                return Err(Error::Io(format!(
+                return Err(DeleteFailure::Other(Error::Io(format!(
                     "Could not lock {}: {}",
                     lock_path.display(),
                     describe(&error)
-                )));
+                ))));
             }
         }
         check_exists()?;
-        remove_descendant(self.models_dir(), &folder)?;
+        remove_descendant(self.models_dir(), &folder).map_err(DeleteFailure::Other)?;
         tracing::info!(%model, "deleted model folder");
         Ok(())
     }
@@ -423,31 +457,35 @@ impl ModelManager {
     /// (DL-11). A deletion failure also reports a failed download. If a
     /// download is already running, its own task reports the outcome.
     pub async fn redownload(&self, model: ModelId) -> Result<PathBuf, Error> {
-        let manager = self.clone();
-        let deleted = tokio::task::spawn_blocking(move || manager.delete(model))
+        self.redownload_or_complete(model)
             .await
-            .map_err(|error| Error::Io(format!("Could not delete model folder: {error}")))
+            .map(DownloadOutcome::path)
+    }
+
+    /// Like [`ModelManager::redownload`], distinguishing an already-complete
+    /// folder completed concurrently from a freshly run download task.
+    pub async fn redownload_or_complete(&self, model: ModelId) -> Result<DownloadOutcome, Error> {
+        let manager = self.clone();
+        let deleted = tokio::task::spawn_blocking(move || manager.delete_inner(model))
+            .await
+            .map_err(|error| {
+                DeleteFailure::Other(Error::Io(format!("Could not delete model folder: {error}")))
+            })
             .and_then(|res| res);
         match deleted {
-            Ok(()) | Err(Error::Model(ModelError::NotFound { .. })) => {}
-            Err(error @ Error::Downloading(_)) => {
-                // If no in-process download is active, an external process holds the
-                // cross-process lock and will not emit a local event.
-                let local_download = matches!(
-                    self.inner.lock_active().get(&model),
-                    Some(ActiveEntry::Downloading(_))
+            Ok(()) | Err(DeleteFailure::Other(Error::Model(ModelError::NotFound { .. }))) => {}
+            Err(DeleteFailure::BusyLocal) => return Err(Error::Downloading(model)),
+            Err(DeleteFailure::BusyExternal) => {
+                let error = Error::Downloading(model);
+                self.inner.emit(
+                    model,
+                    DownloadEventKind::Failed {
+                        error: error.to_string(),
+                    },
                 );
-                if !local_download {
-                    self.inner.emit(
-                        model,
-                        DownloadEventKind::Failed {
-                            error: error.to_string(),
-                        },
-                    );
-                }
                 return Err(error);
             }
-            Err(error) => {
+            Err(DeleteFailure::Other(error)) => {
                 self.inner.emit(
                     model,
                     DownloadEventKind::Failed {
@@ -457,7 +495,7 @@ impl ModelManager {
                 return Err(error);
             }
         }
-        self.download(model).await
+        self.download_or_complete(model).await
     }
 
     /// Deletes the folders of removed models (DL-15), as selected by

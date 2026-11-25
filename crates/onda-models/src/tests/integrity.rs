@@ -242,6 +242,30 @@ async fn fresh_download_writes_marker() {
     assert!(!hashed, "a fresh download must not be hashed again");
 }
 
+#[test]
+fn mid_verification_mutation_fails_and_clears_marker() {
+    let f = installed();
+    let mut mutated = false;
+    let mut progress = |_fraction: f64| {
+        if !mutated {
+            mutated = true;
+            let vocab = f.folder.join(VOCAB);
+            let mut bytes = std::fs::read(&vocab).expect("read vocab");
+            bytes.push(b' ');
+            std::fs::write(&vocab, bytes).expect("mutate vocab");
+        }
+    };
+    let result = f.manager.verify(MODEL, &mut progress);
+    assert!(
+        matches!(
+            result,
+            Err(Error::Model(ModelError::IncompleteInstallation { .. }))
+        ),
+        "expected IncompleteInstallation, got {result:?}"
+    );
+    assert!(!f.folder.join(VERIFIED_MARKER).exists());
+}
+
 #[tokio::test]
 async fn download_keeping_earlier_files_hashes_them_once() {
     let f = Fixture::new().await;
