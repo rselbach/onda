@@ -195,14 +195,17 @@ struct Receipt {
 /// its folder are writable by this user on a writable volume. Anything
 /// else gets the download instead of an escalation (UPD-7).
 pub fn replaceable(bundle: &Path) -> bool {
+    if !bundle.is_absolute() {
+        return false;
+    }
+    let Ok(bundle) = fs::canonicalize(bundle) else {
+        return false;
+    };
     let translocated = bundle
         .components()
         .any(|component| component.as_os_str() == "AppTranslocation");
     let writable = |path: &Path| rustix::fs::access(path, Access::WRITE_OK).is_ok();
-    !translocated
-        && bundle.is_absolute()
-        && bundle.parent().is_some_and(writable)
-        && writable(bundle)
+    !translocated && bundle.parent().is_some_and(writable) && writable(&bundle)
 }
 
 /// Unpacks `zip` (already checked against the feed) into a new staging
@@ -540,11 +543,10 @@ fn unpack(zip: &Path, folder: &Path) -> Result<(), InstallError> {
 const MAX_UNCOMPRESSED_ZIP_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// Cap on central-directory entry count.
 const MAX_ZIP_ENTRIES: u64 = 100_000;
+const MAX_ZIP_CD_BYTES: u64 = 64 * 1024 * 1024;
 
-/// Scans a ZIP archive's central directory before `ditto` touches disk:
-/// enforces an uncompressed size cap, relative `Onda.app/` path confinement,
-/// and symlink targets staying inside `Onda.app/`.
 fn validate_zip(zip: &Path) -> Result<(), InstallError> {
+    use std::collections::HashSet;
     use std::io::{Read, Seek, SeekFrom};
 
     let reject = |why: &str| InstallError::Rejected(format!("invalid update archive: {why}"));
@@ -564,9 +566,20 @@ fn validate_zip(zip: &Path) -> Result<(), InstallError> {
 
     let eocd_pos = (0..=tail_len - 22)
         .rev()
-        .find(|&i| tail[i..i + 4] == [0x50, 0x4b, 0x05, 0x06])
+        .find(|&i| {
+            if tail[i..i + 4] != [0x50, 0x4b, 0x05, 0x06] {
+                return false;
+            }
+            let comment_len = usize::from(u16::from_le_bytes([tail[i + 20], tail[i + 21]]));
+            i + 22 + comment_len == tail_len
+        })
         .ok_or_else(|| reject("missing ZIP end-of-central-directory"))?;
     let eocd = &tail[eocd_pos..];
+    let disk_num = u16::from_le_bytes([eocd[4], eocd[5]]);
+    let cd_start_disk = u16::from_le_bytes([eocd[6], eocd[7]]);
+    if disk_num != 0 || cd_start_disk != 0 {
+        return Err(reject("multi-disk ZIP archives are unsupported"));
+    }
     let mut entries = u64::from(u16::from_le_bytes([eocd[10], eocd[11]]));
     let mut cd_size = u64::from(u32::from_le_bytes([eocd[12], eocd[13], eocd[14], eocd[15]]));
     let mut cd_offset = u64::from(u32::from_le_bytes([eocd[16], eocd[17], eocd[18], eocd[19]]));
@@ -593,6 +606,9 @@ fn validate_zip(zip: &Path) -> Result<(), InstallError> {
     if entries > MAX_ZIP_ENTRIES {
         return Err(reject("too many archive entries"));
     }
+    if cd_size > MAX_ZIP_CD_BYTES {
+        return Err(reject("central directory too large"));
+    }
     if cd_offset
         .checked_add(cd_size)
         .is_none_or(|end| end > file_len)
@@ -608,11 +624,16 @@ fn validate_zip(zip: &Path) -> Result<(), InstallError> {
 
     let mut pos = 0usize;
     let mut total_uncompressed = 0u64;
+    let mut symlinks = HashSet::new();
+    let mut paths = Vec::new();
     for _ in 0..entries {
         if pos + 46 > cd.len() || cd[pos..pos + 4] != [0x50, 0x4b, 0x01, 0x02] {
             return Err(reject("malformed central directory header"));
         }
         let method = u16::from_le_bytes([cd[pos + 10], cd[pos + 11]]);
+        if !matches!(method, 0 | 8) {
+            return Err(reject("unsupported compression method"));
+        }
         let mut comp_size = u64::from(u32::from_le_bytes([
             cd[pos + 20],
             cd[pos + 21],
@@ -684,39 +705,87 @@ fn validate_zip(zip: &Path) -> Result<(), InstallError> {
             .filter(|&total| total <= MAX_UNCOMPRESSED_ZIP_BYTES)
             .ok_or_else(|| reject("uncompressed size exceeds limit"))?;
 
-        validate_zip_entry_path(name).map_err(reject)?;
+        let root = validate_zip_entry_path(name).map_err(reject)?;
 
-        let unix_mode = (ext_attrs >> 16) & 0o170000;
+        let unix_attrs = ext_attrs >> 16;
+        if (unix_attrs & 0o6000) != 0 {
+            return Err(reject("setuid or setgid entry is not allowed"));
+        }
+        let unix_mode = unix_attrs & 0o170000;
+        if !matches!(unix_mode, 0 | 0o100000 | 0o040000 | 0o120000) {
+            return Err(reject("unsupported special file entry"));
+        }
+
+        let data_offset = validate_local_header(
+            &mut file,
+            file_len,
+            local_offset,
+            name,
+            method,
+            comp_size,
+            uncomp_size,
+        )
+        .map_err(reject)?;
+
+        let trimmed = name.trim_end_matches('/');
         if unix_mode == 0o120000 {
-            if method != 0 || uncomp_size > 4096 {
+            if root != ZipRoot::App || method != 0 || comp_size != uncomp_size || comp_size > 4096 {
                 return Err(reject("unsupported symlink entry"));
             }
-            let target = read_stored_entry(&mut file, local_offset, comp_size as usize)
+            let target = read_stored_entry(&mut file, data_offset, comp_size as usize)
                 .map_err(|_| reject("unreadable symlink entry"))?;
             let target_str =
                 std::str::from_utf8(&target).map_err(|_| reject("non-UTF-8 symlink target"))?;
             validate_zip_symlink_target(name, target_str).map_err(reject)?;
+            symlinks.insert(trimmed.to_owned());
+        } else if root == ZipRoot::App {
+            paths.push(trimmed.to_owned());
         }
 
         pos = next_pos;
     }
+    if pos != cd.len() {
+        return Err(reject("trailing central directory data"));
+    }
+    if !symlinks.is_empty() {
+        for path in &paths {
+            for (idx, _) in path.match_indices('/') {
+                if symlinks.contains(&path[..idx]) {
+                    return Err(reject("entry traverses symlink"));
+                }
+            }
+        }
+    }
     Ok(())
 }
 
-fn validate_zip_entry_path(name: &str) -> Result<(), &'static str> {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ZipRoot {
+    App,
+    MacOsX,
+}
+
+fn validate_zip_entry_path(name: &str) -> Result<ZipRoot, &'static str> {
     if name.is_empty() || name.starts_with('/') || name.contains('\\') || name.contains('\0') {
         return Err("unsafe entry path");
     }
     let trimmed = name.trim_end_matches('/');
-    if trimmed != "Onda.app" && !trimmed.starts_with("Onda.app/") {
-        return Err("entry outside Onda.app/");
-    }
     for segment in trimmed.split('/') {
         if segment.is_empty() || segment == "." || segment == ".." {
             return Err("traversal segment in entry path");
         }
     }
-    Ok(())
+    if trimmed == "Onda.app" || trimmed.starts_with("Onda.app/") {
+        return Ok(ZipRoot::App);
+    }
+    if matches!(
+        trimmed,
+        "__MACOSX" | "__MACOSX/._Onda.app" | "__MACOSX/Onda.app"
+    ) || trimmed.starts_with("__MACOSX/Onda.app/")
+    {
+        return Ok(ZipRoot::MacOsX);
+    }
+    Err("entry outside Onda.app/")
 }
 
 fn validate_zip_symlink_target(entry_name: &str, target: &str) -> Result<(), &'static str> {
@@ -743,24 +812,72 @@ fn validate_zip_symlink_target(entry_name: &str, target: &str) -> Result<(), &'s
     Ok(())
 }
 
+fn validate_local_header(
+    file: &mut fs::File,
+    file_len: u64,
+    local_offset: u64,
+    cd_name: &str,
+    cd_method: u16,
+    cd_comp_size: u64,
+    cd_uncomp_size: u64,
+) -> Result<u64, &'static str> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    file.seek(SeekFrom::Start(local_offset))
+        .map_err(|_| "unreadable local header")?;
+    let mut header = [0u8; 30];
+    file.read_exact(&mut header)
+        .map_err(|_| "truncated local header")?;
+    if header[0..4] != [0x50, 0x4b, 0x03, 0x04] {
+        return Err("bad local header");
+    }
+    let flags = u16::from_le_bytes([header[6], header[7]]);
+    let method = u16::from_le_bytes([header[8], header[9]]);
+    if method != cd_method {
+        return Err("local header method mismatch");
+    }
+    if (flags & 0x0008) == 0 {
+        let comp = u32::from_le_bytes([header[18], header[19], header[20], header[21]]);
+        let uncomp = u32::from_le_bytes([header[22], header[23], header[24], header[25]]);
+        if comp != 0xFFFF_FFFF && u64::from(comp) != cd_comp_size {
+            return Err("local header compressed size mismatch");
+        }
+        if uncomp != 0xFFFF_FFFF && u64::from(uncomp) != cd_uncomp_size {
+            return Err("local header uncompressed size mismatch");
+        }
+    }
+    let name_len = usize::from(u16::from_le_bytes([header[26], header[27]]));
+    let extra_len = u64::from(u16::from_le_bytes([header[28], header[29]]));
+    if name_len != cd_name.len() {
+        return Err("local header name mismatch");
+    }
+    let mut lfh_name = vec![0u8; name_len];
+    file.read_exact(&mut lfh_name)
+        .map_err(|_| "truncated local header name")?;
+    if lfh_name.as_slice() != cd_name.as_bytes() {
+        return Err("local header name mismatch");
+    }
+    let data_offset = local_offset
+        .checked_add(30)
+        .and_then(|v| v.checked_add(name_len as u64))
+        .and_then(|v| v.checked_add(extra_len))
+        .ok_or("local header offset overflow")?;
+    if data_offset
+        .checked_add(cd_comp_size)
+        .is_none_or(|end| end > file_len)
+    {
+        return Err("entry data exceeds archive size");
+    }
+    Ok(data_offset)
+}
+
 fn read_stored_entry(
     file: &mut fs::File,
-    local_offset: u64,
+    data_offset: u64,
     size: usize,
 ) -> std::io::Result<Vec<u8>> {
     use std::io::{Read, Seek, SeekFrom};
-    file.seek(SeekFrom::Start(local_offset))?;
-    let mut header = [0u8; 30];
-    file.read_exact(&mut header)?;
-    if header[0..4] != [0x50, 0x4b, 0x03, 0x04] {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "bad local header",
-        ));
-    }
-    let name_len = u64::from(u16::from_le_bytes([header[26], header[27]]));
-    let extra_len = u64::from(u16::from_le_bytes([header[28], header[29]]));
-    file.seek(SeekFrom::Start(local_offset + 30 + name_len + extra_len))?;
+    file.seek(SeekFrom::Start(data_offset))?;
     let mut data = vec![0u8; size];
     file.read_exact(&mut data)?;
     Ok(data)
@@ -958,7 +1075,7 @@ pub(crate) mod tests {
     /// Zips `app` the way the release does.
     pub(crate) fn zip(app: &Path, out: &Path) {
         let status = Command::new("/usr/bin/ditto")
-            .args(["-c", "-k", "--keepParent"])
+            .args(["-c", "-k", "--sequesterRsrc", "--keepParent"])
             .arg(app)
             .arg(out)
             .status()
@@ -1274,6 +1391,8 @@ pub(crate) mod tests {
 
     #[test]
     fn translocated_and_read_only_apps_are_not_replaceable() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
         let root = scratch();
         let app = root.path().join("Onda.app");
         fs::create_dir_all(&app).unwrap();
@@ -1285,6 +1404,15 @@ pub(crate) mod tests {
             "/System/Applications/Calculator.app"
         )));
         assert!(!replaceable(Path::new("Onda.app")));
+
+        let readonly_parent = root.path().join("ro");
+        let readonly_app = readonly_parent.join("Onda.app");
+        fs::create_dir_all(&readonly_app).unwrap();
+        fs::set_permissions(&readonly_parent, fs::Permissions::from_mode(0o555)).unwrap();
+        let link = root.path().join("Linked.app");
+        symlink(&readonly_app, &link).unwrap();
+        assert!(!replaceable(&link));
+        fs::set_permissions(&readonly_parent, fs::Permissions::from_mode(0o755)).unwrap();
     }
 
     #[test]
@@ -1325,5 +1453,198 @@ pub(crate) mod tests {
 
         remove_staging_folder(&locked).unwrap();
         assert!(!locked.exists());
+    }
+
+    #[test]
+    fn sequestered_rsrc_xattrs_archive_stages_cleanly() {
+        let root = scratch();
+        let installed = bundle(&root.path().join("Applications"), TEST_ID, "1.0.0", 41);
+        let update = bundle(&root.path().join("source"), TEST_ID, "2.0.0", 42);
+        let status = Command::new("/usr/bin/xattr")
+            .args(["-w", "com.example.audit", "greendale"])
+            .arg(update.join("Contents/Info.plist"))
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let archive = root.path().join("Onda.zip");
+        zip(&update, &archive);
+
+        let staged = stage(&archive, &installed, &expected("2.0.0", 42)).unwrap();
+        assert_eq!(version(&staged.app), "42");
+    }
+
+    struct SynthEntry<'a> {
+        name: &'a str,
+        ext_attrs: u32,
+        payload: &'a [u8],
+        lfh_override_name: Option<&'a str>,
+        spoof_comp_size: bool,
+    }
+
+    fn write_synthetic_zip(path: &Path, entries: &[SynthEntry<'_>]) {
+        let mut buf = Vec::new();
+        let mut cd = Vec::new();
+        for entry in entries {
+            let SynthEntry {
+                name,
+                ext_attrs,
+                payload,
+                lfh_override_name,
+                spoof_comp_size,
+            } = *entry;
+            let method = 0u16;
+            let offset = buf.len() as u32;
+            let lfh_name = lfh_override_name.unwrap_or(name);
+            let comp_len = payload.len() as u32;
+            let uncomp_len = payload.len() as u32;
+            buf.extend_from_slice(&[0x50, 0x4b, 0x03, 0x04]);
+            buf.extend_from_slice(&20u16.to_le_bytes());
+            buf.extend_from_slice(&0u16.to_le_bytes());
+            buf.extend_from_slice(&method.to_le_bytes());
+            buf.extend_from_slice(&0u32.to_le_bytes());
+            buf.extend_from_slice(&0u32.to_le_bytes());
+            buf.extend_from_slice(&comp_len.to_le_bytes());
+            buf.extend_from_slice(&uncomp_len.to_le_bytes());
+            buf.extend_from_slice(&(lfh_name.len() as u16).to_le_bytes());
+            buf.extend_from_slice(&0u16.to_le_bytes());
+            buf.extend_from_slice(lfh_name.as_bytes());
+            buf.extend_from_slice(payload);
+
+            cd.extend_from_slice(&[0x50, 0x4b, 0x01, 0x02]);
+            cd.extend_from_slice(&0x031Eu16.to_le_bytes());
+            cd.extend_from_slice(&20u16.to_le_bytes());
+            cd.extend_from_slice(&0u16.to_le_bytes());
+            cd.extend_from_slice(&method.to_le_bytes());
+            cd.extend_from_slice(&0u32.to_le_bytes());
+            cd.extend_from_slice(&0u32.to_le_bytes());
+            let cd_comp = if spoof_comp_size {
+                0xFFFF_FFFE
+            } else {
+                comp_len
+            };
+            cd.extend_from_slice(&cd_comp.to_le_bytes());
+            cd.extend_from_slice(&uncomp_len.to_le_bytes());
+            cd.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            cd.extend_from_slice(&0u16.to_le_bytes());
+            cd.extend_from_slice(&0u16.to_le_bytes());
+            cd.extend_from_slice(&0u16.to_le_bytes());
+            cd.extend_from_slice(&0u16.to_le_bytes());
+            cd.extend_from_slice(&ext_attrs.to_le_bytes());
+            cd.extend_from_slice(&offset.to_le_bytes());
+            cd.extend_from_slice(name.as_bytes());
+        }
+        let cd_offset = buf.len() as u32;
+        let cd_size = cd.len() as u32;
+        buf.extend_from_slice(&cd);
+        buf.extend_from_slice(&[0x50, 0x4b, 0x05, 0x06]);
+        buf.extend_from_slice(&0u16.to_le_bytes());
+        buf.extend_from_slice(&0u16.to_le_bytes());
+        buf.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+        buf.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+        buf.extend_from_slice(&cd_size.to_le_bytes());
+        buf.extend_from_slice(&cd_offset.to_le_bytes());
+        buf.extend_from_slice(&0u16.to_le_bytes());
+        fs::write(path, buf).unwrap();
+    }
+
+    #[test]
+    fn malformed_or_escaping_zips_are_rejected() {
+        let root = scratch();
+
+        let chained = root.path().join("chained.zip");
+        write_synthetic_zip(
+            &chained,
+            &[
+                SynthEntry {
+                    name: "Onda.app/a/b/c",
+                    ext_attrs: 0o120777 << 16,
+                    payload: b"../..",
+                    lfh_override_name: None,
+                    spoof_comp_size: false,
+                },
+                SynthEntry {
+                    name: "Onda.app/a/b/c/escape",
+                    ext_attrs: 0o120777 << 16,
+                    payload: b"../../..",
+                    lfh_override_name: None,
+                    spoof_comp_size: false,
+                },
+                SynthEntry {
+                    name: "Onda.app/a/b/c/escape/pwn",
+                    ext_attrs: 0o100644 << 16,
+                    payload: b"chang",
+                    lfh_override_name: None,
+                    spoof_comp_size: false,
+                },
+            ],
+        );
+        assert!(matches!(
+            validate_zip(&chained),
+            Err(InstallError::Rejected(_))
+        ));
+
+        let mismatch = root.path().join("mismatch.zip");
+        write_synthetic_zip(
+            &mismatch,
+            &[SynthEntry {
+                name: "Onda.app/Contents/Info.plist",
+                ext_attrs: 0o100644 << 16,
+                payload: b"x",
+                lfh_override_name: Some("../outside"),
+                spoof_comp_size: false,
+            }],
+        );
+        assert!(matches!(
+            validate_zip(&mismatch),
+            Err(InstallError::Rejected(_))
+        ));
+
+        let fifo = root.path().join("fifo.zip");
+        write_synthetic_zip(
+            &fifo,
+            &[SynthEntry {
+                name: "Onda.app/Contents/fifo",
+                ext_attrs: 0o010644 << 16,
+                payload: b"",
+                lfh_override_name: None,
+                spoof_comp_size: false,
+            }],
+        );
+        assert!(matches!(
+            validate_zip(&fifo),
+            Err(InstallError::Rejected(_))
+        ));
+
+        let setuid = root.path().join("setuid.zip");
+        write_synthetic_zip(
+            &setuid,
+            &[SynthEntry {
+                name: "Onda.app/Contents/suid",
+                ext_attrs: 0o104755 << 16,
+                payload: b"x",
+                lfh_override_name: None,
+                spoof_comp_size: false,
+            }],
+        );
+        assert!(matches!(
+            validate_zip(&setuid),
+            Err(InstallError::Rejected(_))
+        ));
+
+        let spoof = root.path().join("spoof.zip");
+        write_synthetic_zip(
+            &spoof,
+            &[SynthEntry {
+                name: "Onda.app/Contents/link",
+                ext_attrs: 0o120777 << 16,
+                payload: b"Info.plist",
+                lfh_override_name: None,
+                spoof_comp_size: true,
+            }],
+        );
+        assert!(matches!(
+            validate_zip(&spoof),
+            Err(InstallError::Rejected(_))
+        ));
     }
 }

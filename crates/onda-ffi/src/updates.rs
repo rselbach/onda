@@ -36,14 +36,7 @@ impl AppUpdater {
         };
         match config(&host, data_dir, app_version) {
             Ok(config) => {
-                let open_args = match host.isolated {
-                    // the relaunched copy keeps the run's data folder
-                    true => vec![
-                        OsString::from("--env"),
-                        OsString::from(format!("ONDA_DATA_DIR={}", data_dir.display())),
-                    ],
-                    false => Vec::new(),
-                };
+                let open_args = open_args(host.isolated, data_dir);
                 let installer = Arc::new(MacInstaller::new(
                     PathBuf::from(&host.bundle_path),
                     config.build,
@@ -64,6 +57,17 @@ impl AppUpdater {
                 Self(None)
             }
         }
+    }
+}
+
+fn open_args(isolated: bool, data_dir: &Path) -> Vec<OsString> {
+    match isolated {
+        true => vec![
+            OsString::from("-n"),
+            OsString::from("--env"),
+            OsString::from(format!("ONDA_DATA_DIR={}", data_dir.display())),
+        ],
+        false => Vec::new(),
     }
 }
 
@@ -146,5 +150,24 @@ impl Host for ShellHost {
 
     fn terminate(&self) {
         self.port.terminate();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn isolated_relaunch_passes_new_instance_flag() {
+        let dir = Path::new("/tmp/onda-verify");
+        assert_eq!(
+            open_args(true, dir),
+            vec![
+                OsString::from("-n"),
+                OsString::from("--env"),
+                OsString::from("ONDA_DATA_DIR=/tmp/onda-verify"),
+            ]
+        );
+        assert!(open_args(false, dir).is_empty());
     }
 }
