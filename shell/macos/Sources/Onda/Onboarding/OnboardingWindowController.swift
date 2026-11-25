@@ -111,11 +111,15 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
         model.forward = view.forward
         deferred = view
         DispatchQueue.main.async { [weak self] in
-            guard let self, let latest = deferred, window?.isVisible == true else { return }
+            guard let self, let latest = deferred else { return }
             deferred = nil
             model.forward = latest.forward
-            withAnimation(Self.stepAnimation) {
-                self.model.view = latest
+            if window?.isVisible == true {
+                withAnimation(Self.stepAnimation) {
+                    self.model.view = latest
+                }
+            } else {
+                model.view = latest
             }
         }
     }

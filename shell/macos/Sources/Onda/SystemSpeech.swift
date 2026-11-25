@@ -177,17 +177,23 @@ final class SystemSpeech: SystemSpeechPort, Sendable {
         }
         let (input, continuation) = AsyncStream<AnalyzerInput>.makeStream()
         let analyzer = SpeechAnalyzer(modules: [module])
-        do {
-            try await analyzer.start(inputSequence: input)
-            continuation.yield(AnalyzerInput(buffer: buffer))
-            continuation.finish()
-            try await analyzer.finalizeAndFinishThroughEndOfInput()
-            return try await results.value
-        } catch {
+        return try await withTaskCancellationHandler {
+            do {
+                try await analyzer.start(inputSequence: input)
+                continuation.yield(AnalyzerInput(buffer: buffer))
+                continuation.finish()
+                try await analyzer.finalizeAndFinishThroughEndOfInput()
+                return try await results.value
+            } catch {
+                continuation.finish()
+                results.cancel()
+                await analyzer.cancelAndFinishNow()
+                throw error
+            }
+        } onCancel: {
             continuation.finish()
             results.cancel()
-            await analyzer.cancelAndFinishNow()
-            throw error
+            Task { await analyzer.cancelAndFinishNow() }
         }
     }
 

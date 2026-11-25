@@ -241,15 +241,27 @@ final class Files: FilesPort, Sendable {
         }
     }
 
+    private static let openTimeout = DispatchTimeInterval.seconds(10)
+
     func openFile(path: String) throws {
         guard FileManager.default.fileExists(atPath: path) else {
             throw ShellError.Failed(message: "File not found: \(path)")
         }
         let url = URL(fileURLWithPath: path)
+        let failure = Answer<String?>(nil)
+        let done = DispatchSemaphore(value: 0)
         NSWorkspace.shared.open(url, configuration: NSWorkspace.OpenConfiguration()) { _, error in
             if let error {
                 Log.system.error("Could not open \(path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                failure.set(error.localizedDescription)
             }
+            done.signal()
+        }
+        if done.wait(timeout: .now() + Self.openTimeout) == .timedOut {
+            throw ShellError.Failed(message: "Timed out opening \(path)")
+        }
+        if let message = failure.get() {
+            throw ShellError.Failed(message: message)
         }
     }
 }
